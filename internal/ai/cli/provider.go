@@ -134,6 +134,9 @@ func (p *provider) Models(ctx context.Context) ([]string, error) {
 	if err = probe(ctx, p.kind, &c); err != nil {
 		return nil, err
 	}
+	if p.kind == store.KindCodexCLI {
+		return codexModels(ctx, c)
+	}
 	return []string{"default"}, nil
 }
 func (p *provider) RunSession(parent context.Context, req llm.Request, call func(context.Context, llm.ToolCall) gate.Result, emit func(llm.Event)) error {

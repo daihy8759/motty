@@ -1168,6 +1168,9 @@ func (state *State) aiFetchDone(fetch *aiFetch, names []string, err error, key s
 		return
 	}
 	cfg.fetched, cfg.fetchCount = true, len(seen)
+	if provider, ok := state.aiProviderByID(fetch.providerID); ok && provider.Kind == store.KindCodexCLI && seen["default"] {
+		cfg.fetchCount--
+	}
 	state.aiWrote()
 }
 

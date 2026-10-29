@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"fmt"
 	"github.com/vivaui/viva/text"
 	"motty/internal/ai/store"
 	"os"
@@ -131,7 +132,7 @@ func TestCLIModelRefreshDoesNotClaimRemoteDiscovery(t *testing.T) {
 	w := newSettingsWorld(t, newLister("default"))
 	s := w.state
 	db, _ := s.aiStore()
-	db.SaveProvider(store.Provider{ID: "cli", Name: "CLI", Kind: "codex-cli", Enabled: true})
+	db.SaveProvider(store.Provider{ID: "cli", Name: "CLI", Kind: "claude-code-cli", Enabled: true})
 	s.reloadAI()
 	s.ai.cfg.selected = "cli"
 	s.ai.cfg.fetched = true
@@ -139,6 +140,21 @@ func TestCLIModelRefreshDoesNotClaimRemoteDiscovery(t *testing.T) {
 	text, failed := s.aiModelsStatus()
 	if failed || text != s.messages.AISettings.CLIModelsNote {
 		t.Fatal("static default mislabeled as discovery", text)
+	}
+}
+
+func TestCodexModelRefreshShowsFetchedCount(t *testing.T) {
+	w := newSettingsWorld(t, newLister("default", "alpha", "beta", "gamma"))
+	s := w.state
+	db, _ := s.aiStore()
+	db.SaveProvider(store.Provider{ID: "cli", Name: "CLI", Kind: store.KindCodexCLI, Enabled: true})
+	s.reloadAI()
+	s.ai.cfg.selected = "cli"
+	s.aiFetchModels()
+	pumpSettings(t, s, "Codex models", func() bool { return s.ai.cfg.fetch == nil })
+	text, failed := s.aiModelsStatus()
+	if failed || text != fmt.Sprintf(s.messages.AISettings.ModelsFetchedFmt, 3) {
+		t.Fatal("Codex models not shown as fetched", text)
 	}
 }
 

@@ -247,7 +247,7 @@ func (state *State) aiModelsStatus() (string, bool) {
 	case cfg.fetched && cfg.fetchErr != "":
 		return fmt.Sprintf(m.ModelsFailedFmt, cfg.fetchErr), true
 	case cfg.fetched:
-		if provider, ok := state.aiSelectedProvider(); ok && store.IsCLIKind(provider.Kind) {
+		if provider, ok := state.aiSelectedProvider(); ok && store.IsCLIKind(provider.Kind) && provider.Kind != store.KindCodexCLI {
 			return m.CLIModelsNote, false
 		}
 		return fmt.Sprintf(m.ModelsFetchedFmt, cfg.fetchCount), false
@@ -271,7 +271,7 @@ func (state *State) paintAIModels(page *settingsPage) {
 	page.group(m.ModelsTitle, func() {
 		// Which provider, what it holds, and the fetch button.
 		fetchLabel := m.ModelsFetch
-		if store.IsCLIKind(provider.Kind) {
+		if store.IsCLIKind(provider.Kind) && provider.Kind != store.KindCodexCLI {
 			fetchLabel = m.CLIModelsCheck
 		}
 		description := fmt.Sprintf(m.ModelsDescFmt, total, enabled)
