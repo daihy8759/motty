@@ -177,6 +177,9 @@ func hostKeyAlgorithms(known, wanted []string) ([]string, error) {
 			offer = append(offer, name)
 		}
 	}
+	// The wanted list names ssh-rsa and the trusted key can also sign with
+	// SHA-2: an old server that can only sign with SHA-1 stays reachable by
+	// keeping ssh-rsa as the last resort.
 	if slices.Contains(wanted, ssh.KeyAlgoRSA) && !slices.Contains(offer, ssh.KeyAlgoRSA) &&
 		(slices.Contains(known, ssh.KeyAlgoRSASHA256) || slices.Contains(known, ssh.KeyAlgoRSASHA512)) {
 		offer = append(offer, ssh.KeyAlgoRSA)

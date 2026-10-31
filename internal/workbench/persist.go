@@ -90,15 +90,18 @@ type savedState struct {
 	Autofill                   []savedAutofill     `json:"autofill_rules,omitempty"`
 	CommandHistory             bool                `json:"command_history,omitempty"`
 	CommandSuggestOff          bool                `json:"command_suggest_off,omitempty"`
-	CommandInlineSuggestOff    bool                `json:"command_inline_suggest_off,omitempty"`
-	ShortcutVersion            int                 `json:"shortcut_version,omitempty"`
-	Shortcuts                  []savedShortcut     `json:"shortcuts,omitempty"`
-	Workspace                  string              `json:"workspace,omitempty"`
-	ActiveSession              int                 `json:"active_session,omitempty"`
-	HostCatalogVersion         int                 `json:"host_catalog_version"`
-	Hosts                      []savedHost         `json:"hosts"`
-	HostGroups                 []savedHostGroup    `json:"host_groups,omitempty"`
-	IdentityFiles              []string            `json:"identity_files,omitempty"`
+	// SessionLogsOff stops the local session journal. Unset means capture is on;
+	// it belongs to this computer and is never synced.
+	SessionLogsOff          bool             `json:"session_logs_off,omitempty"`
+	CommandInlineSuggestOff bool             `json:"command_inline_suggest_off,omitempty"`
+	ShortcutVersion         int              `json:"shortcut_version,omitempty"`
+	Shortcuts               []savedShortcut  `json:"shortcuts,omitempty"`
+	Workspace               string           `json:"workspace,omitempty"`
+	ActiveSession           int              `json:"active_session,omitempty"`
+	HostCatalogVersion      int              `json:"host_catalog_version"`
+	Hosts                   []savedHost      `json:"hosts"`
+	HostGroups              []savedHostGroup `json:"host_groups,omitempty"`
+	IdentityFiles           []string         `json:"identity_files,omitempty"`
 	// AgentHosts are the catalog ids of the hosts an agent may use without a
 	// window. It belongs to this computer, not to the hosts that sync, so a host
 	// that arrives from another device starts out closed to agents.
@@ -403,6 +406,7 @@ func (state *State) snapshot() savedState {
 		TerminalPasteImage:         notifyString(state.pasteImageOff),
 		CommandHistory:             state.history.on,
 		CommandSuggestOff:          state.history.suggestOff,
+		SessionLogsOff:             state.sessionLogsOff,
 		CommandInlineSuggestOff:    state.history.inlineOff,
 		SFTPParallel:               state.sftpParallel,
 		SFTPKeepTimes:              notifyString(state.sftpKeepTimesOff),
@@ -621,6 +625,7 @@ func (state *State) restoreLocal(saved savedState) {
 	state.restoreSFTPLocalFavorites(saved.SFTPLocalBookmarks)
 	state.toolbars.restore(saved.Toolbars)
 	state.localShell = saved.LocalShell
+	state.sessionLogsOff = saved.SessionLogsOff
 	state.sshAgent = agentChoiceFromSaved(saved.SSHAgent, saved.SSHAgentPath)
 	// A saved language is the user's choice. Without one (a first run, or a state
 	// from before the choice was told apart) the system's language decides, and
@@ -730,6 +735,8 @@ func (state *State) workspaceName() string {
 	switch state.activeSection {
 	case sectionDashboard:
 		return "monitor"
+	case sectionSessionLogs:
+		return "session-logs"
 	case sectionTerminal:
 		return "terminal"
 	case sectionKeys:
@@ -783,6 +790,8 @@ func (state *State) restoreWorkspace(workspace string) {
 	switch workspace {
 	case "monitor":
 		state.activeSection = sectionDashboard
+	case "session-logs":
+		state.activeSection = sectionSessionLogs
 	case "terminal":
 		if state.activeSessionID != 0 {
 			state.activeSection = sectionTerminal

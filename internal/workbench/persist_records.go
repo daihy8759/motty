@@ -61,7 +61,10 @@ import (
 // also preserves a host's login Expect/Send rules and the stable host catalog ids
 // saved sessions, proxy routes and forwards use to tell two hosts at one endpoint
 // apart: an older build accepts those records but drops what it does not know.
-const configFormat = 10
+// Version 11 preserves the device-local session-log capture switch: the field
+// lives in the local state object, and an older build's first (full) save would
+// rewrite that object from its typed struct and silently turn capture back on.
+const configFormat = 11
 
 const (
 	kindSetting             = "setting"

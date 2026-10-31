@@ -23,6 +23,7 @@ var (
 	hitTerminalMenuSave    = tree.ID(terminalMenuHits, "terminal-menu-save")
 	hitTerminalMenuSearch  = tree.ID(terminalMenuHits, "terminal-menu-search")
 	hitTerminalMenuHistory = tree.ID(terminalMenuHits, "terminal-menu-history")
+	hitTerminalMenuRename  = tree.ID(terminalMenuHits, "terminal-menu-rename")
 )
 
 // maxMenuActions bounds what the menu offers for the text under the pointer.
@@ -212,6 +213,9 @@ func (state *State) paintTerminalMenu(canvas *ui.Canvas, viewport ui.Rect) {
 	// A tab of one pane closes as a tab, which this menu does not offer: closing
 	// its only pane would look like the same thing under a narrower name.
 	if state.terminalMenuSplits(session) {
+		// The tab's own Rename names a one-terminal tab; in a split tab each
+		// terminal needs a name of its own for the assistant to be told apart.
+		rows.add(components.ContextMenuItem{ID: hitTerminalMenuRename, Label: messages.MenuRenameTerminal, Icon: icon(iconPencil)})
 		rows.add(components.ContextMenuItem{ID: hitTerminalMenuClosePane, Label: messages.PaneClose, Icon: icon(iconClose), Keys: caps(shortcutPaneClose)})
 	}
 	rows.separate()
@@ -319,6 +323,8 @@ func (state *State) clickTerminalMenu(id ui.ID) bool {
 		state.Click(hitPaneSplitHorizontal)
 	case hitTerminalMenuSplitDown:
 		state.Click(hitPaneSplitVertical)
+	case hitTerminalMenuRename:
+		state.openTerminalRename(session)
 	case hitTerminalMenuClosePane:
 		// The session the menu was opened on, not whichever pane has the
 		// keyboard: a right click does not move focus.

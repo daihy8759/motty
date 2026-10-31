@@ -96,6 +96,7 @@ func (state *State) rebuildCommandPalette() {
 	palette.add(messages.NavKnownHosts, hitKnownHosts)
 	palette.add(messages.NavSettings, hitSettings)
 	palette.add(messages.NavSnippets, hitSnippets)
+	palette.add(messages.SessionLogs.Title, hitSessionLogs)
 	state.devAddPaletteCommands(palette)
 	if state.options.NewWindow != nil {
 		palette.add(messages.NewWindow, hitNewWindow)
@@ -281,7 +282,9 @@ func (state *State) executeCommandPalette(visible uint8) {
 		return
 	}
 	state.closeCommandPalette()
-	state.Click(target)
+	// The entry stands for the row rather than being it, so the row's icon stays
+	// still: only a click on the row itself plays its motion.
+	state.click(target, false)
 }
 
 func (state *State) commandPalettePointer(event ui.PointerEvent) (ui.EventResult, bool) {

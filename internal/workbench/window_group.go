@@ -162,6 +162,12 @@ func (state *State) detachWorkspace(id layoutcore.WorkspaceID) (*tabPayload, boo
 			state.broadcast = 0
 		}
 	}
+	if state.sessionLogs.queue != nil {
+		fence := state.sessionLogs.queue.Fence()
+		for i := range payload.sessions {
+			payload.sessions[i].logBarrier = combineLogBarriers(payload.sessions[i].logBarrier, fence)
+		}
+	}
 	_, _ = state.deck.RemoveWorkspace(id, nil)
 	kept := state.sessions[:0]
 	for _, session := range state.sessions {
@@ -283,6 +289,22 @@ func (state *State) attachPayload(payload *tabPayload, drop tabDrop) bool {
 		state.options.Invalidate()
 	}
 	return true
+}
+
+func combineLogBarriers(previous, current <-chan struct{}) <-chan struct{} {
+	if previous == nil {
+		return current
+	}
+	if current == nil {
+		return previous
+	}
+	done := make(chan struct{})
+	go func() {
+		<-previous
+		<-current
+		close(done)
+	}()
+	return done
 }
 
 // hostByCatalogID finds a saved host by its stable identifier.

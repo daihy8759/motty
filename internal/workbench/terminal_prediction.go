@@ -173,7 +173,7 @@ func (prediction *terminalPrediction) rebuild() {
 		r, size := utf8.DecodeRune(prediction.data[offset:prediction.length])
 		width := term.Width(r)
 		prediction.runs[prediction.runCount] = ui.TextRun{
-			Column: int32(column), Bytes: int32(size), Cells: int32(width), Underline: true,
+			Column: int32(column), Bytes: int32(size), Cells: int32(width),
 		}
 		prediction.runCount++
 		offset += size

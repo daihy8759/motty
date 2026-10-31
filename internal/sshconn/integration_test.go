@@ -131,6 +131,29 @@ func TestShellProbeSafetyIsAPositiveAllowList(t *testing.T) {
 	}
 }
 
+// Tailscale SSH names itself "Tailscale" rather than after an OpenSSH build,
+// yet it is a full server that answers a second command channel. The shell it
+// starts must still be given directory reporting, or the file panel never
+// follows the working directory (issue #198). The wrapper travels with the
+// shell command itself, so the server never sees a separate probe session.
+func TestTailscaleSSHStartsTheShellIntegrated(t *testing.T) {
+	server := startServer(t, func(server *testServer) {
+		server.password, server.shell = "secret", echoShell
+		server.version = "SSH-2.0-Tailscale"
+		server.command = func(command string, channel ssh.Channel) {
+			defer channel.Close()
+			if !strings.Contains(command, "motty-shell") {
+				t.Errorf("integration wrapper missing from %q", command)
+			}
+			io.WriteString(channel, "integrated-startup")
+			_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+		}
+	})
+	h := connect(t, server)
+	w := openShellWith(t, h, ShellConfig{Cols: 80, Rows: 24, IntegrateShell: true})
+	w.until("the integrated startup", func(output string) bool { return strings.Contains(output, "integrated-startup") })
+}
+
 func TestWSLIntegrationScriptRefusesWhatCouldBeInjected(t *testing.T) {
 	for _, test := range []struct{ token, variable string }{
 		{"", "MOTTY_CD"}, {"bad token", "MOTTY_CD"}, {"tok';touch /tmp/no", "MOTTY_CD"}, {strings.Repeat("a", 129), "MOTTY_CD"},

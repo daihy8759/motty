@@ -3,12 +3,15 @@ package workbench
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/ui"
 	"motty/internal/ai/gate"
+	layoutcore "motty/internal/workspace"
 )
 
 func (state *State) aiWatchTarget(ctx context.Context, run *aiRun, done <-chan struct{}) {
@@ -29,7 +32,13 @@ var (
 	hitAITarget        = tree.ID(aiPanelHits, "ai-target")
 	hitAITargetDismiss = tree.ID(aiPanelHits, "ai-target-dismiss")
 	hitAITargets       = tree.Sub(aiPanelHits, tree.Name("ai-targets"))
+	// hitAITargetTabs rows select every terminal of one split tab.
+	hitAITargetTabs = tree.Sub(aiPanelHits, tree.Name("ai-target-tabs"))
 )
+
+// maxAITargets is the connections one question can be about: the default plus
+// as many more as a message may @mention.
+const maxAITargets = 1 + maxMentions
 
 func aiSessionInfo(session *Session) gate.SessionInfo {
 	return gate.SessionInfo{ID: sessionHandle(session.ID), Title: session.Title, Address: session.Address,
@@ -73,11 +82,90 @@ func (state *State) aiTargetLabel(target gate.SessionInfo) string {
 	return target.Title + " · " + target.Address
 }
 
-func (state *State) aiConversationTargetLabel(target gate.SessionInfo) string {
+// aiConversationTargetLabel names the connections a question was about: the
+// default first, then the others the user ticked.
+func (state *State) aiConversationTargetLabel(target gate.SessionInfo, extras ...gate.SessionInfo) string {
 	if target.ID == "" {
 		return state.messages.AIPanel.TargetNone
 	}
-	return target.Title
+	label := target.Title
+	for _, extra := range extras {
+		label += ", " + extra.Title
+	}
+	return label
+}
+
+// aiExtraTargets are the connections ticked besides the default that are still
+// open, with their current names. A closed one drops out instead of lingering as
+// a stale entry that could never be reached.
+func (state *State) aiExtraTargets() []gate.SessionInfo {
+	if len(state.ai.extras) == 0 {
+		return nil
+	}
+	primary := state.aiTarget().ID
+	var live []gate.SessionInfo
+	for _, extra := range state.ai.extras {
+		if extra.ID == primary {
+			continue
+		}
+		if session, err := state.aiSession(extra.ID); err == nil && session.term != nil {
+			live = append(live, aiSessionInfo(session))
+		}
+	}
+	return live
+}
+
+// aiExtraCount is len(aiExtraTargets()) without building the list, for painting.
+func (state *State) aiExtraCount() int {
+	count := 0
+	primary := state.aiTarget().ID
+	for _, extra := range state.ai.extras {
+		if extra.ID == primary {
+			continue
+		}
+		if session, err := state.aiSession(extra.ID); err == nil && session.term != nil {
+			count++
+		}
+	}
+	return count
+}
+
+// aiSelectedIDs is the ticked connections as session IDs, default first.
+func (state *State) aiSelectedIDs() []uint32 {
+	var ids []uint32
+	add := func(info gate.SessionInfo) {
+		if id, err := strconv.ParseUint(info.ID, 10, 32); err == nil {
+			ids = append(ids, uint32(id))
+		}
+	}
+	if target := state.aiTarget(); target.ID != "" {
+		add(target)
+	}
+	for _, extra := range state.aiExtraTargets() {
+		add(extra)
+	}
+	return ids
+}
+
+// aiSetSelected makes ids the ticked connections; the first becomes the default.
+// Sessions that are gone are skipped.
+func (state *State) aiSetSelected(ids []uint32) {
+	state.dropEscalationApprovals()
+	state.ai.retry, state.ai.answerOnly = false, false
+	state.ai.target, state.ai.extras = gate.SessionInfo{}, nil
+	for _, id := range ids {
+		session, ok := state.sessionByIDPointer(id)
+		if !ok || session.term == nil {
+			continue
+		}
+		if state.ai.target.ID == "" {
+			state.ai.target = aiSessionInfo(session)
+		} else {
+			state.ai.extras = append(state.ai.extras, aiSessionInfo(session))
+		}
+	}
+	state.ai.targetSet = true
+	state.ai.notice = ""
 }
 
 // A separator belongs to the first question sent to a target, not
@@ -99,13 +187,19 @@ func (state *State) aiAppendQuestion(question, key, label string) {
 	state.ai.items = append(state.ai.items, aiItem{kind: aiUser, text: question, targetKey: key, targetLabel: label})
 }
 
+// aiRequestReferences are the connections besides the default that a question
+// brings along: the ones ticked in the selector, then those it @mentions.
 func (state *State) aiRequestReferences(question string) []gate.SessionInfo {
 	var scratch [8]mentionName
-	ids := findMentions(question, state.mentionNames(scratch[:0]))
-	var references []gate.SessionInfo
-	for _, id := range ids {
-		if session, ok := state.sessionByIDPointer(id); ok && session.term != nil {
-			references = append(references, aiSessionInfo(session))
+	references := state.aiExtraTargets()
+	for _, id := range findMentions(question, state.mentionNames(scratch[:0])) {
+		session, ok := state.sessionByIDPointer(id)
+		if !ok || session.term == nil {
+			continue
+		}
+		info := aiSessionInfo(session)
+		if !slices.ContainsFunc(references, func(have gate.SessionInfo) bool { return have.ID == info.ID }) {
+			references = append(references, info)
 		}
 	}
 	return references
@@ -181,9 +275,35 @@ func (backend *aiBackend) session(handle string) (*Session, error) {
 	return nil, errNoSession
 }
 
+// aiTabTerminals are the open terminals of a workspace tab.
+func (state *State) aiTabTerminals(workspace layoutcore.WorkspaceID) []uint32 {
+	var panes [8]layoutcore.Pane
+	var ids []uint32
+	for _, pane := range state.deck.Panes(workspace, panes[:0]) {
+		if session, ok := state.sessionByIDPointer(uint32(pane.SessionID)); ok && session.term != nil && aiSessionInfo(session).Ready {
+			ids = append(ids, session.ID)
+		}
+	}
+	return ids
+}
+
 func (state *State) aiTargetOptions() []components.SelectItem {
 	m := state.messages.AIPanel
-	options := []components.SelectItem{{ID: hitAITargets.At(0), Label: m.TargetNone}}
+	selected := state.aiSelectedIDs()
+	options := []components.SelectItem{{ID: hitAITargets.At(0), Label: m.TargetNone, Selected: len(selected) == 0}}
+	for _, tab := range state.workspaceTabs {
+		ids := state.aiTabTerminals(tab.ID)
+		if len(ids) < 2 {
+			continue
+		}
+		all := true
+		for _, id := range ids {
+			all = all && slices.Contains(selected, id)
+		}
+		options = append(options, components.SelectItem{ID: hitAITargetTabs.At(int(tab.ID)),
+			Label: fmt.Sprintf(m.TargetGroupFmt, state.tabLabel(tab), len(ids)), Selected: all,
+			Icon: lucideIcons[iconTerminal]})
+	}
 	for index := range state.sessions {
 		session := &state.sessions[index]
 		if session.term == nil {
@@ -196,29 +316,87 @@ func (state *State) aiTargetOptions() []components.SelectItem {
 		}
 		options = append(options, components.SelectItem{ID: hitAITargets.At(int(session.ID)),
 			Label: info.Title, Hint: state.aiTargetLabel(info) + " · " + status, Disabled: !info.Ready,
-			Icon: state.hostIconArt(session.host.Icon, session.host.System, session.host.isDesktop())})
+			Selected: slices.Contains(selected, session.ID),
+			Icon:     state.hostIconArt(session.host.Icon, session.host.System, session.host.isDesktop())})
 	}
 	return options
 }
 
+// aiChooseTarget handles a click in the open target list: a connection or a
+// whole tab is ticked or unticked and the list stays open for the next one. The
+// first ticked connection is the default; unticking it promotes the next.
 func (state *State) aiChooseTarget(id ui.ID) bool {
-	index, ok := id.In(hitAITargets)
-	if !ok || state.ai.run != nil {
+	if state.ai.run != nil {
 		return false
 	}
-	target := gate.SessionInfo{}
-	if index != 0 {
+	if _, ok := id.In(hitAITargets); ok {
+		if index, _ := id.In(hitAITargets); index == 0 {
+			state.aiSetSelected(nil)
+			state.ai.panel.targetOpen = false
+			return true
+		}
+	}
+	ids, ok := state.aiTargetRowSessions(id)
+	if !ok {
+		return false
+	}
+	selected := state.aiSelectedIDs()
+	all := true
+	for _, id := range ids {
+		all = all && slices.Contains(selected, id)
+	}
+	if all {
+		selected = slices.DeleteFunc(selected, func(have uint32) bool { return slices.Contains(ids, have) })
+		state.aiSetSelected(selected)
+		return true
+	}
+	for _, id := range ids {
+		if slices.Contains(selected, id) {
+			continue
+		}
+		if len(selected) >= maxAITargets {
+			state.aiSetSelected(selected)
+			state.ai.notice = fmt.Sprintf(state.messages.AIPanel.TargetLimitFmt, maxAITargets)
+			return true
+		}
+		selected = append(selected, id)
+	}
+	state.aiSetSelected(selected)
+	return true
+}
+
+// aiChooseOnlyTarget is what typing a name on the closed selector does: that
+// connection or tab becomes the whole selection.
+func (state *State) aiChooseOnlyTarget(id ui.ID) bool {
+	if state.ai.run != nil {
+		return false
+	}
+	if index, ok := id.In(hitAITargets); ok && index == 0 {
+		return state.aiChooseTarget(id)
+	}
+	ids, ok := state.aiTargetRowSessions(id)
+	if !ok {
+		return false
+	}
+	state.aiSetSelected(ids[:min(len(ids), maxAITargets)])
+	state.ai.panel.targetOpen = false
+	return true
+}
+
+// aiTargetRowSessions are the ready sessions a list row stands for.
+func (state *State) aiTargetRowSessions(id ui.ID) ([]uint32, bool) {
+	if index, ok := id.In(hitAITargets); ok {
 		session, exists := state.sessionByIDPointer(uint32(index))
 		if !exists || !aiSessionInfo(session).Ready {
-			return false
+			return nil, false
 		}
-		target = aiSessionInfo(session)
+		return []uint32{session.ID}, true
 	}
-	state.dropEscalationApprovals()
-	state.ai.retry, state.ai.answerOnly = false, false
-	state.ai.target, state.ai.targetSet = target, true
-	state.ai.notice, state.ai.panel.targetOpen = "", false
-	return true
+	if index, ok := id.In(hitAITargetTabs); ok {
+		ids := state.aiTabTerminals(layoutcore.WorkspaceID(index))
+		return ids, len(ids) > 0
+	}
+	return nil, false
 }
 
 // Keep the numeric disambiguator visible even when a long tab title is elided.
@@ -240,6 +418,18 @@ func (panel *aiPanel) targetCaption(canvas *ui.Canvas, title string, size, width
 	return value
 }
 
+// aiTargetListWidth is the open list's width: as wide as its longest row needs
+// (item inset, icon, label and the tick), never beyond 320 or below the select's
+// own minimum.
+func aiTargetListWidth(canvas *ui.Canvas, options []components.SelectItem, size float32) float32 {
+	const chrome, minimum, maximum = 8 + 24 + 40 + 8, 176, 320 // inset, icon and gap, tick column, popup padding
+	widest := float32(0)
+	for _, option := range options {
+		widest = max(widest, canvas.TextWidthWeight(option.Label, size, ui.WeightRegular))
+	}
+	return min(max(widest+chrome, minimum), maximum)
+}
+
 func (state *State) paintAITargetSelect(canvas *ui.Canvas) {
 	panel, m := &state.ai.panel, state.messages.AIPanel
 	bounds := panel.targetBounds
@@ -252,6 +442,8 @@ func (state *State) paintAITargetSelect(canvas *ui.Canvas) {
 	}
 	target := state.aiTarget()
 	value, hint := m.TargetChoose, m.TargetHint
+	var suffix string // how many more connections are ticked, such as " +2"
+	var moreWidth float32
 	icon := lucideIcons[iconTerminal]
 	if target.ID != "" {
 		status := m.TargetConnected
@@ -265,14 +457,21 @@ func (state *State) paintAITargetSelect(canvas *ui.Canvas) {
 			status = m.TargetLocked
 		}
 		value = target.Title
-		hint = state.aiTargetLabel(target) + " · " + status + ". " + m.TargetHint
+		hint = state.aiTargetLabel(target) + " · " + status
+		if more := state.aiExtraCount(); more > 0 {
+			more := " +" + strconv.Itoa(more)
+			moreWidth = canvas.TextWidthWeight(more, metrics.FontSizeS, ui.WeightRegular)
+			suffix = more
+			hint = state.aiConversationTargetLabel(target, state.aiExtraTargets()...) + " · " + status
+		}
+		hint += ". " + m.TargetHint
 	}
 	const targetChromeWidth = float32(66) // select text insets, leading icon and chevron
 	// The selector sits in the composer among pills that are one type step below
 	// the message text, so it is the select's chip step rather than a field.
 	size := metrics.FontSizeS
-	bounds.Width = min(bounds.Width, max(108, canvas.TextWidthWeight(value, size, ui.WeightRegular)+targetChromeWidth))
-	value = panel.targetCaption(canvas, value, size, bounds.Width-targetChromeWidth)
+	bounds.Width = min(bounds.Width, max(108, canvas.TextWidthWeight(value, size, ui.WeightRegular)+moreWidth+targetChromeWidth))
+	value = panel.targetCaption(canvas, value, size, bounds.Width-targetChromeWidth-moreWidth) + suffix
 	panel.targetBounds = bounds
 	var options []components.SelectItem
 	if panel.targetOpen {
@@ -281,7 +480,7 @@ func (state *State) paintAITargetSelect(canvas *ui.Canvas) {
 	below := max(state.viewport.Height-8-bounds.Y-bounds.Height-4, 0)
 	above := max(bounds.Y-windowBarHeight-8, 0)
 	height := min(float32(8+len(options)*32), max(above, below))
-	content := ui.Rect{X: bounds.X, Y: bounds.Y + bounds.Height + 4, Width: min(320, state.viewport.Width-16), Height: height}
+	content := ui.Rect{X: bounds.X, Y: bounds.Y + bounds.Height + 4, Width: min(aiTargetListWidth(canvas, options, state.Theme().Metrics.FontSizeM), state.viewport.Width-16), Height: height}
 	content.X = min(max(content.X, 8), state.viewport.Width-8-content.Width)
 	if below < height {
 		content.Y = bounds.Y - height - 4
@@ -308,9 +507,7 @@ func (state *State) paintAITargetSelect(canvas *ui.Canvas) {
 	if panel.targetOpen {
 		state.menuPlaced(control.ContentBounds())
 	}
-	selected, _ := strconv.Atoi(target.ID)
 	for _, option := range options {
-		option.Selected = option.ID == hitAITargets.At(selected)
 		control.AddItem(option)
 	}
 }

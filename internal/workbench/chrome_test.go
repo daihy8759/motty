@@ -23,7 +23,10 @@ func TestChromeHasOnlyTheControlsThatDoSomething(t *testing.T) {
 	state := newTestState(t, testOptions(t))
 	canvas, texts := paintedTexts(state)
 
-	for _, gone := range []string{"Notes", "Logs", "Vaults", "SFTP", "Scripts"} {
+	// "Session Logs" is a real page now, so its sidebar row is expected; a
+	// substring check for "Logs" would fail on it, which is why it is gone from
+	// this list of controls nothing answers to.
+	for _, gone := range []string{"Notes", "Vaults", "SFTP", "Scripts"} {
 		if contains(texts, gone) {
 			t.Errorf("%q is still painted", gone)
 		}

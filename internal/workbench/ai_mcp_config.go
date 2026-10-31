@@ -24,6 +24,7 @@ const (
 	aiMCPCherry
 	aiMCPQoder
 	aiMCPWorkBuddy
+	aiMCPPi
 	aiMCPClientCount
 )
 
@@ -36,7 +37,7 @@ const (
 	aiAgentClientSetting = "ai.mcp.stdio.client"
 )
 
-var aiMCPClientKeys = [...]string{"claude", "cursor", "codebuddy", "zcode", "trae", "vscode", "windsurf", "codex", "deepseek", "opencode", "cherry", "qoder", "workbuddy"}
+var aiMCPClientKeys = [...]string{"claude", "cursor", "codebuddy", "zcode", "trae", "vscode", "windsurf", "codex", "deepseek", "opencode", "cherry", "qoder", "workbuddy", "pi"}
 
 func aiMCPClientFromKey(key string) aiMCPClient {
 	for index, value := range aiMCPClientKeys {
@@ -80,7 +81,7 @@ func aiAgentClientOptions() [aiMCPClientCount]components.SelectItem {
 }
 
 func aiMCPClientOptions() [aiMCPClientCount]components.SelectItem {
-	names := [...]string{"Claude Code", "Cursor", "CodeBuddy Code CLI", "ZCode", "TRAE", "VS Code", "Windsurf", "Codex", "DeepSeek Harness", "OpenCode", "Cherry Studio", "Qoder", "WorkBuddy"}
+	names := [...]string{"Claude Code", "Cursor", "CodeBuddy Code CLI", "ZCode", "TRAE", "VS Code", "Windsurf", "Codex", "DeepSeek Harness", "OpenCode", "Cherry Studio", "Qoder", "WorkBuddy", "Pi Coding Agent"}
 	var options [aiMCPClientCount]components.SelectItem
 	for index, name := range names {
 		options[index] = components.SelectItem{ID: aiMCPClientID(aiMCPClient(index)), Label: name}

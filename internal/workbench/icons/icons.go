@@ -9,6 +9,9 @@
 // `viva icons`; no SVG parser links into the app.
 // The sftp-* action glyphs were supplied with the SFTP interface design and
 // normalized to use the application's theme tint.
+// The session-log glyph is Lucide's file-clock, pinned from lucide-static v0.469.0
+// (https://raw.githubusercontent.com/lucide-icons/lucide/0.469.0/icons/file-clock.svg).
+// It is ISC licensed like the other Lucide icons above.
 
 package icons
 
@@ -2517,6 +2520,37 @@ var File = ui.Icon{
 		ui.LineTo(14.0, 6.0),
 		ui.CubicTo(14.0, 7.10457, 14.8954, 8.0, 16.0, 8.0),
 		ui.LineTo(20.0, 8.0),
+	},
+}
+
+// file-clock is a compiled vector icon.
+var FileClock = ui.Icon{
+	ViewBox: 24.0,
+	Stroke:  2.0,
+	Cap:     ui.CapRound,
+	Join:    ui.JoinRound,
+	Commands: []ui.PathCommand{
+		ui.MoveTo(16.0, 22.0),
+		ui.LineTo(18.0, 22.0),
+		ui.CubicTo(19.1046, 22.0, 20.0, 21.1046, 20.0, 20.0),
+		ui.LineTo(20.0, 7.0),
+		ui.LineTo(15.0, 2.0),
+		ui.LineTo(6.0, 2.0),
+		ui.CubicTo(4.89543, 2.0, 4.0, 2.89543, 4.0, 4.0),
+		ui.LineTo(4.0, 7.0),
+		ui.MoveTo(14.0, 2.0),
+		ui.LineTo(14.0, 6.0),
+		ui.CubicTo(14.0, 7.10457, 14.8954, 8.0, 16.0, 8.0),
+		ui.LineTo(20.0, 8.0),
+		ui.MoveTo(14.0, 16.0),
+		ui.CubicTo(14.0, 19.3137, 11.3137, 22.0, 8.0, 22.0),
+		ui.CubicTo(4.68629, 22.0, 2.0, 19.3137, 2.0, 16.0),
+		ui.CubicTo(2.0, 12.6863, 4.68629, 10.0, 8.0, 10.0),
+		ui.CubicTo(11.3137, 10.0, 14.0, 12.6863, 14.0, 16.0),
+		ui.ClosePath(),
+		ui.MoveTo(9.5, 17.5),
+		ui.LineTo(8.0, 16.25),
+		ui.LineTo(8.0, 14.0),
 	},
 }
 
@@ -5780,7 +5814,8 @@ var MitPython = ui.Icon{
 			ui.LineTo(11.29, 6.54),
 			ui.CubicTo(11.68, 6.54, 12.0, 7.11, 12.0, 7.5),
 			ui.LineTo(4.86, 7.5),
-			ui.CubicTo(3.28047, 7.5, 2.0, 8.78047, 2.0, 10.36),
+			ui.CubicTo(4.10148, 7.5, 3.37403, 7.80132, 2.83767, 8.33767),
+			ui.CubicTo(2.30132, 8.87403, 2.0, 9.60148, 2.0, 10.36),
 			ui.LineTo(2.0, 14.141),
 			ui.CubicTo(2.0, 15.7205, 3.28047, 17.001, 4.86, 17.001),
 			ui.LineTo(6.04, 17.001),

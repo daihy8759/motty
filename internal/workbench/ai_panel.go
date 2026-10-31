@@ -455,7 +455,7 @@ func (state *State) aiPanelClick(id ui.ID) bool {
 		}
 	case id == hitAITargetDismiss:
 		panel.targetOpen = false
-	case id.Scope() == hitAITargets:
+	case id.Scope() == hitAITargets || id.Scope() == hitAITargetTabs:
 		state.aiChooseTarget(id)
 	case id == hitAIToggle:
 		state.toggleAIPanel()

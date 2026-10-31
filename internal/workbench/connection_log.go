@@ -39,6 +39,9 @@ func (state *State) recordConnectionEvent(session *Session, kind connectionEvent
 	session.connectionStory = append(session.connectionStory, connectionEvent{
 		at: state.now(), kind: kind, attempt: session.reconnectAttempt, detail: cleanConnectionLogDetail(detail),
 	})
+	// The exported log keeps its free-text detail; the journal stores only the
+	// typed step, so a server error string can never reach the database.
+	state.journalConnectionEvent(session, kind)
 }
 
 func (state *State) recordConnectionStatus(session *Session, previous sshconn.Phase, status sshconn.Status) {

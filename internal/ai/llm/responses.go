@@ -145,7 +145,7 @@ func (p *openAIResponses) Stream(ctx context.Context, req Request) (<-chan Event
 	if err != nil {
 		return nil, err
 	}
-	return p.pump(ctx, resp.Body, &rsHandler{}), nil
+	return p.pump(ctx, resp.Body, &rsHandler{dsml: newDSMLFilter(len(req.Tools) > 0)}), nil
 }
 
 type rsOutItem struct {
@@ -199,6 +199,10 @@ type rsHandler struct {
 	byIndex map[int]*rsCall
 	sentAny bool
 	ev      rsEvent
+	// dsml recovers tool calls a provider wrote as text, and recovered says
+	// one was, so the stop reason can name the turn a tool turn.
+	dsml      dsmlFilter
+	recovered bool
 }
 
 // call returns the function call an event belongs to, creating it on first
@@ -256,11 +260,17 @@ func (h *rsHandler) finish(em *emitter, reason string, u *rsUsage) error {
 			return err
 		}
 	}
+	if err := h.flushText(em); err != nil {
+		return err
+	}
 	if reason == "" {
 		reason = "stop"
 		if h.sentAny {
 			reason = "tool_calls"
 		}
+	}
+	if h.recovered && reason == "stop" {
+		reason = "tool_calls"
 	}
 	var usage Usage
 	if u != nil {
@@ -277,7 +287,11 @@ func (h *rsHandler) event(ev sseEvent, em *emitter) (bool, error) {
 		return false, fmt.Errorf("llm: malformed stream chunk: %w", err)
 	}
 	switch e.Type {
-	case "response.output_text.delta", "response.refusal.delta":
+	case "response.output_text.delta":
+		if e.Delta != "" {
+			return false, h.text(e.Delta, em)
+		}
+	case "response.refusal.delta":
 		if e.Delta != "" {
 			return false, em.send(Event{Kind: EventText, Text: e.Delta})
 		}
@@ -362,6 +376,40 @@ func orRaw(raw json.RawMessage, text string) json.RawMessage {
 	}
 	quoted, _ := json.Marshal(text)
 	return quoted
+}
+
+// text publishes one output delta after the DSML filter has taken the markup
+// out of it.
+func (h *rsHandler) text(delta string, em *emitter) error {
+	text, calls, err := h.dsml.push(delta)
+	if err != nil {
+		return err
+	}
+	return h.emitText(text, calls, em)
+}
+
+// flushText publishes what the filter still holds when the response is done.
+func (h *rsHandler) flushText(em *emitter) error {
+	text, calls, err := h.dsml.flush()
+	if err != nil {
+		return err
+	}
+	return h.emitText(text, calls, em)
+}
+
+func (h *rsHandler) emitText(text string, calls []ToolCall, em *emitter) error {
+	if text != "" {
+		if err := em.send(Event{Kind: EventText, Text: text}); err != nil {
+			return err
+		}
+	}
+	for i := range calls {
+		h.recovered = true
+		if err := em.send(Event{Kind: EventToolCall, ToolCall: &calls[i]}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *rsHandler) eof(em *emitter) error {

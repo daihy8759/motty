@@ -48,11 +48,11 @@ func TestAITargetLocksDuringRequestAndSurvivesTabSwitch(t *testing.T) {
 	first, second := state.sessions[0].ID, state.sessions[1].ID
 	state.sessions[0].term.write([]byte("TARGET_A_ONLY"))
 	state.sessions[1].term.write([]byte("TARGET_B_ONLY"))
-	state.aiChooseTarget(hitAITargets.At(int(first)))
+	state.aiChooseOnlyTarget(hitAITargets.At(int(first)))
 	ask(state, "read this terminal", agent.ModeAgent)
 	pumpUntil(t, state, "model start", func() bool { return len(started) > 0 })
 	state.activeSessionID = second
-	if state.aiChooseTarget(hitAITargets.At(int(second))) {
+	if state.aiChooseOnlyTarget(hitAITargets.At(int(second))) {
 		t.Fatal("changed the target of a running request")
 	}
 	close(release)
@@ -98,11 +98,11 @@ func TestAITargetHomeAndSelectionDoNotNavigate(t *testing.T) {
 	if state.aiTarget().ID != "" {
 		t.Fatal("home silently targeted a background connection")
 	}
-	state.aiChooseTarget(hitAITargets.At(int(state.sessions[0].ID)))
+	state.aiChooseOnlyTarget(hitAITargets.At(int(state.sessions[0].ID)))
 	if state.activeSection != sectionHosts || state.activeSessionID != active {
 		t.Fatal("choosing target navigated away")
 	}
-	state.aiChooseTarget(hitAITargets.At(0))
+	state.aiChooseOnlyTarget(hitAITargets.At(0))
 	ask(state, "general question", agent.ModeAsk)
 	pumpUntil(t, state, "general answer", func() bool { return state.ai.run == nil })
 	if state.aiTarget().ID != "" {
@@ -114,7 +114,7 @@ func TestAIReferencesDoNotChangeTheDefaultTarget(t *testing.T) {
 	state := targetTestWorld(t, quietModel{"ok"})
 	first, second := &state.sessions[0], &state.sessions[1]
 	second.term.write([]byte("REFERENCE_B_ONLY"))
-	state.aiChooseTarget(hitAITargets.At(int(first.ID)))
+	state.aiChooseOnlyTarget(hitAITargets.At(int(first.ID)))
 	context := state.aiMentionContext("@"+mentionSlug(second.Title), 0)
 	if !strings.Contains(context, "REFERENCE_B_ONLY") {
 		t.Fatal("cross-session reference stopped working")
@@ -163,7 +163,7 @@ func TestAITargetApprovalUsesOriginalConnection(t *testing.T) {
 			state := targetTestWorld(t, model)
 			first, second := &state.sessions[0], &state.sessions[1]
 			shellA, shellB := first.term.shell.(*fakeShell), second.term.shell.(*fakeShell)
-			state.aiChooseTarget(hitAITargets.At(int(first.ID)))
+			state.aiChooseOnlyTarget(hitAITargets.At(int(first.ID)))
 			ask(state, "create the test file", agent.ModeAgent)
 			pumpUntil(t, state, "approval", func() bool { return len(state.ai.approvals) == 1 })
 			request := state.ai.approvals[0].request
@@ -209,6 +209,10 @@ func TestAITargetSelectLayoutAndKeyboard(t *testing.T) {
 		canvas, _ = paintAt(state, size)
 		panelHit(t, canvas, hitAITargets.At(int(state.sessions[0].ID)))
 		state.Click(hitAITargets.At(int(state.sessions[0].ID)))
+		if !state.ai.panel.targetOpen {
+			t.Fatal("ticking a connection closed the list, so a second one could not be ticked")
+		}
+		state.Click(hitAITargetDismiss)
 		if state.ai.panel.targetOpen {
 			t.Fatal("select did not close")
 		}

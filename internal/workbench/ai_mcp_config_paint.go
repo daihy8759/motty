@@ -135,6 +135,8 @@ func (state *State) paintAIMCPConfig(page *settingsPage, endpoint string, ready 
 		hint = m.MCPQoderHint
 	case aiMCPWorkBuddy:
 		hint = m.MCPWorkBuddyHint
+	case aiMCPPi:
+		hint = m.MCPPiHint
 	}
 	preview := endpoint // The off / not-running state, not a runnable example.
 	if ready {

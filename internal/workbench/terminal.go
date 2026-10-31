@@ -14,6 +14,7 @@ import (
 	"motty/internal/autofill"
 	"motty/internal/cmdhistory"
 	"motty/internal/i18n"
+	"motty/internal/sessionlog"
 	"motty/internal/sshconn"
 	"motty/internal/term"
 	layoutcore "motty/internal/workspace"
@@ -112,6 +113,11 @@ type terminal struct {
 	sync    *terminalSync
 	syncBuf terminalSync
 	syncAt  time.Duration
+	// login is the command this shell still has to be given after login; see
+	// login_command.go. integrated says the shell was started with Motty's
+	// prompt reporting, which will announce when it is ready.
+	login      loginCommand
+	integrated bool
 	// prediction draws typed text before the server echoes it; see terminalPrediction.
 	prediction terminalPrediction
 	// autofill is what the autofill rules need to know of this terminal.
@@ -557,6 +563,7 @@ func (state *State) openShell(session *Session) {
 	config.IntegrateShell = session.isLocal() || (session.host.isSSH() && session.host.System != sshconn.SystemWindows &&
 		session.containerCommand == "" && (!state.sftpFollowOff || state.sftpTerminalFollow))
 	config.IntegrationToken = t.folderToken
+	t.integrated = config.IntegrateShell
 	if session.host.ForwardX11 && session.host.isSSH() {
 		environ := x11fwd.CurrentEnviron()
 		config.X11 = &environ
@@ -649,11 +656,17 @@ func (state *State) shellOpened(session *Session, shell Shell, err error) {
 		session.tone = toneFail
 		session.err, session.shellFailed = err, true
 		session.finished = state.now()
+		// The transport is up but no usable shell came out of it: the session
+		// never became usable, and the journal says so without the error text.
+		state.submitSessionLogEvent(session, sessionlog.EventShellFailed, 0)
+		state.finishSessionLog(session, sessionlog.StatusFailed, sessionlog.ReasonShellFailed)
 		state.describe(session)
 		return
 	}
 	t.shell = shell
 	t.shellOpened = state.now()
+	state.submitSessionLogEvent(session, sessionlog.EventShellOpened, 0)
+	session.logStatus = sessionlog.StatusActive
 	// Only now may the optional SFTP panel open its subsystem: opening it before
 	// or beside the shell gives a single-session server a second session and
 	// tears the transport down. The shell is always the first channel.
@@ -685,6 +698,9 @@ func (state *State) shellOpened(session *Session, shell Shell, err error) {
 		t.sendProtocol(reply)
 	})
 	state.startLoginExpect(session)
+	if session.host.isSSH() && session.containerCommand == "" && session.host.LoginCommand != "" {
+		t.login.arm(session.host.LoginCommand)
+	}
 	state.describe(session)
 }
 
@@ -752,6 +768,7 @@ func (state *State) pump(session *Session) {
 		if state.autofillRules.armed {
 			t.autofill.Output(state.now())
 		}
+		t.login.output(state.now())
 		state.goLive(session)
 	}
 	if session.loginExpect != nil {
@@ -1298,6 +1315,9 @@ func (state *State) scroll(event ui.ScrollEvent) ui.EventResult {
 	}
 	if state.activeSection == sectionHosts && state.modal == modalNone && state.hostsContent > 0 {
 		return state.scrollHosts(event)
+	}
+	if state.activeSection == sectionSessionLogs && state.modal == modalNone {
+		return state.scrollSessionLogs(event)
 	}
 	session, ok := state.sessionByIDPointer(state.activeSessionID)
 	if hovered := state.terminalOrBarSession(event.Target); hovered != nil {

@@ -51,6 +51,11 @@ func (state *State) devDeclareNavigation(f *flex.Frame) {
 	state.navigationItem(f, hitDebug, iconBug, state.messages.NavDebug, state.activeSection == sectionDebug, 4)
 }
 
+// devPlaysIconMotion reports whether id is the gallery's row. It is a sidebar
+// row like the others, so its icon moves when it is chosen; only the row itself
+// is missing from a release build.
+func devPlaysIconMotion(id ui.ID) bool { return id == hitDebug }
+
 // devClick opens the gallery from the sidebar and handles its controls.
 func (state *State) devClick(id ui.ID) bool {
 	if id == hitDebug {

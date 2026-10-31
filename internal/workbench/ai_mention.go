@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -109,7 +110,15 @@ func findMentions(message string, names []mentionName) []uint32 {
 // the one aiContext already sent.
 func (state *State) aiMentionContext(message string, skip uint32) string {
 	var scratch [8]mentionName
-	ids := findMentions(message, state.mentionNames(scratch[:0]))
+	ids := state.aiSelectedIDs()
+	if len(ids) > 0 {
+		ids = ids[1:] // the default's own text is aiContext's
+	}
+	for _, id := range findMentions(message, state.mentionNames(scratch[:0])) {
+		if !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
 	if len(ids) == 0 {
 		return ""
 	}

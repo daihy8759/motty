@@ -27,6 +27,7 @@ RACE_PACKAGES = \
 	./internal/scpclient \
 	./internal/selfupdate \
 	./internal/serial \
+	./internal/sessionlog \
 	./internal/sftpclient \
 	./internal/sshconn \
 	./internal/telnet \

@@ -42,6 +42,7 @@ func TestStandardImplementation(t *testing.T) {
 		"SSH-2.0-OpenSSH_for_Windows_9.5":        true,
 		"SSH-2.0-dropbear-ssh2022.83":            true,
 		"SSH-2.0-libssh_0.11.0":                  true,
+		"SSH-2.0-Tailscale":                      true,
 		"SSH-2.0-BHostSSH_7.0":                   false,
 		"SSH-2.0-SSHD_0.7.6":                     false,
 		"SSH-2.0-Erlang":                         false,

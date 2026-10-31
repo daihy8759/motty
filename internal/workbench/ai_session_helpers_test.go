@@ -43,9 +43,9 @@ func toolTurn(name, arguments string) []llm.Event {
 
 func textTurn(text string) []llm.Event { return []llm.Event{{Kind: llm.EventText, Text: text}} }
 
-// assistantTestSession is a live session with the assistant pointed at a scripted
-// model and a temporary database.
-func assistantTestSession(t *testing.T, model *scriptedModel) (*State, *fakeShell) {
+// assistantTestSession is a live session with the assistant pointed at a given
+// provider and a temporary database.
+func assistantTestSession(t *testing.T, model llm.Provider) (*State, *fakeShell) {
 	t.Helper()
 	world, options := newWorld(t)
 	options.Invalidate = func() {}

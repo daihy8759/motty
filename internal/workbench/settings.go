@@ -366,6 +366,12 @@ func (state *State) clickSettings(id ui.ID) bool {
 		}
 	case hitSettingsSSHSyncToggle, hitSettingsSSHSyncFile, hitSettingsSSHSyncReset, hitSettingsSSHSyncNow:
 		state.clickSSHSync(id)
+	case hitSessionLogsSettingsToggle:
+		changed = state.toggleSessionLogs()
+	case hitSessionLogsSettingsClear:
+		state.askClearSessionLogs(false)
+	case hitSessionLogsSettingsClearAll:
+		state.askClearSessionLogs(true)
 	default:
 		if state.clickAboutSettings(id) {
 			return true

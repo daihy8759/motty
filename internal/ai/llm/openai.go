@@ -191,7 +191,7 @@ func (p *openAI) Stream(ctx context.Context, req Request) (<-chan Event, error) 
 	if err != nil {
 		return nil, err
 	}
-	return p.pump(ctx, resp.Body, &oaHandler{}), nil
+	return p.pump(ctx, resp.Body, &oaHandler{dsml: newDSMLFilter(len(req.Tools) > 0)}), nil
 }
 
 func (p *openAI) Models(ctx context.Context) ([]string, error) {
@@ -283,6 +283,10 @@ type oaHandler struct {
 	finished bool
 	stop     string
 	usage    Usage
+	// dsml recovers tool calls a provider wrote as text, and recovered says
+	// one was, so the stop reason can name the turn a tool turn.
+	dsml      dsmlFilter
+	recovered bool
 	// chunk is reused between events. Strings and tool calls still allocate
 	// inside it; this only saves rebuilding the outer struct and the choices
 	// slice for every token.
@@ -348,7 +352,47 @@ func (h *oaHandler) finish(em *emitter) error {
 	if err := h.flushTools(em); err != nil {
 		return err
 	}
+	if err := h.flushText(em); err != nil {
+		return err
+	}
+	if h.recovered && (h.stop == "" || h.stop == "stop") {
+		h.stop = "tool_calls"
+	}
 	return em.send(Event{Kind: EventDone, Usage: h.usage, StopReason: h.stop})
+}
+
+// text publishes one content delta after the DSML filter has taken the
+// markup out of it.
+func (h *oaHandler) text(delta string, em *emitter) error {
+	text, calls, err := h.dsml.push(delta)
+	if err != nil {
+		return err
+	}
+	return h.emitText(text, calls, em)
+}
+
+// flushText publishes what the filter still holds when the model has finished.
+func (h *oaHandler) flushText(em *emitter) error {
+	text, calls, err := h.dsml.flush()
+	if err != nil {
+		return err
+	}
+	return h.emitText(text, calls, em)
+}
+
+func (h *oaHandler) emitText(text string, calls []ToolCall, em *emitter) error {
+	if text != "" {
+		if err := em.send(Event{Kind: EventText, Text: text}); err != nil {
+			return err
+		}
+	}
+	for i := range calls {
+		h.recovered = true
+		if err := em.send(Event{Kind: EventToolCall, ToolCall: &calls[i]}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *oaHandler) event(ev sseEvent, em *emitter) (bool, error) {
@@ -392,7 +436,7 @@ func (h *oaHandler) event(ev sseEvent, em *emitter) (bool, error) {
 		}
 	}
 	if ch.Delta.Content != "" {
-		if err := em.send(Event{Kind: EventText, Text: ch.Delta.Content}); err != nil {
+		if err := h.text(ch.Delta.Content, em); err != nil {
 			return false, err
 		}
 	}

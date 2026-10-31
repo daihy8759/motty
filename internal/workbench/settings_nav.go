@@ -163,7 +163,7 @@ func (page *settingsPage) navEntry(id ui.ID, icon uint8, label string, active bo
 	entry := f.Row().Height(settingsNavEntryHeight).Shrink(0).MarginX(12).PadSides(0, 8, 0, 12).Gap(12).Items(flex.Center).Radius(radius.control).Background(background)
 	page.hitOn(entry, id, label, ui.HitOptions{Role: ui.RoleMenuItem, Selected: active})
 	entry.Children(func() {
-		f.Icon(lucideIcons[icon]).Color(foreground)
+		f.Icon(lucideIcons[icon]).IconTransform(page.state.iconMotion(f.Canvas(), id, icon)).Color(foreground)
 		f.Text(label).FontSize(metrics.FontSizeM).Weight(ui.WeightMedium).Color(foreground).LineHeight(22).Grow(1)
 	})
 }

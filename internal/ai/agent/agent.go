@@ -49,6 +49,9 @@ type Event struct {
 	Result gate.Result
 	Step   int // 1-based model turn the event belongs to
 	Usage  llm.Usage
+	// StopReason is why the provider ended the turn EventDone reports, such as
+	// "stop", "length" or "tool_calls".
+	StopReason string
 }
 
 // Config configures one Run.
@@ -248,7 +251,7 @@ func Run(ctx context.Context, cfg Config, history []llm.Message, userText string
 		default:
 			req.Tools = specs
 		}
-		text, calls, u, err := stream(ctx, cfg.Provider, req, turn, emit)
+		text, calls, u, stop, err := stream(ctx, cfg.Provider, req, turn, emit)
 		usage = usage.Add(u)
 		if ctx.Err() != nil {
 			return newMsgs(), ctx.Err()
@@ -272,12 +275,26 @@ func Run(ctx context.Context, cfg Config, history []llm.Message, userText string
 				emit(Event{Kind: EventAgentModeRequest, Call: *escalation, Step: turn, Usage: usage})
 				return newMsgs(), nil
 			}
+			// A call to anything else cannot run, and with no prose beside it
+			// the turn would end on nothing the user can read.
+			if len(calls) > 0 && strings.TrimSpace(text) == "" {
+				err := fmt.Errorf("agent: the model called %q, which this mode does not offer", calls[0].Name)
+				emit(Event{Kind: EventError, Text: err.Error(), Step: turn, Usage: usage})
+				return newMsgs(), err
+			}
 			calls = nil // nothing else was offered, so nothing is run
 		}
 		if final || len(calls) == 0 {
+			// A turn with no prose and no calls is never a real answer: say so
+			// instead of ending on an empty bubble.
+			if strings.TrimSpace(text) == "" {
+				err := errors.New("agent: the model returned an empty answer")
+				emit(Event{Kind: EventError, Text: err.Error(), Step: turn, Usage: usage})
+				return newMsgs(), err
+			}
 			msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Text: text})
 			safe = len(msgs)
-			emit(Event{Kind: EventDone, Step: turn, Usage: usage})
+			emit(Event{Kind: EventDone, Step: turn, Usage: usage, StopReason: stop})
 			return newMsgs(), nil
 		}
 		toolSteps++
@@ -353,7 +370,7 @@ func fail(emit func(Event), _ []llm.Message, step int, u llm.Usage, err error) (
 }
 
 // stream runs one model turn. On context cancellation it returns promptly.
-func stream(ctx context.Context, p llm.Provider, req llm.Request, turn int, emit func(Event)) (string, []llm.ToolCall, llm.Usage, error) {
+func stream(ctx context.Context, p llm.Provider, req llm.Request, turn int, emit func(Event)) (string, []llm.ToolCall, llm.Usage, string, error) {
 	var (
 		sb    strings.Builder
 		calls []llm.ToolCall
@@ -361,15 +378,15 @@ func stream(ctx context.Context, p llm.Provider, req llm.Request, turn int, emit
 	)
 	ch, err := p.Stream(ctx, req)
 	if err != nil {
-		return "", nil, usage, err
+		return "", nil, usage, "", err
 	}
 	for {
 		select {
 		case <-ctx.Done():
-			return "", nil, usage, ctx.Err()
+			return "", nil, usage, "", ctx.Err()
 		case ev, ok := <-ch:
 			if !ok {
-				return "", nil, usage, errors.New("agent: the model stream ended unexpectedly")
+				return "", nil, usage, "", errors.New("agent: the model stream ended unexpectedly")
 			}
 			switch ev.Kind {
 			case llm.EventText:
@@ -383,12 +400,12 @@ func stream(ctx context.Context, p llm.Provider, req llm.Request, turn int, emit
 				}
 			case llm.EventDone:
 				usage = ev.Usage
-				return sb.String(), calls, usage, nil
+				return sb.String(), calls, usage, ev.StopReason, nil
 			case llm.EventError:
 				if ev.Err == nil {
-					return "", nil, usage, errors.New("agent: model error")
+					return "", nil, usage, "", errors.New("agent: model error")
 				}
-				return "", nil, usage, ev.Err
+				return "", nil, usage, "", ev.Err
 			}
 		}
 	}

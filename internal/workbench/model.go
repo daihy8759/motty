@@ -5,6 +5,7 @@ import (
 
 	"motty/internal/loginexpect"
 	"motty/internal/serial"
+	"motty/internal/sessionlog"
 	"motty/internal/sshconn"
 )
 
@@ -43,6 +44,9 @@ type Host struct {
 	// NoHistory keeps what is typed in this host's terminals out of the command
 	// history, whatever the global switch says.
 	NoHistory bool
+	// LoginCommand is typed into each new shell of an SSH host once it is ready
+	// for input, as the user would type it. One line, empty for none.
+	LoginCommand string
 	// tunnel marks the ephemeral host of a .xsh bastion tunnel opened on this
 	// computer. It is never saved, so only that launch gets the relaxed policy.
 	tunnel bool
@@ -205,6 +209,16 @@ type Session struct {
 	reconnectText      string
 	reconnectSecond    int64
 	connectionStory    []connectionEvent
+
+	// logRecordID is the stable identifier of this tab's row in the session
+	// journal. It is a random value, not the integer session ID: a tab keeps it
+	// when it moves between panes or windows, and session IDs may be reused.
+	// logStatus is what this window believes the row says, so a final status is
+	// written once even though several close paths can reach it.
+	logRecordID string
+	logStatus   sessionlog.Status
+	logFinished bool
+	logBarrier  <-chan struct{} // earlier window's writes must land before this tab's writes
 
 	// keptAfterShell: the shell ended but the file panel or window still uses the
 	// connection, which closes with the last of them.

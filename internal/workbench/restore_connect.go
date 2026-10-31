@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"github.com/vivaui/viva/ui"
+	"motty/internal/sessionlog"
 	"motty/internal/sshconn"
 )
 
@@ -105,6 +106,9 @@ func (state *State) abandonRestoredConnect(session *Session) {
 	if session.conn != nil {
 		session.conn.Cancel()
 	}
+	// No PhaseClosed is applied after this: the tab goes back to its page with
+	// the connection dropped, so its row is closed here as a canceled attempt.
+	state.finishSessionLog(session, sessionlog.StatusEnded, sessionlog.ReasonCanceled)
 	if state.modalSession == session.ID && (state.modal == modalHostKey || state.modal == modalKeyPassphrase || state.modal == modalPassword) {
 		state.closeModal()
 	}

@@ -18,6 +18,8 @@ type devState struct{}
 
 func (state *State) devDeclareNavigation(*flex.Frame) {}
 
+func devPlaysIconMotion(ui.ID) bool { return false }
+
 func (state *State) devClick(ui.ID) bool { return false }
 
 func (state *State) devBeginPaint() {}

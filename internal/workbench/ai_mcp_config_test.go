@@ -27,6 +27,7 @@ func TestMCPClientConfigurationSchemas(t *testing.T) {
 		{aiMCPCherry, []string{"mcpServers", "motty"}, "baseUrl", "streamableHttp"},
 		{aiMCPQoder, []string{"mcpServers", "motty"}, "url", "http"},
 		{aiMCPWorkBuddy, []string{"mcpServers", "motty"}, "url", "http"},
+		{aiMCPPi, []string{"mcpServers", "motty"}, "url", ""},
 	} {
 		t.Run(aiMCPClientOptions()[tc.client].Label, func(t *testing.T) {
 			var config map[string]any
@@ -97,7 +98,7 @@ func TestMCPPreviewHeaderMatchesThePayload(t *testing.T) {
 }
 
 func TestMCPClientSelectAndCompleteCatalog(t *testing.T) {
-	want := []string{"Claude Code", "Cursor", "CodeBuddy Code CLI", "ZCode", "TRAE", "VS Code", "Windsurf", "Codex", "DeepSeek Harness", "OpenCode", "Cherry Studio", "Qoder", "WorkBuddy"}
+	want := []string{"Claude Code", "Cursor", "CodeBuddy Code CLI", "ZCode", "TRAE", "VS Code", "Windsurf", "Codex", "DeepSeek Harness", "OpenCode", "Cherry Studio", "Qoder", "WorkBuddy", "Pi Coding Agent"}
 	tabs := aiMCPClientOptions()
 	var got []string
 	for _, tab := range tabs {
@@ -177,8 +178,8 @@ func TestMCPClientSelectCopyAndKeyboard(t *testing.T) {
 	world.paint()
 	result = state.Key(ui.KeyEvent{Key: ui.KeyEnd, Target: hitAISetMCPCursor})
 	state.Click(result.Focus)
-	if state.ai.cfg.mcpClient != aiMCPWorkBuddy || state.ai.cfg.copied != aiCopyIdle {
-		t.Fatal("End did not select WorkBuddy and reset copy feedback")
+	if state.ai.cfg.mcpClient != aiMCPPi || state.ai.cfg.copied != aiCopyIdle {
+		t.Fatal("End did not select Pi Coding Agent and reset copy feedback")
 	}
 	state.Click(hitAISetMCPCopy)
 	state.Click(hitAISetMCPCodex)
@@ -267,7 +268,8 @@ func TestMCPCopyWarnsThatTheTokenMustNotBeCommitted(t *testing.T) {
 		state.selectSettingsCategory(settingsMCP)
 		m := state.messages.AISettings
 		if !strings.Contains(m.MCPPreviewHint, test.warning) || !strings.Contains(m.MCPCursorHint, test.user) ||
-			!strings.Contains(m.MCPVSCodeHint, test.user) || !strings.Contains(m.MCPOpenCodeHint, test.user) {
+			!strings.Contains(m.MCPVSCodeHint, test.user) || !strings.Contains(m.MCPOpenCodeHint, test.user) ||
+			!strings.Contains(m.MCPPiHint, test.user) {
 			t.Fatalf("%s hints do not keep the token out of committed files: %+v", test.language, m)
 		}
 	}
@@ -295,7 +297,7 @@ func TestMCPClientSelectShortWindow(t *testing.T) {
 		t.Fatal("short list needs a scrollbar")
 	}
 	result := state.Key(ui.KeyEvent{Target: hitAISetMCPSelect, Key: ui.KeyEnd})
-	last := aiMCPClientID(aiMCPWorkBuddy)
+	last := aiMCPClientID(aiMCPPi)
 	if !result.Handled || result.Focus != last {
 		t.Fatalf("End: %+v", result)
 	}
@@ -309,7 +311,7 @@ func TestMCPClientSelectShortWindow(t *testing.T) {
 	}
 	state.Click(last)
 	paint()
-	if state.ai.cfg.mcpSelectOpen || state.ai.cfg.mcpClient != aiMCPWorkBuddy {
+	if state.ai.cfg.mcpSelectOpen || state.ai.cfg.mcpClient != aiMCPPi {
 		t.Fatal("choice did not close and update the select")
 	}
 	if result := state.Key(ui.KeyEvent{Target: hitAISetMCPSelect, Text: "z"}); !result.Handled || state.ai.cfg.mcpClient != aiMCPZCode {

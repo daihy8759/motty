@@ -611,3 +611,47 @@ func TestRunSumsCacheUsageAcrossTurns(t *testing.T) {
 		t.Fatalf("usage = %+v, want %+v", u, want)
 	}
 }
+
+// A turn with no prose and no tool calls used to end as if the model had
+// answered; the panel showed an empty bubble and nothing else.
+func TestEmptyAnswerIsAnError(t *testing.T) {
+	p := &fakeProvider{turns: []turn{{events: []llm.Event{done(3, 0)}}}}
+	var last Event
+	_, err := Run(context.Background(), Config{Provider: p, Model: "m", Mode: ModeAgent,
+		Gate: gate.Gate{Policy: risk.Policy{Enabled: false}}}, nil, "hi", func(ev Event) { last = ev })
+	if err == nil {
+		t.Fatal("an empty answer passed as a finished turn")
+	}
+	if last.Kind != EventError {
+		t.Fatalf("the caller was not told: %+v", last)
+	}
+}
+
+// Ask mode offers only the escalation tool; a call to anything else cannot run,
+// and with no prose beside it the turn has nothing to show.
+func TestAskModeDroppedCallIsAnError(t *testing.T) {
+	p := &fakeProvider{turns: []turn{{events: []llm.Event{call("c1", "terminal_exec", `{"command":"uptime"}`), done(3, 0)}}}}
+	_, err := Run(context.Background(), Config{Provider: p, Model: "m", Mode: ModeAsk,
+		Gate: gate.Gate{Policy: risk.Policy{Enabled: false}}}, nil, "run uptime", nil)
+	if err == nil || !strings.Contains(err.Error(), "terminal_exec") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// The panel tells a cut-off answer apart from a finished one by this reason.
+func TestDoneCarriesTheStopReason(t *testing.T) {
+	p := &fakeProvider{turns: []turn{{events: []llm.Event{text("half an answer"), {Kind: llm.EventDone, StopReason: "length"}}}}}
+	var done Event
+	_, err := Run(context.Background(), Config{Provider: p, Model: "m", Mode: ModeAgent,
+		Gate: gate.Gate{Policy: risk.Policy{Enabled: false}}}, nil, "hi", func(ev Event) {
+		if ev.Kind == EventDone {
+			done = ev
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.StopReason != "length" {
+		t.Fatalf("stop reason = %q", done.StopReason)
+	}
+}

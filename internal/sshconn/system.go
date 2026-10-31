@@ -93,11 +93,14 @@ const remoteSystemCommand = `printf 'kernel=%s\n' "$(uname -s 2>/dev/null)"; if 
 // integration probes, which open a second session, and the locale environment
 // request. A gateway may answer any of those by ending the whole connection,
 // so an unrecognized banner only gets the pty and shell its menu needs.
+// Tailscale SSH is a full server of its own, not a menu gateway: it names
+// itself "Tailscale" and answers command channels like the servers above.
 func standardImplementation(banner string) bool {
 	banner = strings.ToLower(banner)
 	return strings.Contains(banner, "openssh") ||
 		strings.Contains(banner, "dropbear") ||
-		strings.Contains(banner, "libssh")
+		strings.Contains(banner, "libssh") ||
+		strings.Contains(banner, "tailscale")
 }
 
 // networkApplianceBanner reports SSH servers that are really the management CLI

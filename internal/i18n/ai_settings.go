@@ -215,6 +215,7 @@ type AISettingsMessages struct {
 	MCPCodeBuddyHint   string
 	MCPDeepSeekHint    string
 	MCPOpenCodeHint    string
+	MCPPiHint          string
 	MCPQoderHint       string
 	MCPTraeHint        string
 	MCPVSCodeHint      string

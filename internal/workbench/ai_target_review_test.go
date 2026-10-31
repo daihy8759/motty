@@ -25,7 +25,7 @@ func TestAIApprovalUsesTheDialedAddressAfterSavedHostEdits(t *testing.T) {
 	if b.Address != dialed || aiSessionInfo(b).Address != dialed || b.host != updated {
 		t.Fatal("editing the next dial relabelled the live transport")
 	}
-	state.aiChooseTarget(hitAITargets.At(int(a.ID)))
+	state.aiChooseOnlyTarget(hitAITargets.At(int(a.ID)))
 	ask(state, "请在@"+mentionSlug(b.Title)+" 执行 hostname", agent.ModeAgent)
 	pumpUntil(t, state, "B approval", func() bool { return len(state.ai.approvals) == 1 })
 	request := state.ai.approvals[0].request

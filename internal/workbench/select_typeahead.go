@@ -63,7 +63,7 @@ func (state *State) selectTypeaheadOptions(target ui.ID) ([]components.MenuTypea
 		for _, option := range options {
 			items = append(items, components.MenuTypeaheadItem{ID: option.ID, Label: option.Label, Disabled: option.Disabled})
 		}
-		return items, state.aiChooseTarget, true
+		return items, state.aiChooseOnlyTarget, true
 	case state.aiSettingsVisible() && state.settingsCategory == settingsMCP && target == hitAISetMCPSelect && !state.ai.cfg.mcpSelectOpen:
 		options := aiMCPClientOptions()
 		items := make([]components.MenuTypeaheadItem, 0, len(options))

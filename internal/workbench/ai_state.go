@@ -78,6 +78,7 @@ type aiAnswer struct {
 // aiRun is one request to the model in flight.
 type aiRun struct {
 	target     gate.SessionInfo
+	extras     []gate.SessionInfo
 	targetKey  string
 	cancel     context.CancelFunc
 	providerID string
@@ -117,10 +118,13 @@ func defaultAISettings() aiSettings {
 type aiState struct {
 	targetNamespace string // distinguishes stored context across window lifetimes
 	target          gate.SessionInfo
-	targetSet       bool // false only while a new conversation follows the visible terminal
-	inbox           *aiInbox
-	drained         []func(*State)
-	backend         *aiBackend
+	// extras are the other connections ticked in the selector. They go with every
+	// question the way @references do, and are only meaningful beside a target.
+	extras    []gate.SessionInfo
+	targetSet bool // false only while a new conversation follows the visible terminal
+	inbox     *aiInbox
+	drained   []func(*State)
+	backend   *aiBackend
 
 	open bool
 	mode agent.Mode
@@ -605,6 +609,11 @@ func (state *State) aiSessionSummary(references ...gate.SessionInfo) string {
 		if reference.ID == target.ID {
 			continue
 		}
+		if slices.ContainsFunc(state.ai.extras, func(have gate.SessionInfo) bool { return have.ID == reference.ID }) {
+			fmt.Fprintf(&b, "session %s: %s (%s) [selected by the user alongside the default, like an @%s reference; ready=%t]\n",
+				reference.ID, reference.Title, reference.Address, mentionSlug(reference.Title), reference.Ready)
+			continue
+		}
 		fmt.Fprintf(&b, "session %s: %s (%s) [explicit @%s reference; ready=%t]\n",
 			reference.ID, reference.Title, reference.Address, mentionSlug(reference.Title), reference.Ready)
 	}
@@ -618,7 +627,7 @@ func (state *State) aiNoSessionNote(references ...gate.SessionInfo) string {
 		return ""
 	}
 	if len(references) > 0 {
-		return "\n\nNo ready default connection is selected. Explicit @references listed above may still be used by their exact session IDs when the user asks for operations on them. Never fall back to the active tab."
+		return "\n\nNo ready default connection is selected. Selected connections and explicit @references listed above may still be used by their exact session IDs when the user asks for operations on them. Never fall back to the active tab."
 	}
 	return "\n\nNo target connection is selected. No session tools are available. Answer from general knowledge or explicitly attached context. Ask the user to select a target connection for operations."
 }
@@ -669,13 +678,14 @@ func (state *State) aiSend() {
 		return
 	}
 	target := state.aiTarget()
+	extras := state.aiExtraTargets()
 	references := state.aiRequestReferences(question)
 	backend, err := state.aiTargetBackend(target, references...)
 	if err != nil {
 		ai.notice = state.messages.AIPanel.TargetUnavailable
 		return
 	}
-	ai.target, ai.targetSet = target, true
+	ai.target, ai.extras, ai.targetSet = target, extras, true
 	provider, ready := state.aiKeyedProvider(provider, state.aiSend)
 	if !ready {
 		return // keep both the question and target while the vault is unlocked
@@ -698,10 +708,13 @@ func (state *State) aiSend() {
 			ai.targetNamespace = rand.Text()
 		}
 		targetKey = ai.targetNamespace + ":" + target.ID
+		for _, extra := range extras {
+			targetKey += "," + extra.ID
+		}
 	}
 	if !retry {
 		state.dropEscalationApprovals()
-		state.aiAppendQuestion(question, targetKey, state.aiConversationTargetLabel(target))
+		state.aiAppendQuestion(question, targetKey, state.aiConversationTargetLabel(target, extras...))
 		ai.items[len(ai.items)-1].attachments = refs
 	}
 	ai.scroll.ScrollToEnd()
@@ -738,9 +751,9 @@ func (state *State) aiSend() {
 	}
 	config.Gate.References = references
 	config.Gate.Backend = backend
-	config.System += "\n\nConnection routing for this request: the selected primary connection is the locked default. Omitted session arguments ALWAYS resolve to that default, never to the active tab or a referenced session. Only that default and the explicit @references listed above are available to tools for this question. A reference by itself attaches context, not an instruction to act: when the user only asks to compare or analyze the attached text, answer from it. When the user explicitly asks to inspect, run a command, or modify files on an @referenced connection, use its exact session ID in the tool arguments; do NOT ask them to switch the primary selector. Cross-connection execution and writes require approval showing the actual target. For a request covering several explicitly named connections, use the specified IDs; never include an unmentioned connection from history or list_sessions. Changing tabs does not change any of these bindings."
+	config.System += "\n\nConnection routing for this request: the selected primary connection is the locked default. Omitted session arguments ALWAYS resolve to that default, never to the active tab or a referenced session. Only that default, the other connections the user selected and the explicit @references listed above are available to tools for this question. A reference by itself attaches context, not an instruction to act: when the user only asks to compare or analyze the attached text, answer from it. When the user explicitly asks to inspect, run a command, or modify files on an @referenced connection, use its exact session ID in the tool arguments; do NOT ask them to switch the primary selector. Cross-connection execution and writes require approval showing the actual target. For a request covering several explicitly named connections, use the specified IDs; never include an unmentioned connection from history or list_sessions. Changing tabs does not change any of these bindings."
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &aiRun{cancel: cancel, open: -1, providerID: provider.ID, target: target, targetKey: targetKey, attachments: refs}
+	run := &aiRun{cancel: cancel, open: -1, providerID: provider.ID, target: target, extras: extras, targetKey: targetKey, attachments: refs}
 	ai.run = run
 	ai.panel.autoMenu = false // the scope is fixed while the request runs
 	if backend.defaultDone != nil && len(backend.bindings) == 1 {
@@ -856,6 +869,10 @@ func (state *State) aiEvent(run *aiRun, event agent.Event) {
 	case agent.EventDone:
 		ai.lastUsage = event.Usage
 		ai.totalUsage = ai.totalUsage.Add(event.Usage)
+		if llm.StopsAtLimit(event.StopReason) {
+			// Half an answer must not look like the whole of it.
+			ai.items = append(ai.items, aiItem{kind: aiNotice, text: state.messages.AIPanel.AnswerTruncated})
+		}
 	case agent.EventError:
 		ai.items = append(ai.items, aiItem{kind: aiNotice, text: errorText(event.Text)})
 	}
@@ -920,10 +937,10 @@ func (state *State) aiFinished(run *aiRun, messages []llm.Message, err error) {
 		}
 	}
 	ai.history = append(ai.history, messages...)
-	state.aiPersist(messages, run.target, run.targetKey, run.attachments)
+	state.aiPersist(messages, run.target, run.extras, run.targetKey, run.attachments)
 }
 
-func (state *State) aiPersist(messages []llm.Message, target gate.SessionInfo, key string, attachments []aiAttachmentRef) {
+func (state *State) aiPersist(messages []llm.Message, target gate.SessionInfo, extras []gate.SessionInfo, key string, attachments []aiAttachmentRef) {
 	ai := &state.ai
 	if !ai.settings.keepHistory || ai.store == nil || len(messages) == 0 {
 		return
@@ -937,6 +954,9 @@ func (state *State) aiPersist(messages []llm.Message, target gate.SessionInfo, k
 			title = string(r[:40])
 		}
 		label := target.Title
+		for _, extra := range extras {
+			label += ", " + extra.Title
+		}
 		conversation, err := ai.store.CreateConversation(strings.TrimSpace(title), label)
 		if err != nil {
 			return
@@ -948,7 +968,7 @@ func (state *State) aiPersist(messages []llm.Message, target gate.SessionInfo, k
 		if message.Role == llm.RoleUser || len(message.ToolCalls) > 0 {
 			var metadata storedTools
 			_ = json.Unmarshal(stored.ToolJSON, &metadata)
-			metadata.TargetLabel = state.aiConversationTargetLabel(target)
+			metadata.TargetLabel = state.aiConversationTargetLabel(target, extras...)
 			metadata.TargetKey = key
 			if message.Role == llm.RoleUser {
 				metadata.Attachments = attachments
@@ -995,7 +1015,7 @@ func (state *State) aiNewConversation() {
 	if ai.run != nil {
 		return
 	}
-	ai.target, ai.targetSet = gate.SessionInfo{}, false
+	ai.target, ai.extras, ai.targetSet = gate.SessionInfo{}, nil, false
 	ai.panel.targetOpen = false
 	ai.panel.autoMenu = false
 	ai.items, ai.history, ai.conv, ai.notice = nil, nil, 0, ""
@@ -1025,7 +1045,7 @@ func (state *State) aiOpenConversation(id int64) {
 	// Persisted terminal IDs are not identities across application restarts.
 	// History restores neither a live default nor reference authorization. A new
 	// request must select its default or explicitly name its reference sessions.
-	ai.target, ai.targetSet = gate.SessionInfo{}, true
+	ai.target, ai.extras, ai.targetSet = gate.SessionInfo{}, nil, true
 	ai.panel.targetOpen = false
 	ai.panel.autoMenu = false
 	ai.autoUpTo = nil // another conversation's scope does not follow this one

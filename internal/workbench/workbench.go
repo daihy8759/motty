@@ -18,6 +18,7 @@ import (
 	"motty/internal/configstore"
 	"motty/internal/highlight"
 	"motty/internal/i18n"
+	"motty/internal/sessionlog"
 	"motty/internal/sshconn"
 	layoutcore "motty/internal/workspace"
 )
@@ -411,6 +412,10 @@ const (
 	// the other sections do not renumber between builds.
 	sectionDebug
 	sectionDashboard
+	// sectionSessionLogs is the local connection journal. It comes after the
+	// monitor page and keeps its place even in builds whose page is hidden, so
+	// the other sections do not renumber.
+	sectionSessionLogs
 )
 
 // State owns the complete interactive state of the window.
@@ -507,6 +512,8 @@ type State struct {
 	tabsClose          tabsClose
 	hostDialogMode     hostDialogMode
 	hostDialogID       uint32
+	ruleDelete         ruleDelete
+	hostTest           hostTest
 	hostDialogText     string
 	identityCountText  string
 	forwardCountText   string
@@ -520,6 +527,10 @@ type State struct {
 
 	forwardLayout, proxyLayout, forwardDialogLayout, proxyDialogLayout flex.View // the Port Forwarding and Proxies pages and their dialogs
 	chrome                                                             chromeLayout
+
+	// iconMotions are the rows whose icon is playing the motion of a click, by
+	// hit id; the painter drops each one when its motion is over (icon_motion.go).
+	iconMotions map[ui.ID]iconMotionRun
 
 	// area: AI panel
 	aiFlex aiFlexViews // the assistant panel's layouts, see ai_panel_paint.go
@@ -714,7 +725,10 @@ type State struct {
 	dev devState
 	// viewport and the terminal cell are the layout inputs of the last paint,
 	// kept so a resize can work out how many rows and columns fit.
-	viewport              ui.Size
+	viewport ui.Size
+	// pixelScale is the device pixels per logical pixel of the display, as the last
+	// paint saw it; zero before the first.
+	pixelScale            float32
 	cellWidth, cellHeight float32
 	paneCanvas            ui.Canvas
 	contextCanvas         ui.Canvas
@@ -746,6 +760,13 @@ type State struct {
 	autofillRules            autofillUI
 	loginExpectStep          loginExpectStepState
 	commandPalette           commandPalette
+	// sessionLogs is this window's local connection journal; it is off only
+	// when the user disabled metadata capture in the settings.
+	sessionLogs    sessionLogs
+	sessionLogsOff bool
+	// sessionLogsLayout is the session-log page's flex layout, reused so a paint
+	// does not allocate its nodes.
+	sessionLogsLayout flex.View
 	// ai is the built-in assistant; see ai_state.go.
 	ai aiState
 }
@@ -799,6 +820,12 @@ func (state *State) Close() {
 			session.conn.Cancel()
 		}
 	}
+	// A window that closes ends its sessions; their rows say so before the
+	// journal is flushed and closed.
+	for index := range state.sessions {
+		state.finishSessionLog(&state.sessions[index], sessionlog.StatusEnded, sessionlog.ReasonUserClosed)
+	}
+	state.closeSessionLogs()
 	for index := range state.forwards {
 		state.forwards[index].stop()
 	}
@@ -869,6 +896,9 @@ func New(options Options) *State {
 	if report.outcome == loadOK && err == nil {
 		backupState(state.options.StatePath, saved)
 	}
+	// The metadata journal opens before the first Wake, which is when restored
+	// tabs are dialed: recovery of a previous run's rows must happen first.
+	state.initSessionLogs()
 	// Dialing waits for the first Wake: the window does not exist yet, so the
 	// connection's wake-ups would have nowhere to go and its progress would
 	// never reach the screen.
@@ -1016,6 +1046,9 @@ func (state *State) EditorFor(hit ui.ID) *text.Editor {
 		if hit == hitKnownHostsSearch && state.activeSection == sectionKnownHosts && state.knownHosts.action == knownHostsActionNone {
 			return &state.knownHosts.search
 		}
+		if hit == hitSessionLogsSearch && state.activeSection == sectionSessionLogs {
+			return &state.sessionLogs.view.search
+		}
 	case modalNewHost:
 		if hit == hitDialogTags {
 			return &state.hostTagPicker().control.Query
@@ -1034,6 +1067,9 @@ func (state *State) EditorFor(hit ui.ID) *text.Editor {
 		}
 		if hit == hitDialogAlgorithms && state.editor.protocol == protocolSSH && state.editor.algoMode == algoCustom {
 			return &state.editor.algorithms
+		}
+		if hit == hitDialogLoginCommand && state.editor.protocol == protocolSSH {
+			return &state.editor.loginCommand
 		}
 		if hit == hitDialogOTP && state.editor.protocol == protocolSSH {
 			return &state.editor.otp
@@ -1155,9 +1191,20 @@ func (state *State) WindowControlsStyle() app.WindowControlsStyle {
 	}
 }
 
-// Click applies one stable hit action.
-func (state *State) Click(id ui.ID) {
+// Click applies one stable hit action and plays the motion of the row's icon.
+func (state *State) Click(id ui.ID) { state.click(id, true) }
+
+// click applies one stable hit action. feedback is false for a hit the user did
+// not make on the control itself, such as a command palette entry standing for a
+// sidebar row: that row's icon stays still, because the row was not chosen.
+func (state *State) click(id ui.ID, feedback bool) {
+	if feedback {
+		state.pressIconMotion(id)
+	}
 	if state.clickDashboard(id) {
+		return
+	}
+	if state.clickSessionLogs(id) {
 		return
 	}
 	if state.fileNotices.click(id) {
@@ -1239,6 +1286,9 @@ func (state *State) Click(id ui.ID) {
 		return
 	case modalAutofillConfirm:
 		state.clickAutofillConfirm(id)
+		return
+	case modalDeleteRule:
+		state.clickDeleteRuleDialog(id)
 		return
 	case modalSnippet:
 		state.clickSnippetDialog(id)
@@ -1503,6 +1553,9 @@ func (state *State) closeSession(id uint32) {
 	defer state.save()
 	session := &state.sessions[index]
 	state.stopLoginExpect(session)
+	// Closing a tab cancels its connection and deletes the Session in this call,
+	// so the terminal PhaseClosed is never observed; the row is finalized here.
+	state.finishSessionLog(session, sessionlog.StatusEnded, sessionlog.ReasonUserClosed)
 	state.cancelReconnect(session)
 	state.stopSessionForwards(session.ID, false)
 	if session.term != nil && session.term.shell != nil {
@@ -1651,6 +1704,7 @@ func (state *State) clickHostDialog(id ui.ID) {
 	}
 	switch id {
 	case hitDialogDismiss, hitDialogClose, hitDialogCancel:
+		state.cancelHostTest()
 		state.editor.password, state.editor.passphrase = text.Editor{}, text.Editor{}
 		state.modal = modalNone
 		state.dialogError = ""
@@ -1658,6 +1712,8 @@ func (state *State) clickHostDialog(id ui.ID) {
 		state.showNextPrompt()
 	case hitDialogSubmit:
 		state.submitHostDialog()
+	case hitDialogTest:
+		state.startHostTest()
 	case hitHostProxyConfigure:
 		if state.editor.protocol != protocolSerial {
 			state.openHostProxyDialog()
@@ -1669,6 +1725,7 @@ func (state *State) clickHostDialog(id ui.ID) {
 
 // openHostDialog resets the form and shows the modal.
 func (state *State) openHostDialog() {
+	state.cancelHostTest()
 	state.editor.reset()
 	state.hostDialogMode = hostDialogAdd
 	state.hostDialogID = 0
@@ -1790,6 +1847,9 @@ func (state *State) hostForRow(id ui.ID) (Host, bool) {
 func (state *State) Pointer(event ui.PointerEvent) (outcome ui.EventResult) {
 	defer state.afterEvent(&outcome)
 	if result, handled := state.dashboardPointer(event); handled {
+		return result
+	}
+	if result, handled := state.sessionLogsPointer(event); handled {
 		return result
 	}
 	if result := state.toolbarSettingsPointer(event); result.Handled {
@@ -2109,6 +2169,9 @@ func (state *State) key(event ui.KeyEvent) ui.EventResult {
 	if result, handled := state.knownHostsKey(event); handled {
 		return result
 	}
+	if result, handled := state.sessionLogsKey(event); handled {
+		return result
+	}
 	if result, handled := state.updateKey(event); handled {
 		return result
 	}
@@ -2301,6 +2364,9 @@ func (state *State) createHostSessionWithConnection(host Host, address string, c
 	if conn == nil {
 		state.startConnection(session, host)
 	} else {
+		// A container shell borrows an already connected transport: no dial
+		// happens, so its row starts here as an active session.
+		state.startSharedSessionLog(session, host)
 		state.finishStartingConnection(session, false)
 		state.apply(session, conn.Status())
 		state.pump(session)

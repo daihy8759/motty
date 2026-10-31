@@ -24,14 +24,14 @@ func TestAITargetChangeSeparatorsAndHistory(t *testing.T) {
 	first, second := state.sessions[0].ID, state.sessions[1].ID
 	send := func(id uint32) {
 		t.Helper()
-		state.aiChooseTarget(hitAITargets.At(int(id)))
+		state.aiChooseOnlyTarget(hitAITargets.At(int(id)))
 		ask(state, "analyze", agent.ModeAgent)
 		pumpUntil(t, state, "answer", func() bool { return state.ai.run == nil })
 	}
 	send(first)
 	send(first)
-	state.aiChooseTarget(hitAITargets.At(int(second)))
-	state.aiChooseTarget(hitAITargets.At(int(first)))
+	state.aiChooseOnlyTarget(hitAITargets.At(int(second)))
+	state.aiChooseOnlyTarget(hitAITargets.At(int(first)))
 	send(first)
 	if changes := targetChanges(state); len(changes) != 1 || changes[0] != state.sessions[0].Title {
 		t.Fatal("missing first-target separator or repeated separators for the same target")
@@ -72,12 +72,12 @@ func TestAITargetChangeSeparatorsAndHistory(t *testing.T) {
 func TestAITargetFollowsRenamedTabWithoutChangingIdentity(t *testing.T) {
 	state := targetTestWorld(t, quietModel{"ok"})
 	id := state.sessions[0].ID
-	state.aiChooseTarget(hitAITargets.At(int(id)))
+	state.aiChooseOnlyTarget(hitAITargets.At(int(id)))
 	state.renameSession(&state.sessions[0], "Renamed target")
 	if got := state.aiTarget(); got.ID != sessionHandle(id) || got.Title != "Renamed target" {
 		t.Fatalf("target snapshot = %+v", got)
 	}
-	state.aiChooseTarget(hitAITargets.At(0))
+	state.aiChooseOnlyTarget(hitAITargets.At(0))
 	state.activeSection = sectionTerminal
 	if state.aiTarget().ID != "" {
 		t.Fatal("explicit no-target choice followed the active tab")

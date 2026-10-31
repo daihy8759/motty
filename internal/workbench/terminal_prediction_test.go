@@ -95,7 +95,7 @@ func TestWorkbenchPaintsOnlyVerifiedPredictionsAndDropsThemAtSensitiveContext(t 
 			continue
 		}
 		runs := canvas.TextRuns(text)
-		foundPrediction = len(runs) > 0 && runs[0].Underline && runs[0].Color == state.pal.muted
+		foundPrediction = len(runs) > 0 && !runs[0].Underline && runs[0].Color == state.pal.muted
 	}
 	if !foundPrediction {
 		t.Fatal("prediction is not visually distinguished as remote-unconfirmed")

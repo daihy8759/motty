@@ -206,6 +206,9 @@ func TestTurningReconnectOffCancelsWaitingSessions(t *testing.T) {
 func TestReconnectWaitingPaintAllocatesNothingAndOnlyWaitersScheduleFrames(t *testing.T) {
 	state, _, connection, _ := reconnectingSession(t, reconnectThree)
 	disconnectEstablished(connection, state)
+	// The disconnect queued journal writes; the allocation count covers the whole
+	// process, so let them land before the paint measurement starts.
+	settleSessionLogs(t, state)
 	var canvas ui.Canvas
 	size := ui.Size{Width: 1400, Height: 900}
 	state.Paint(&canvas, size)

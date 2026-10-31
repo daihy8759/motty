@@ -24,7 +24,7 @@ func shellThatRuns(shell *fakeShell) {
 }
 
 // The command-execution tests keep their real POSIX shell dependency here.
-func assistantSession(t *testing.T, model *scriptedModel) (*State, *fakeShell) {
+func assistantSession(t *testing.T, model llm.Provider) (*State, *fakeShell) {
 	t.Helper()
 	state, shell := assistantTestSession(t, model)
 	shellThatRuns(shell)

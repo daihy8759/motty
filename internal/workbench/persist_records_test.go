@@ -28,6 +28,9 @@ func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 		"toolbars":    true,
 		"local_shell": true, "ssh_agent": true, "ssh_agent_path": true,
 		"window_x": true, "window_y": true, "window_width": true, "window_height": true,
+		// The session journal switch belongs to this computer: another device
+		// keeps its own choice, and an older build must not silently drop it.
+		"session_logs_off": true,
 	}
 	entity := map[string]bool{}
 	for _, field := range entityFields {
@@ -130,6 +133,62 @@ func TestFormatNineUpgradePreservesHostsAndMonitoringAndBlocksOlderWriters(t *te
 				t.Fatalf("a format-9 build could overwrite the upgraded configuration: %v", err)
 			}
 		})
+	}
+}
+
+func TestFormatTenUpgradeKeepsTheLocalSessionLogSwitchAndBlocksOlderWriters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.db")
+	want := richState()
+	want.SessionLogsOff = true
+	entries, local, err := splitState(want, newConfigBase(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := configstore.Open(path, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = old.Commit(configstore.Change{Put: entries, Local: map[string][]byte{localKey: local}})
+	if err := errors.Join(err, old.Close()); err != nil {
+		t.Fatal(err)
+	}
+	got, report, err := loadState(path)
+	if err != nil || report.outcome != loadOK {
+		t.Fatalf("upgrade: %+v, %v", report, err)
+	}
+	if !got.SessionLogsOff {
+		t.Fatal("the upgrade lost the local session-log switch")
+	}
+	if err := saveState(path, got); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := configstore.ReadOnly(path, 10); !errors.Is(err, configstore.ErrTooNew) {
+		t.Fatalf("a format-10 build could overwrite the upgraded configuration: %v", err)
+	}
+}
+
+func TestSessionLogCaptureDefaultsOnForAStateThatPredatesIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.db")
+	// A format-10 state never wrote the switch: absent must mean capture on.
+	want := richState()
+	entries, local, err := splitState(want, newConfigBase(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := configstore.Open(path, configFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Commit(configstore.Change{Put: entries, Local: map[string][]byte{localKey: local}})
+	if err := errors.Join(err, store.Close()); err != nil {
+		t.Fatal(err)
+	}
+	got, report, err := loadState(path)
+	if err != nil || report.outcome != loadOK {
+		t.Fatalf("load: %+v, %v", report, err)
+	}
+	if got.SessionLogsOff {
+		t.Fatal("a state that never chose the switch disabled capture")
 	}
 }
 

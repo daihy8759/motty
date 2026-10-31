@@ -412,27 +412,31 @@ func (state *State) clickVaultSettings(id ui.ID) bool {
 	return true
 }
 
-// paintSecuritySettings is the Saved passwords group of Settings.
+// paintSecuritySettings is the Security category: the local session journal
+// first, then the Saved passwords group when this computer has a vault. The
+// journal group must paint even without a vault, so the two are not guarded
+// together.
 func (state *State) paintSecuritySettings(page *settingsPage) {
 	m := state.messages
-	vaultFile := state.secrets.vault
-	if vaultFile == nil {
-		return
-	}
-	convert, count := vaultFile.NeedsConversion(), vaultFile.Len()
-	description := m.SettingsVaultEmpty
-	switch {
-	case count > 0 && convert:
-		description = fmt.Sprintf(m.SettingsVaultDescriptionLockedFmt, count)
-	case count > 0:
-		description = fmt.Sprintf(m.SettingsVaultDescriptionFmt, count)
-	}
-	actions := state.secrets.actions[:0]
-	if convert {
-		actions = append(actions, components.ButtonAction{ID: hitSettingsVaultConvert, Label: m.SettingsVaultConvert})
-	}
-	actions = append(actions, components.ButtonAction{ID: hitSettingsVaultForget, Label: m.SettingsVaultForgetAll, Variant: components.ButtonOutline})
 	page.groups(func() {
+		state.paintSessionLogSettingsGroup(page)
+		vaultFile := state.secrets.vault
+		if vaultFile == nil {
+			return
+		}
+		convert, count := vaultFile.NeedsConversion(), vaultFile.Len()
+		description := m.SettingsVaultEmpty
+		switch {
+		case count > 0 && convert:
+			description = fmt.Sprintf(m.SettingsVaultDescriptionLockedFmt, count)
+		case count > 0:
+			description = fmt.Sprintf(m.SettingsVaultDescriptionFmt, count)
+		}
+		actions := state.secrets.actions[:0]
+		if convert {
+			actions = append(actions, components.ButtonAction{ID: hitSettingsVaultConvert, Label: m.SettingsVaultConvert})
+		}
+		actions = append(actions, components.ButtonAction{ID: hitSettingsVaultForget, Label: m.SettingsVaultForgetAll, Variant: components.ButtonOutline})
 		page.group(m.SettingsGroupSecurity, func() {
 			page.actionRow(m.SettingsVault, description, count == 0, actions...)
 		})

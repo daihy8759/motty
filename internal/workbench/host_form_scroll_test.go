@@ -61,7 +61,7 @@ func TestHostFormScrollKeepsFooterAndReachesEveryField(t *testing.T) {
 				id := view.Snapshot().Focused
 				seen[id] = true
 				h := find(id)
-				if id != hitDialogCancel && id != hitDialogSubmit && (h.Bounds.Y < state.editor.form.geometry.Viewport.Y || h.Bounds.Y+h.Bounds.Height > footer.Y) {
+				if id != hitDialogTest && id != hitDialogCancel && id != hitDialogSubmit && (h.Bounds.Y < state.editor.form.geometry.Viewport.Y || h.Bounds.Y+h.Bounds.Height > footer.Y) {
 					t.Fatalf("focus is clipped: %+v", h)
 				}
 				if find(hitDialogSubmit).Bounds != footer {

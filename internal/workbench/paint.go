@@ -95,6 +95,11 @@ const (
 	iconSFTPTransfer
 	iconSFTPBrowseSync
 	iconSFTPProfiles
+	// iconFileClock is the session-log page's glyph; iconClock is the clock the
+	// time-range filter shows beside its value. Both are Lucide sources compiled
+	// by viva icons.
+	iconFileClock
+	iconClock
 	iconPaperclip
 	iconImage
 )
@@ -109,6 +114,7 @@ func (state *State) terminalPage() bool {
 // Paint renders the application from state using stable hit identities.
 func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	canvas.SetTree(&tree)
+	state.pixelScale = canvas.PixelScale()
 	// Motty keeps one central click handler. The event pass of a click names its
 	// target here; the handler runs once this paint has returned, outside it,
 	// because it may open a native dialog or block. The repaint that follows
@@ -207,6 +213,8 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 				state.paintKnownHostsWorkspace(canvas, workspace)
 			case sectionSnippets:
 				state.paintSnippetsWorkspace(canvas, workspace)
+			case sectionSessionLogs:
+				state.paintSessionLogsWorkspace(canvas, workspace)
 			default:
 				state.paintHostsWorkspace(canvas, workspace)
 			}
@@ -220,6 +228,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	state.paintLocalShellSelect(canvas)
 	state.paintMonitorIntervalMenu(canvas)
 	state.paintDashboardMenu(canvas)
+	state.paintSessionLogFilters(canvas)
 	state.paintTransferCenter(canvas)
 	// The gallery's select is painted here, outside the workspace's clip and
 	// inside the frame's menu pass, so its popup can leave the page and keeps the
@@ -266,6 +275,8 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintAutofillDialog(canvas, viewport)
 	case modalAutofillConfirm:
 		state.paintAutofillConfirm(canvas, viewport)
+	case modalDeleteRule:
+		state.paintDeleteRuleDialog(canvas, viewport)
 	case modalSnippet:
 		state.paintSnippetDialog(canvas, viewport)
 	case modalImportSessions:
@@ -323,6 +334,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	state.requestReconnectFrames(canvas)
 	state.requestAutofillFrames(canvas)
 	state.requestLoginExpectFrames(canvas)
+	state.requestLoginCommandFrames(canvas)
 	// Last, so a tooltip is never covered by what it describes.
 	state.tooltip.Paint(canvas, state.Theme(), viewport, components.TooltipOptions{Layer: tooltipLayer, SideOffset: tooltipGap}, components.HoverTooltipDelay)
 	state.fileNotices.paint(canvas, state.Theme(), ui.Rect{Y: windowBarHeight, Width: size.Width, Height: max(size.Height-windowBarHeight, 0)})
@@ -694,6 +706,7 @@ func (state *State) declareNavigation(f *flex.Frame) {
 	}{
 		{hitHosts, iconHosts, m.NavHosts, state.activeSection == sectionHosts},
 		{hitDashboard, iconActivity, m.Dashboard.Title, state.activeSection == sectionDashboard},
+		{hitSessionLogs, iconFileClock, m.SessionLogs.Title, state.activeSection == sectionSessionLogs},
 		{hitKeychain, iconKey, m.NavKeychain, state.activeSection == sectionKeys},
 		{hitProxies, iconGlobe, m.NavProxies, state.activeSection == sectionProxies},
 		{hitPortForwarding, iconForward, m.NavPortForwarding, state.activeSection == sectionForwards},
@@ -729,7 +742,7 @@ func (state *State) navigationItem(f *flex.Frame, id ui.ID, icon uint8, label st
 	}
 	f.Row().Height(36).MarginSides(0, 9, below, 9).PadSides(0, 9, 0, 15).Gap(12).Items(flex.Center).Radius(radius.control).Background(fill).
 		HitWith(id, label, ui.HitOptions{Role: ui.RoleMenuItem, Selected: active}).Children(func() {
-		f.Icon(lucideIcons[icon]).Color(pal.text)
+		f.Icon(lucideIcons[icon]).IconTransform(state.iconMotion(f.Canvas(), id, icon)).Color(pal.text)
 		f.Text(label).FontSize(metrics.FontSizeM).Weight(ui.WeightMedium).Color(pal.text)
 	})
 }
@@ -1628,6 +1641,8 @@ var lucideIcons = [...]ui.Icon{
 	iconSFTPTransfer:   icons.SftpTransfer,
 	iconSFTPBrowseSync: icons.SftpSync,
 	iconSFTPProfiles:   icons.SftpProfiles,
+	iconFileClock:      icons.FileClock,
+	iconClock:          icons.Clock3,
 }
 
 func paintIcon(canvas *ui.Canvas, kind uint8, bounds ui.Rect, foreground ui.Color) {
@@ -1750,6 +1765,10 @@ func (state *State) paintHostDialog(canvas *ui.Canvas, viewport ui.Rect) {
 		components.ButtonAction{ID: hitDialogCancel, Label: m.Cancel, Variant: components.ButtonSecondary},
 		components.ButtonAction{ID: hitDialogSubmit, Label: submit},
 	)
+	state.paintHostTest(canvas, theme, layout.Footer, m.Cancel, submit)
+	if state.hostTestAvailable() {
+		form.addStop(hitDialogTest, layout.Footer, false)
+	}
 	form.addStop(hitDialogCancel, layout.Footer, false)
 	form.addStop(hitDialogSubmit, layout.Footer, false)
 	dialog.End()

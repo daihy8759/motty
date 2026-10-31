@@ -13,7 +13,19 @@ import (
 // tabRename is the rename dialog's state: which tab, and the name being typed.
 type tabRename struct {
 	workspace layoutcore.WorkspaceID
-	editor    text.Editor
+	// session, when set, renames that one terminal of a split tab instead of the
+	// tab. The name is what the assistant's target list and @ mentions show.
+	session uint32
+	editor  text.Editor
+}
+
+// openTerminalRename asks for a new name for one terminal of a split tab.
+func (state *State) openTerminalRename(session *Session) {
+	state.tabRename = tabRename{session: session.ID}
+	state.tabRename.editor.Insert(session.Title)
+	state.tabRename.editor.SetSelection(text.Range{End: state.tabRename.editor.RuneCount()})
+	state.dialogError = ""
+	state.modal = modalRenameTab
 }
 
 // openTabRename asks for a new name for a tab, starting from its current one.
@@ -42,6 +54,14 @@ func (state *State) clickTabRenameDialog(id ui.ID) {
 		}
 		state.modal = modalNone
 		state.dialogError = ""
+		if id := state.tabRename.session; id != 0 {
+			if session, ok := state.sessionByIDPointer(id); ok {
+				state.renameSession(session, name)
+				state.rebuildTabOptions()
+				state.save()
+			}
+			return
+		}
 		if state.deck.Rename(state.tabRename.workspace, name) == nil {
 			_ = state.deck.SetNamed(state.tabRename.workspace, true)
 			panes := state.deck.Panes(state.tabRename.workspace, nil)
@@ -75,7 +95,11 @@ func (state *State) paintTabRenameDialog(canvas *ui.Canvas, viewport ui.Rect) {
 		DismissID: hitTabRenameDismiss, CloseID: hitTabRenameClose, InitialFocusID: hitTabRenameField,
 		ContentSize: ui.Size{Width: 460}, FitBody: true, BodyHeight: 62,
 	})
-	layout := dialog.Begin(messages.RenameTabTitle, "")
+	title, placeholder := messages.RenameTabTitle, messages.RenameTabPlaceholder
+	if state.tabRename.session != 0 {
+		title, placeholder = messages.RenameTerminalTitle, messages.RenameTerminalPlaceholder
+	}
+	layout := dialog.Begin(title, "")
 	var slot flex.Box
 	f := state.chrome.dialog.Begin(canvas, state.Theme(), layout.Body)
 	f.Column().Fill().Children(func() { slot = f.Slot().Height(62) })
@@ -90,7 +114,7 @@ func (state *State) paintTabRenameDialog(canvas *ui.Canvas, viewport ui.Rect) {
 	content.Height = 32
 	components.PaintInput(canvas, state.Theme(), content, components.InputSnapshot{
 		ID: hitTabRenameField, Label: messages.RenameTabField, Value: value,
-		Placeholder: messages.RenameTabPlaceholder, Focused: focused, PlatformEditing: focused && value != "",
+		Placeholder: placeholder, Focused: focused, PlatformEditing: focused && value != "",
 	})
 	dialog.Actions(layout,
 		components.ButtonAction{ID: hitTabRenameCancel, Label: messages.Cancel, Variant: components.ButtonSecondary},

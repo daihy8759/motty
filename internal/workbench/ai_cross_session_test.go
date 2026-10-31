@@ -21,7 +21,7 @@ func TestAIExplicitReferenceExecutesOnBWhileDefaultStaysA(t *testing.T) {
 	state := targetTestWorld(t, model)
 	first, second := &state.sessions[0], &state.sessions[1]
 	shellA, shellB := first.term.shell.(*fakeShell), second.term.shell.(*fakeShell)
-	state.aiChooseTarget(hitAITargets.At(int(first.ID)))
+	state.aiChooseOnlyTarget(hitAITargets.At(int(first.ID)))
 	ask(state, "请在@"+mentionSlug(second.Title)+" 执行 hostname", agent.ModeAgent)
 	pumpUntil(t, state, "actual B approval", func() bool { return len(state.ai.approvals) == 1 })
 	foundDefaultHint := false
@@ -78,7 +78,7 @@ func TestAIReferencedApprovalCannotFollowAReconnectedOrClosedSession(t *testing.
 			first, second := &state.sessions[0], &state.sessions[1]
 			idA, idB := first.ID, second.ID
 			shellA, shellB := first.term.shell.(*fakeShell), second.term.shell.(*fakeShell)
-			state.aiChooseTarget(hitAITargets.At(int(idA)))
+			state.aiChooseOnlyTarget(hitAITargets.At(int(idA)))
 			ask(state, "在@"+mentionSlug(second.Title)+" 执行 hostname", agent.ModeAgent)
 			pumpUntil(t, state, "B approval", func() bool { return len(state.ai.approvals) == 1 })
 			switch change {

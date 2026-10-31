@@ -165,6 +165,10 @@ type Config struct {
 	Client *http.Client
 	// MaxResponseBytes bounds the total bytes of one SSE stream (default 16 MiB).
 	MaxResponseBytes int64
+	// IdleTimeout fails a stream that delivers no data for this long (default
+	// 2m). A provider can hold a connection open without producing anything,
+	// and no other timeout covers that.
+	IdleTimeout time.Duration
 }
 
 // Provider streams model output and lists models.
@@ -190,6 +194,7 @@ func (e *HTTPError) Error() string {
 
 const (
 	defaultMaxResponse = 16 << 20
+	defaultIdle        = 2 * time.Minute
 	maxLineBytes       = 1 << 20
 	maxErrBody         = 512
 	maxModelsBody      = 4 << 20
@@ -201,6 +206,7 @@ type base struct {
 	authStyle string
 	client    *http.Client
 	max       int64
+	idle      time.Duration
 }
 
 func newBase(cfg Config, endpoint string) base {
@@ -212,7 +218,11 @@ func newBase(cfg Config, endpoint string) base {
 	if m <= 0 {
 		m = defaultMaxResponse
 	}
-	return base{endpoint: endpoint, key: cfg.APIKey, authStyle: cfg.AuthStyle, client: c, max: m}
+	idle := cfg.IdleTimeout
+	if idle <= 0 {
+		idle = defaultIdle
+	}
+	return base{endpoint: endpoint, key: cfg.APIKey, authStyle: cfg.AuthStyle, client: c, max: m, idle: idle}
 }
 
 func defaultClient() *http.Client {
@@ -417,4 +427,15 @@ func decodeBounded(r io.Reader, v any) error {
 		return fmt.Errorf("llm: malformed response: %w", err)
 	}
 	return nil
+}
+
+// StopsAtLimit reports whether a provider's stop reason means it cut the answer
+// off because the output budget ran out, so the caller can say so instead of
+// presenting half an answer as the whole of it.
+func StopsAtLimit(reason string) bool {
+	switch reason {
+	case "length", "max_tokens", "max_output_tokens":
+		return true
+	}
+	return false
 }

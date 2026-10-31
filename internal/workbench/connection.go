@@ -296,6 +296,10 @@ type Options struct {
 	// Now is a monotonic clock, for how long a connection has taken and how long
 	// a silent shell is waited for. Nil is the time since the workbench opened.
 	Now func() time.Duration
+	// SessionLogRunID names this process run for the connection journal. Empty
+	// uses one random value for the whole process, which tests may override to
+	// exercise startup recovery.
+	SessionLogRunID string
 }
 
 func (options Options) withDefaults() Options {
@@ -421,6 +425,7 @@ const (
 	modalTerminalInput
 	modalLoginExpectSecret
 	modalLoginExpectStep
+	modalDeleteRule
 )
 
 // tone colors a session's headline.
@@ -440,6 +445,9 @@ const maxBannerLines = 8
 // at once; everything after happens on the connection's goroutine.
 func (state *State) startConnection(session *Session, host Host) {
 	state.cancelReconnect(session)
+	// A user dial is a new logical session; automatic retries and the
+	// share-refusal re-dial go through startConnectionMode and keep the row.
+	state.startSessionLog(session, host)
 	state.startConnectionMode(session, host, false)
 }
 
@@ -646,6 +654,7 @@ func (state *State) Wake() {
 		state.connectRestoredSessions()
 	}
 	state.advanceReconnects()
+	state.pumpHostTest()
 	state.probeLatency()
 	findNow := state.now()
 	for index := range state.sessions {
@@ -659,6 +668,7 @@ func (state *State) Wake() {
 		state.pumpRemoteStats(session)
 		state.pumpDesktop(session)
 		state.pump(session)
+		state.runLoginCommand(session)
 		// A session-local charset notice changes the available character grid.
 		// Resize after parsing output, never reentrantly from an OSC callback.
 		state.fitTerminal(session)
@@ -683,6 +693,7 @@ func (state *State) Wake() {
 	}
 	state.pumpSFTPConnections()
 	state.pumpDashboard()
+	state.pumpSessionLogs()
 	state.showNextPrompt()
 	state.drainAI()
 	state.syncSFTPWindows()
@@ -750,6 +761,9 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 	}
 	state.recordConnectionStatus(session, previousPhase, status)
 	state.updateReconnect(session, status)
+	// The retry policy has run: the journal can now tell a transient close that
+	// will be retried from a final one.
+	state.journalConnectionOutcome(session, status)
 
 	switch status.Phase {
 	case sshconn.PhaseConnecting, sshconn.PhaseHostKeyPrompt:
@@ -1065,6 +1079,9 @@ func (state *State) closeModal() {
 	}
 	if state.modal == modalAutofillConfirm {
 		state.autofillRules.ask = autofillAsk{}
+	}
+	if state.modal == modalDeleteRule {
+		state.ruleDelete = ruleDelete{}
 	}
 	state.modal = modalNone
 	state.modalSession = 0

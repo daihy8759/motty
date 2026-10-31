@@ -49,11 +49,17 @@ func (inbox *aiInbox) close() {
 
 // aiPost runs fn on the window thread soon. It is safe from any goroutine.
 func (state *State) aiPost(fn func(*State)) bool {
+	return state.aiPostWithInvalidator(fn, state.options.Invalidate)
+}
+
+// aiPostWithInvalidator uses the callback captured when work was submitted.
+// Window options may be replaced by tests while a journal write is in flight.
+func (state *State) aiPostWithInvalidator(fn func(*State), invalidate func()) bool {
 	if state.ai.inbox == nil || !state.ai.inbox.post(fn) {
 		return false
 	}
-	if state.options.Invalidate != nil {
-		state.options.Invalidate()
+	if invalidate != nil {
+		invalidate()
 	}
 	return true
 }

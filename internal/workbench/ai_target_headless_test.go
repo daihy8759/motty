@@ -28,7 +28,7 @@ func TestAITargetComposerNativeLayoutAtDisplayScales(t *testing.T) {
 				state.sessions[0].host.System = sshconn.SystemUbuntu
 				state.sessions[1].host.System = sshconn.SystemLinux
 				state.rebuildTabOptions()
-				state.aiChooseTarget(hitAITargets.At(int(state.sessions[1].ID)))
+				state.aiChooseOnlyTarget(hitAITargets.At(int(state.sessions[1].ID)))
 				state.ai.mode, state.ai.open = agent.ModeAgent, true
 				state.aiAppendQuestion("看看服务器磁盘占用", "first", state.sessions[0].Title)
 				state.ai.items = append(state.ai.items, aiItem{kind: aiAssistant, text: "可以从磁盘使用情况开始分析。"})
@@ -80,6 +80,19 @@ func TestAITargetComposerNativeLayoutAtDisplayScales(t *testing.T) {
 					t.Fatalf("menu name/placement = %+v", option)
 				}
 				click(option.ID)
+				must(view.Rest())
+				if !state.ai.panel.targetOpen {
+					t.Fatal("ticking a connection closed the list")
+				}
+				if len(state.ai.extras) != 1 || state.aiTarget().ID != sessionHandle(state.sessions[1].ID) {
+					t.Fatal("ticking a second connection replaced the default")
+				}
+				click(hitAITargets.At(int(state.sessions[1].ID))) // unticking the default promotes the next
+				must(view.Rest())
+				if len(state.ai.extras) != 0 || state.aiTarget().ID != sessionHandle(state.sessions[0].ID) {
+					t.Fatal("unticking the default did not promote the remaining connection")
+				}
+				click(hitAITargetDismiss)
 				must(view.Rest())
 				click(hitAIInput)
 				must(view.Type("你好\n测试@"))

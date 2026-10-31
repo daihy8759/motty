@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/vivaui/viva/ui"
@@ -70,11 +71,24 @@ func TestCatalogEmptyStatesUseSharedVisualMetrics(t *testing.T) {
 			actionLabel: func(state *State) string { return state.messages.Tools.SnippetAdd },
 			prepare:     func(state *State) { state.snippets.list, state.snippets.selected = nil, 0 },
 		},
+		{
+			// The journal is filled by the connection lifecycle, so its empty
+			// page has no create action; the record is what the page restores.
+			name: "session logs", section: sectionSessionLogs,
+			title: func(state *State) string { return state.messages.SessionLogs.Empty },
+			prepare: func(state *State) {
+				state.sessionLogs.view.rows, state.sessionLogs.view.page = nil, nil
+				state.prepareSessionLogsView()
+			},
+		},
 	}
 
 	for _, size := range []ui.Size{{Width: 1400, Height: 900}, {Width: 760, Height: 620}} {
 		for _, test := range tests {
-			t.Run(test.name, func(t *testing.T) {
+			// A case runs once per size, so the size is part of its name: two
+			// cases of one name make Go append "#01", and a "#" in a test
+			// directory's path is not a database path the journal accepts.
+			t.Run(fmt.Sprintf("%s/%gx%g", test.name, size.Width, size.Height), func(t *testing.T) {
 				state := newTestState(t, testOptions(t))
 				test.prepare(state)
 				state.activeSection = test.section

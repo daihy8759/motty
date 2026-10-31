@@ -1,7 +1,10 @@
 package sshconn
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -109,6 +112,41 @@ func TestHostKeyAlgorithmsKeepSSHRSAReachableForAKnownRSAKey(t *testing.T) {
 	}
 	if got, err := hostKeyAlgorithms(known, []string{ssh.KeyAlgoED25519}); !errors.As(err, new(*HostKeyAlgorithmError)) || got != nil {
 		t.Fatalf("an unrelated custom list fell back to the known key: %v, %v", got, err)
+	}
+	// A list that leaves ssh-rsa out keeps it out, whatever is on file.
+	if got, err := hostKeyAlgorithms(known, []string{ssh.KeyAlgoRSASHA256}); err != nil || slices.Contains(got, ssh.KeyAlgoRSA) {
+		t.Fatalf("ssh-rsa offered although the list left it out: %v, %v", got, err)
+	}
+}
+
+// A router that can only sign its RSA key as ssh-rsa connects the first time
+// because the library offers ssh-rsa last; once the key is saved, the second
+// connection must still offer it or the handshake finds nothing in common.
+func TestAKnownRSAKeyStillAllowsAServerThatOnlySignsWithSHA1(t *testing.T) {
+	private, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := ssh.NewPublicKey(&private.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := newHostKeys(filepath.Join(t.TempDir(), "known_hosts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := keys.remember("192.168.0.1:22", public); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := hostKeyAlgorithms(keys.algorithms("192.168.0.1:22"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(offer, ssh.KeyAlgoRSA) {
+		t.Fatalf("a trusted RSA key leaves out ssh-rsa: %v", offer)
+	}
+	if offer[0] != ssh.KeyAlgoRSASHA512 {
+		t.Fatalf("the SHA-2 variants should stay preferred: %v", offer)
 	}
 }
 
