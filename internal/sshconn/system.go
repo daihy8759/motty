@@ -131,7 +131,12 @@ func networkApplianceBanner(banner string) bool {
 // down (the malformed disconnect and the channel-open "<nil>" seen in the
 // field). Guessing from a vendor block-list is not enough, so anything not
 // positively recognised is started as one plain shell with no probe at all.
+// Tailscale SSH is a full server of its own even though it names neither an
+// OpenSSH build nor a distribution (issue #198).
 func shellProbeSafe(serverVersion string) bool {
+	if strings.Contains(strings.ToLower(serverVersion), "tailscale") {
+		return true
+	}
 	switch classifyBanner(serverVersion) {
 	case SystemUbuntu, SystemDebian, SystemWindows, SystemDarwin, SystemFreeBSD:
 		return true
