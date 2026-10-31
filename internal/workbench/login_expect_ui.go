@@ -24,6 +24,7 @@ type loginExpectStepState struct {
 	delay       text.Editor
 	appendEnter bool
 	sensitive   bool
+	commandMode bool
 	err         string
 }
 
@@ -222,6 +223,7 @@ func (state *State) openLoginExpectStep(index int) {
 	milliseconds := loginexpect.DelayMilliseconds(step.Delay)
 	editor.delay.Insert(strconv.Itoa(milliseconds))
 	editor.appendEnter, editor.sensitive, editor.err = step.AppendEnter, step.Sensitive, ""
+	editor.commandMode = step.CommandMode
 	state.modal = modalLoginExpectStep
 }
 
@@ -256,6 +258,7 @@ func (state *State) saveLoginExpectStep() {
 		Delay:       loginexpect.DelayFromMilliseconds(milliseconds),
 		AppendEnter: editor.appendEnter,
 		Sensitive:   editor.sensitive,
+		CommandMode: editor.commandMode,
 	}
 	if step.Sensitive {
 		step.Send = ""
@@ -294,6 +297,8 @@ func (state *State) clickLoginExpectStep(id ui.ID) {
 		if editor.sensitive {
 			editor.send = text.Editor{}
 		}
+	case hitLoginExpectStepCommandMode:
+		editor.commandMode = !editor.commandMode
 	case hitLoginExpectStepSubmit:
 		state.saveLoginExpectStep()
 	case hitLoginExpectStepCancel, hitLoginExpectStepClose, hitLoginExpectStepDismiss:
@@ -312,10 +317,10 @@ func (state *State) paintLoginExpectStepDialog(canvas *ui.Canvas, viewport ui.Re
 	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
 		Layer: dialogLayer, Scope: dialogScope,
 		DismissID: hitLoginExpectStepDismiss, CloseID: hitLoginExpectStepClose, InitialFocusID: hitLoginExpectStepExpect,
-		ContentSize: ui.Size{Width: 520}, FitBody: true, BodyHeight: withError(328, editor.err),
+		ContentSize: ui.Size{Width: 520}, FitBody: true, BodyHeight: withError(356, editor.err),
 	})
 	layout := dialog.Begin(title, "")
-	var wait, send, timeout, delay, enterRow, sensRow flex.Box
+	var wait, send, timeout, delay, enterRow, modeRow, sensRow flex.Box
 	f := state.settingsRow.Begin(canvas, theme, layout.Body)
 	f.Column().Fill().PadSides(2, 4, 0, 4).Children(func() {
 		wait = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
@@ -323,7 +328,8 @@ func (state *State) paintLoginExpectStepDialog(canvas *ui.Canvas, viewport ui.Re
 		timeout = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
 		delay = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
 		enterRow = state.declareDialogCheckbox(f, m.AppendEnter, 2, 0)
-		sensRow = state.declareDialogCheckbox(f, m.Sensitive, 10, 0)
+		modeRow = state.declareDialogCheckbox(f, m.CommandMode, 6, 0)
+		sensRow = state.declareDialogCheckbox(f, m.Sensitive, 6, 0)
 		state.problemLine(f, editor.err)
 	})
 	f.End()
@@ -336,6 +342,7 @@ func (state *State) paintLoginExpectStepDialog(canvas *ui.Canvas, viewport ui.Re
 	state.paintLoginExpectStepField(canvas, hitLoginExpectStepTimeout, m.TimeoutLabel, "30", &editor.timeout, timeout.Rect(), false, false)
 	state.paintLoginExpectStepField(canvas, hitLoginExpectStepDelay, m.DelayLabel, m.DelayPlaceholder, &editor.delay, delay.Rect(), false, false)
 	state.paintDialogCheckbox(canvas, hitLoginExpectStepEnter, m.AppendEnter, editor.appendEnter, enterRow)
+	state.paintDialogCheckbox(canvas, hitLoginExpectStepCommandMode, m.CommandMode, editor.commandMode, modeRow)
 	state.paintDialogCheckbox(canvas, hitLoginExpectStepSensitive, m.Sensitive, editor.sensitive, sensRow)
 	dialog.Actions(layout,
 		components.ButtonAction{ID: hitLoginExpectStepCancel, Label: state.messages.Cancel, Variant: components.ButtonSecondary},

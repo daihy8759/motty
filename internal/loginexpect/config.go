@@ -37,11 +37,26 @@ type Step struct {
 	Send    string
 	Timeout time.Duration
 	// Delay is paused after Expect matches and before Send is written. Zero
-	// sends at once, which is what every rule saved before this field did.
+	// sends at once, which is what every rule saved before this field did. On a
+	// CommandMode rule it is instead the pause between the ":" and Send, so a
+	// slow menu shell can be given longer; zero uses CommandModePause.
 	Delay       time.Duration
 	AppendEnter bool
 	Sensitive   bool
+	// CommandMode sends a bare ":" first and pauses briefly before Send. It is
+	// for menu shells (for example UsmShell in its full-screen TUI) whose ":"
+	// key enters a command line: the colon must arrive as its own keystroke,
+	// then the reply is typed into that command line. Without it a reply that
+	// contains a colon of its own would be cut at that colon, because the shell
+	// treats the first ":" as the command-line switch.
+	CommandMode bool
 }
+
+// CommandModePause is the default wait between the ":" of a CommandMode rule
+// and its reply, long enough for a menu shell to switch into its command line
+// and echo it. A rule's Delay overrides it when set, so a slow shell can be
+// given longer.
+const CommandModePause = 400 * time.Millisecond
 
 // Config is a host's login automation: whether it runs, and its rules in order.
 type Config struct {

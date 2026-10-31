@@ -144,6 +144,7 @@ var (
 	hitLoginExpectStepTimeout      = tree.ID(shellHits, "login-expect-step-timeout")
 	hitLoginExpectStepDelay        = tree.ID(shellHits, "login-expect-step-delay")
 	hitLoginExpectStepEnter        = tree.ID(shellHits, "login-expect-step-enter")
+	hitLoginExpectStepCommandMode  = tree.ID(shellHits, "login-expect-step-command-mode")
 	hitLoginExpectStepSensitive    = tree.ID(shellHits, "login-expect-step-sensitive")
 	hitLoginExpectStepSubmit       = tree.ID(shellHits, "login-expect-step-submit")
 	hitLoginExpectStepCancel       = tree.ID(shellHits, "login-expect-step-cancel")

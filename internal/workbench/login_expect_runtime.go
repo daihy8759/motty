@@ -273,6 +273,9 @@ func (state *State) requestLoginExpectFrames(canvas *ui.Canvas) {
 		if delay := runner.DelayDeadline(); !delay.IsZero() && (deadline.IsZero() || delay.Before(deadline)) {
 			deadline = delay
 		}
+		if command := runner.CommandDeadline(); !command.IsZero() && (deadline.IsZero() || command.Before(deadline)) {
+			deadline = command
+		}
 		if !deadline.IsZero() {
 			wait := deadline.Sub(now)
 			if wait < time.Millisecond {

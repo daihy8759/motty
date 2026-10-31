@@ -79,6 +79,11 @@ type Runner struct {
 	// delayDeadline is when a matched rule may send, or the zero time when it
 	// has no delay left to wait out.
 	delayDeadline time.Time
+	// commandPrefixSent is true once a CommandMode rule's leading ":" has been
+	// written; commandDeadline is when its reply may then be sent. Both belong
+	// to the current rule and are cleared when it advances.
+	commandPrefixSent bool
+	commandDeadline   time.Time
 	// staged is a sensitive answer held until the delay elapses; stagedValue is
 	// used once and cleared as soon as the rule advances.
 	staged      bool
@@ -165,6 +170,12 @@ func (r *Runner) Feed(output []byte) {
 // reports EventWait for that pause; the caller asks DelayDeadline when to call
 // back. The pause is measured from the match, so a sensitive rule's answer is
 // sent as soon as it is typed once the delay has already passed.
+//
+// A CommandMode rule writes a bare ":" first, then pauses (its Delay, or
+// CommandModePause when that is zero) and asks the caller to call back at
+// CommandDeadline before writing its reply. That lets a menu shell switch into
+// its command line, so a reply containing a colon is no longer cut at that
+// colon.
 func (r *Runner) Pump(now time.Time, write Writer) Event {
 	if r == nil {
 		return Event{Kind: EventDone, Step: -1}
@@ -211,7 +222,28 @@ func (r *Runner) Pump(now time.Time, write Writer) Event {
 			r.prompt = step.Expect
 			return Event{Kind: EventSecret, Step: r.index, Prompt: step.Expect}
 		}
-		if step.Delay > 0 {
+		// A CommandMode rule types a bare ":" first, then pauses, so a menu
+		// shell can switch into its command line before the reply goes in. Its
+		// Delay is that pause (zero uses CommandModePause), and the reply
+		// follows once the pause has passed.
+		if step.CommandMode {
+			if !r.commandPrefixSent {
+				if write == nil || !write([]byte(":"), false) {
+					return r.fail(ErrWrite)
+				}
+				r.commandPrefixSent = true
+				pause := step.Delay
+				if pause <= 0 {
+					pause = CommandModePause
+				}
+				r.commandDeadline = now.Add(pause)
+				return Event{Kind: EventWait, Step: r.index}
+			}
+			if now.Before(r.commandDeadline) {
+				return Event{Kind: EventWait, Step: r.index}
+			}
+			r.commandDeadline = time.Time{}
+		} else if step.Delay > 0 {
 			due := r.matchedAt.Add(step.Delay)
 			if now.Before(due) {
 				r.delayDeadline = due
@@ -260,6 +292,8 @@ func (r *Runner) advance() {
 	r.matchedAt = time.Time{}
 	r.deadline = time.Time{}
 	r.delayDeadline = time.Time{}
+	r.commandPrefixSent = false
+	r.commandDeadline = time.Time{}
 	r.staged = false
 	r.stagedValue = ""
 }
@@ -296,6 +330,8 @@ func (r *Runner) stop(err error) {
 	r.buffer = nil
 	r.deadline = time.Time{}
 	r.delayDeadline = time.Time{}
+	r.commandPrefixSent = false
+	r.commandDeadline = time.Time{}
 	r.matched = false
 	r.matchedAt = time.Time{}
 	r.staged = false
@@ -364,6 +400,17 @@ func (r *Runner) DelayDeadline() time.Time {
 		return time.Time{}
 	}
 	return r.delayDeadline
+}
+
+// CommandDeadline is when a CommandMode rule may send its reply after the
+// leading ":", or the zero time when no rule is waiting that pause out. It is
+// separate from the other deadlines so the caller can wake for whichever comes
+// first.
+func (r *Runner) CommandDeadline() time.Time {
+	if r == nil || r.awaiting || r.finished || r.err != nil {
+		return time.Time{}
+	}
+	return r.commandDeadline
 }
 
 // Index is the rule the runner is on, for messages.

@@ -27,6 +27,9 @@ type savedLoginExpectStep struct {
 	DelayMilliseconds int   `json:"delay_ms,omitempty"`
 	AppendEnter       *bool `json:"append_enter,omitempty"`
 	Sensitive         bool  `json:"sensitive,omitempty"`
+	// CommandMode sends a bare ":" before the reply, entering a menu shell's
+	// command line. Absent on every rule saved before this field existed.
+	CommandMode bool `json:"command_mode,omitempty"`
 }
 
 // encodeLoginExpect turns a host's configuration into its saved form, or nil
@@ -50,6 +53,7 @@ func encodeLoginExpect(config *loginexpect.Config) *savedLoginExpect {
 			ID: step.ID, Expect: step.Expect, TimeoutSeconds: seconds,
 			DelayMilliseconds: loginexpect.DelayMilliseconds(step.Delay),
 			AppendEnter:       &enter, Sensitive: step.Sensitive,
+			CommandMode: step.CommandMode,
 		}
 		if !step.Sensitive {
 			saved.Send = step.Send
@@ -83,6 +87,7 @@ func decodeLoginExpect(entry *savedLoginExpect) *loginexpect.Config {
 			ID: saved.ID, Expect: saved.Expect, Send: send, Timeout: timeout,
 			Delay:       loginexpect.DelayFromMilliseconds(saved.DelayMilliseconds),
 			AppendEnter: appendEnter, Sensitive: saved.Sensitive,
+			CommandMode: saved.CommandMode,
 		})
 	}
 	cfg := loginexpect.Normalize(loginexpect.Config{Enabled: entry.Enabled, Steps: steps})
@@ -105,7 +110,7 @@ func sameSavedLoginExpect(left, right *savedLoginExpect) bool {
 		a, b := left.Steps[index], right.Steps[index]
 		if a.ID != b.ID || a.Expect != b.Expect || a.Send != b.Send ||
 			a.TimeoutSeconds != b.TimeoutSeconds || a.Sensitive != b.Sensitive ||
-			a.DelayMilliseconds != b.DelayMilliseconds {
+			a.DelayMilliseconds != b.DelayMilliseconds || a.CommandMode != b.CommandMode {
 			return false
 		}
 		if (a.AppendEnter == nil) != (b.AppendEnter == nil) {

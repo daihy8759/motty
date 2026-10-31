@@ -600,3 +600,82 @@ func TestReplyWithColonsIsSentAsOneExactPayload(t *testing.T) {
 		})
 	}
 }
+
+// TestCommandModeTypesTheColonAsItsOwnKeystroke pins the TUI path: a rule
+// marked CommandMode writes a bare ":" first, waits CommandModePause, and only
+// then types its reply. Sending the reply straight away would let a menu shell
+// (UsmShell) take its first ":" as the command-line switch and cut the rest.
+func TestCommandModeTypesTheColonAsItsOwnKeystroke(t *testing.T) {
+	now := time.Unix(1, 0)
+	var sent []string
+	write := func(p []byte, sensitive bool) bool {
+		sent = append(sent, string(p))
+		return true
+	}
+	r := New([]Step{{
+		Expect: "[usmshell]$ ", Send: `open -u "1083" -t "ssh:ns@10.200.68.52:22"`,
+		AppendEnter: true, CommandMode: true, Timeout: time.Second,
+	}})
+	r.Feed([]byte("welcome\r\n[usmshell]$ "))
+	if ev := r.Pump(now, write); ev.Kind != EventWait {
+		t.Fatalf("event=%+v", ev)
+	}
+	if !reflect.DeepEqual(sent, []string{":"}) {
+		t.Fatalf("prefix sent=%q", sent)
+	}
+	if r.CommandDeadline().IsZero() {
+		t.Fatal("no command deadline while waiting to type the reply")
+	}
+	// Before the pause elapses nothing more is written.
+	if ev := r.Pump(now.Add(CommandModePause/2), write); ev.Kind != EventWait {
+		t.Fatalf("event=%+v", ev)
+	}
+	if !reflect.DeepEqual(sent, []string{":"}) {
+		t.Fatalf("sent before the pause ended=%q", sent)
+	}
+	// At the deadline the whole reply (colons included) goes in one write.
+	if ev := r.Pump(now.Add(CommandModePause), write); ev.Kind != EventDone {
+		t.Fatalf("event=%+v", ev)
+	}
+	want := []string{":", "open -u \"1083\" -t \"ssh:ns@10.200.68.52:22\"\r"}
+	if !reflect.DeepEqual(sent, want) {
+		t.Fatalf("sent=%q want %q", sent, want)
+	}
+}
+
+// TestCommandModeUsesTheRulesDelayAsThePauseAfterTheColon checks that a rule's
+// Delay tunes the wait between the ":" and the reply, so a slow menu shell can
+// be given longer than the default.
+func TestCommandModeUsesTheRulesDelayAsThePauseAfterTheColon(t *testing.T) {
+	now := time.Unix(1, 0)
+	var sent []string
+	write := func(p []byte, sensitive bool) bool {
+		sent = append(sent, string(p))
+		return true
+	}
+	r := New([]Step{{
+		Expect: "ready", Send: "go", AppendEnter: true,
+		Delay: time.Second, CommandMode: true, Timeout: 5 * time.Second,
+	}})
+	r.Feed([]byte("ready"))
+	// The ":" is typed as soon as the prompt matches; the Delay is the pause
+	// before the reply, not before the ":".
+	if ev := r.Pump(now, write); ev.Kind != EventWait {
+		t.Fatalf("event=%+v", ev)
+	}
+	if !reflect.DeepEqual(sent, []string{":"}) {
+		t.Fatalf("sent=%q", sent)
+	}
+	if ev := r.Pump(now.Add(time.Second/2), write); ev.Kind != EventWait {
+		t.Fatalf("event=%+v", ev)
+	}
+	if !reflect.DeepEqual(sent, []string{":"}) {
+		t.Fatalf("replied before the rule's delay elapsed: %q", sent)
+	}
+	if ev := r.Pump(now.Add(time.Second), write); ev.Kind != EventDone {
+		t.Fatalf("event=%+v", ev)
+	}
+	if want := []string{":", "go\r"}; !reflect.DeepEqual(sent, want) {
+		t.Fatalf("sent=%q want %q", sent, want)
+	}
+}

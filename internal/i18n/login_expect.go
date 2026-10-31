@@ -20,6 +20,7 @@ type LoginExpectMessages struct {
 	DelayPlaceholder     string
 	AppendEnter          string
 	Sensitive            string
+	CommandMode          string
 
 	Add      string
 	Edit     string
@@ -66,6 +67,7 @@ var englishLoginExpect = LoginExpectMessages{
 	DelayPlaceholder:     "0",
 	AppendEnter:          "Press Enter after the reply",
 	Sensitive:            "Ask for the reply at runtime (never saved)",
+	CommandMode:          "Press \":\" first (enter a menu shell's command line)",
 
 	Add:      "Add rule",
 	Edit:     "Edit",
@@ -112,6 +114,7 @@ var chineseLoginExpect = LoginExpectMessages{
 	DelayPlaceholder:     "0",
 	AppendEnter:          "回复后按回车",
 	Sensitive:            "运行时询问回复（不保存）",
+	CommandMode:          "先按「:」进入命令模式（菜单式堡垒机）",
 
 	Add:      "添加规则",
 	Edit:     "编辑",

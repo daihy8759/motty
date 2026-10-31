@@ -3,6 +3,7 @@ package workbench
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,62 @@ func TestLoginExpectSavedRoundTripClearsSensitiveResponse(t *testing.T) {
 	}
 	if decoded.Steps[2].AppendEnter != false {
 		t.Fatalf("append enter lost: %+v", decoded.Steps[2])
+	}
+}
+
+// TestLoginExpectCommandModeRoundTrips pins that the CommandMode flag survives
+// the state file and a catalog transfer, so a saved UsmShell rule keeps typing
+// its ":" before the reply after a restart.
+func TestLoginExpectCommandModeRoundTrips(t *testing.T) {
+	cfg := &loginexpect.Config{Enabled: true, Steps: []loginexpect.Step{
+		{ID: "open", Expect: "[usmshell]$ ", Send: `open -u "1083" -t "ssh:ns@10.200.68.52:22"`, CommandMode: true, AppendEnter: true, Timeout: 20 * time.Second},
+	}}
+	saved := encodeLoginExpect(cfg)
+	if saved == nil || len(saved.Steps) != 1 || !saved.Steps[0].CommandMode {
+		t.Fatalf("command mode was not saved: %+v", saved)
+	}
+	data, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"command_mode":true`) {
+		t.Fatalf("saved json has no command_mode: %s", data)
+	}
+	var back savedLoginExpect
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	decoded := decodeLoginExpect(&back)
+	if decoded == nil || len(decoded.Steps) != 1 || !decoded.Steps[0].CommandMode {
+		t.Fatalf("command mode was lost: %+v", decoded)
+	}
+}
+
+// TestLoginExpectRuntimeCommandModeWritesTheColonFirst drives the workbench
+// writer: the rule's reply only reaches the shell after the ":" has been
+// written and the pause has elapsed.
+func TestLoginExpectRuntimeCommandModeWritesTheColonFirst(t *testing.T) {
+	now := time.Duration(0)
+	cfg := &loginexpect.Config{Enabled: true, Steps: []loginexpect.Step{
+		{Expect: "[usmshell]$ ", Send: `open -u "1083" -t "ssh:ns@10.200.68.52:22"`, CommandMode: true, AppendEnter: true, Timeout: time.Minute},
+	}}
+	state, session, shell := loginExpectTestSession(t, cfg)
+	state.options.Now = func() time.Duration { return now }
+	state.startLoginExpect(session)
+	state.feedLoginExpect(session, []byte("[usmshell]$ "))
+	if got := string(shell.input); got != ":" {
+		t.Fatalf("first write=%q, want just the colon", got)
+	}
+	now = loginexpect.CommandModePause / 2
+	state.driveLoginExpect(session, state.loginExpectNow())
+	if got := string(shell.input); got != ":" {
+		t.Fatalf("replied before the pause ended: %q", got)
+	}
+	now = loginexpect.CommandModePause
+	state.driveLoginExpect(session, state.loginExpectNow())
+	want := `:open -u "1083" -t "ssh:ns@10.200.68.52:22"` + "\r"
+	if got := string(shell.input); got != want {
+		t.Fatalf("reply=%q want %q", got, want)
 	}
 }
 
