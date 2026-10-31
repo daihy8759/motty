@@ -413,6 +413,7 @@ const (
 	modalRenameTab
 	modalAIRename
 	modalCloseTabs
+	modalSessionLink
 	modalAutofillRule
 	modalAutofillConfirm
 	modalHistory
@@ -473,6 +474,7 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 		state.cancelReconnect(session)
 	}
 	session.established = false
+	session.disconnected = false
 	session.restored = false
 	session.autoRestore, session.restoreNote = false, ""
 	session.host = host
@@ -753,7 +755,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 		}
 	}
 
-	if status.Err != nil {
+	if status.Err != nil && !session.disconnected {
 		session.err = status.Err
 		if errors.Is(status.Err, sshconn.ErrHostKeyChanged) && status.EndpointRole != sshconn.EndpointProxyJump {
 			session.stage = stageHostKey // refused while the key was being checked
@@ -791,7 +793,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 		state.stopSessionForwards(session.ID, true)
 		state.closeSFTP(session)
 		state.closeDisconnectedShell(session)
-		if status.Err != nil {
+		if status.Err != nil && !session.disconnected {
 			session.tone = toneFail
 			state.status = state.messages.StatusConnectFailed + session.Title
 		} else {

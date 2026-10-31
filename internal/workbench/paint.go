@@ -253,6 +253,8 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintAIRenameDialog(canvas, viewport)
 	case modalCloseTabs:
 		state.paintCloseTabsDialog(canvas, viewport)
+	case modalSessionLink:
+		state.paintSessionLinkDialog(canvas, viewport)
 	case modalHostImportResult:
 		state.paintHostImportResult(canvas, viewport)
 	case modalNewForward:

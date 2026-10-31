@@ -202,6 +202,7 @@ type Session struct {
 	railStart     time.Duration // when it set out
 
 	established        bool
+	disconnected       bool // the user ended the connection on purpose; the closed status that follows is not a failure
 	reconnectAttempt   int
 	reconnectDue       time.Duration
 	reconnectPending   bool
