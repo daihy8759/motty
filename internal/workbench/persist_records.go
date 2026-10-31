@@ -57,7 +57,10 @@ import (
 // Version 9 keeps a host's password and one-time code secret under the host, not
 // under its login: an older build would look for them where they no longer are.
 // Version 9 was also used by monitoring builds for device-local panel definitions.
-// Version 10 preserves both changes so neither older build can overwrite them.
+// Version 10 preserves both changes so neither older build can overwrite them. It
+// also preserves a host's login Expect/Send rules and the stable host catalog ids
+// saved sessions, proxy routes and forwards use to tell two hosts at one endpoint
+// apart: an older build accepts those records but drops what it does not know.
 const configFormat = 10
 
 const (
@@ -141,10 +144,21 @@ var entityFields = []entityField{
 	}},
 	{field: "host_groups", kind: "group", key: func(fields map[string]json.RawMessage) string { return fieldText(fields, "name") }},
 	{field: "forwards", kind: "forward", key: func(fields map[string]json.RawMessage) string {
+		// A stable host id keeps two forwards to one endpoint apart; old records
+		// name the host by its endpoint instead.
+		if id := fieldText(fields, "host_id"); id != "" {
+			return joinKey("host", id, fieldText(fields, "mode"), fieldText(fields, "local_port"),
+				fieldText(fields, "destination_host"), fieldText(fields, "destination_port"))
+		}
 		return joinKey(fieldText(fields, "mode"), fieldText(fields, "host_address"), fieldText(fields, "host_user"), fieldText(fields, "host_port"),
 			fieldText(fields, "local_port"), fieldText(fields, "destination_host"), fieldText(fields, "destination_port"))
 	}},
 	{field: "proxies", kind: "proxy", key: func(fields map[string]json.RawMessage) string {
+		// Likewise, a route's stable ends keep two routes through one endpoint
+		// apart; old records name the target by its endpoint.
+		if id := fieldText(fields, "target_id"); id != "" {
+			return joinKey("host", id, fieldText(fields, "jump_id"))
+		}
 		return joinKey(fieldText(fields, "target_user"), fieldText(fields, "target_address"), fieldText(fields, "target_port"))
 	}},
 	{field: "snippets", kind: "snippet", key: func(fields map[string]json.RawMessage) string { return fieldText(fields, "name") }},

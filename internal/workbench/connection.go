@@ -85,6 +85,25 @@ func (conn realConn) Ping(ctx context.Context) (time.Duration, error) {
 	return conn.Conn.Ping(ctx)
 }
 
+// extraChannelGate is a Connection that knows whether another channel may be
+// opened on its transport without risking it. A single-session SSH server (or
+// one Motty cannot positively identify) cannot carry a second session; sharing
+// it or auto-opening a file panel would tear the user's shell down. Connections
+// that do not answer are non-SSH adaptors and permit extras.
+type extraChannelGate interface{ PermitsExtraChannels() bool }
+
+func permitsExtraChannels(conn Connection) bool {
+	if gate, ok := conn.(extraChannelGate); ok {
+		return gate.PermitsExtraChannels()
+	}
+	return true
+}
+
+// PermitsExtraChannels asks the SSH banner whether a second channel is safe.
+func (conn realConn) PermitsExtraChannels() bool {
+	return sshconn.SafeForAuxiliaryChannels(conn.Conn.Status().ServerVersion)
+}
+
 // Share opens another tab on this connection's authenticated client.
 func (conn realConn) Share(notify func()) (Connection, error) {
 	child, err := conn.Conn.Share(notify)
@@ -440,6 +459,7 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	}
 	if session.term != nil {
 		session.term.recording.stop()
+		session.term.recording.resetSecrets()
 	}
 	if !automatic {
 		state.cancelReconnect(session)
@@ -538,8 +558,12 @@ func (state *State) shareFrom(session *Session, host Host) (Connection, *Session
 		other := &state.sessions[index]
 		// The saved host may have been edited since this transport was opened.
 		// Compare its dialed account/address, not the next connection's settings.
-		if other.ID == session.ID || other.conn == nil || other.Address != address ||
-			other.jumpPath != session.jumpPath || other.proxyRoute != session.proxyRoute {
+		if other.ID == session.ID || other.conn == nil || !sameSharingHost(other, session) ||
+			other.Address != address || other.jumpPath != session.jumpPath || other.proxyRoute != session.proxyRoute ||
+			!permitsExtraChannels(other.conn) {
+			// An unidentified host may allow only one session: borrowing its
+			// transport for another shell or file window would kill the shell
+			// already on it, so that tab dials its own connection instead.
 			continue
 		}
 		lender, ok := other.conn.(sharer)
@@ -551,6 +575,18 @@ func (state *State) shareFrom(session *Session, host Host) (Connection, *Session
 		}
 	}
 	return nil, nil
+}
+
+// sameSharingHost reports whether two tabs belong to the same saved host entry.
+// A stable catalog id is the boundary: two entries at one endpoint may use
+// different keys or agents, so borrowing one entry's authenticated connection
+// for the other would bypass its settings. A typed target has no saved identity
+// and keeps the old endpoint-based sharing.
+func sameSharingHost(a, b *Session) bool {
+	if a.host.CatalogID != "" && b.host.CatalogID != "" {
+		return a.host.CatalogID == b.host.CatalogID
+	}
+	return a.HostID == b.HostID
 }
 
 // finishStartingConnection resets what the connection page shows for a
@@ -735,9 +771,6 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 		}
 		// After the connected line: a saved or failed save is what the user needs to read.
 		state.rememberSecret(session)
-		if session.ID == state.activeSessionID {
-			state.ensureContextSFTP()
-		}
 	case sshconn.PhaseClosed:
 		state.endDesktop(session)
 		session.pendingSecretName, session.pendingSecretValue = "", ""
@@ -802,9 +835,13 @@ func (state *State) closeDisconnectedShell(session *Session) {
 		terminal.write(terminal.rx)
 		state.goLive(session)
 	}
+	// Output that arrived as the connection ended may have held a partial reply;
+	// now that the stream is over it can be settled and the state cleared.
+	terminal.recording.finishSecrets(state.now())
 	releaseShell(terminal.shell)
 	terminal.shell = nil
 	terminal.recording.stop()
+	terminal.recording.resetSecrets()
 	terminal.ended = true
 	terminal.preedit = app.TextState{}
 }

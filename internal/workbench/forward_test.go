@@ -528,6 +528,105 @@ func TestRestoreForwardsValidatesModesAndCanonicalizesProxyModes(t *testing.T) {
 	}
 }
 
+func TestRestoreForwardsKeepsARunningRecordOnlyWhenItsConnectionMatches(t *testing.T) {
+	state := newTestState(t, testOptions(t))
+	host := state.hosts[0]
+	base := forwardRecord{
+		ID: 42, Label: "Old", Mode: portforward.ModeLocal,
+		HostCatalogID: host.CatalogID, HostLabel: host.Label,
+		HostAddress: host.Address, HostUser: host.User, HostPort: host.Port,
+		LocalPort: 9000, DestinationHost: "web.internal", DestinationPort: 8080,
+	}
+	restore := func(t *testing.T, change func(*savedForward)) forwardRecord {
+		t.Helper()
+		entry := savedForward{
+			Label: "Renamed", Mode: "local", HostID: host.CatalogID, HostLabel: host.Label,
+			HostAddress: host.Address, HostUser: host.User, HostPort: host.Port,
+			LocalPort: 9000, DestinationHost: "web.internal", DestinationPort: 8080,
+		}
+		change(&entry)
+		state.forwards = []forwardRecord{base}
+		state.nextForwardID = 43
+		state.restoreForwards([]savedForward{entry})
+		if len(state.forwards) != 1 {
+			t.Fatalf("restored forwards = %+v", state.forwards)
+		}
+		return state.forwards[0]
+	}
+
+	// A renamed forward is the same running configuration.
+	renamed := restore(t, func(*savedForward) {})
+	if renamed.ID != base.ID || renamed.Label != "Renamed" {
+		t.Fatalf("a rename did not keep the running record: %+v", renamed)
+	}
+
+	for name, change := range map[string]func(*savedForward){
+		"address":          func(entry *savedForward) { entry.HostAddress = "moved.example.com" },
+		"user":             func(entry *savedForward) { entry.HostUser = "other" },
+		"port":             func(entry *savedForward) { entry.HostPort = 2222 },
+		"local port":       func(entry *savedForward) { entry.LocalPort = 9001 },
+		"destination host": func(entry *savedForward) { entry.DestinationHost = "db.internal" },
+		"destination port": func(entry *savedForward) { entry.DestinationPort = 8081 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := restore(t, change)
+			if got.ID == base.ID {
+				t.Fatalf("a changed %s kept the old running record: %+v", name, got)
+			}
+		})
+	}
+}
+
+func TestRestoredForwardPinsAnOldRecordByItsEndpoint(t *testing.T) {
+	state := newTestState(t, testOptions(t))
+	host := state.hosts[0]
+	state.restoreForwards([]savedForward{
+		{Label: "Old", Mode: "local", HostLabel: host.Label, HostAddress: host.Address, HostUser: host.User, HostPort: host.Port, LocalPort: 9000, DestinationHost: "127.0.0.1", DestinationPort: 80},
+		{Label: "Ghost", Mode: "local", HostAddress: "ghost.example.com", HostUser: "me", HostPort: 22, LocalPort: 9001, DestinationHost: "127.0.0.1", DestinationPort: 80},
+		{Label: "Gone", Mode: "local", HostID: "host_missing", HostAddress: host.Address, HostUser: host.User, HostPort: host.Port, LocalPort: 9002, DestinationHost: "127.0.0.1", DestinationPort: 80},
+	})
+	byLabel := map[string]forwardRecord{}
+	for _, forward := range state.forwards {
+		byLabel[forward.Label] = forward
+	}
+	if got := byLabel["Old"]; got.HostCatalogID != host.CatalogID || !state.forwardHostAvailable(got) {
+		t.Fatalf("an old forward was not pinned to its endpoint host: %+v", got)
+	}
+	if got := byLabel["Ghost"]; got.HostCatalogID != "" || state.forwardHostAvailable(got) {
+		t.Fatalf("an unmatched old forward should stay unavailable: %+v", got)
+	}
+	if got := byLabel["Gone"]; got.HostCatalogID != "host_missing" || state.forwardHostAvailable(got) {
+		t.Fatalf("a forward with a missing stable id fell back to its endpoint: %+v", got)
+	}
+}
+
+func TestRestoringAfterAMigrationKeepsTheRunningForward(t *testing.T) {
+	state := newTestState(t, testOptions(t))
+	host := state.hosts[0]
+	base := forwardRecord{
+		ID: 7, Label: "Web", Mode: portforward.ModeLocal, HostLabel: host.Label,
+		HostAddress: host.Address, HostUser: host.User, HostPort: host.Port,
+		LocalPort: 9000, DestinationHost: "127.0.0.1", DestinationPort: 80,
+	}
+	state.forwards = []forwardRecord{base}
+	state.nextForwardID = 8
+	state.restoreForwards([]savedForward{{
+		Label: "Web renamed", Mode: "local", HostID: host.CatalogID, HostLabel: host.Label,
+		HostAddress: host.Address, HostUser: host.User, HostPort: host.Port,
+		LocalPort: 9000, DestinationHost: "127.0.0.1", DestinationPort: 80,
+	}})
+	if len(state.forwards) != 1 {
+		t.Fatalf("restored forwards = %+v", state.forwards)
+	}
+	got := state.forwards[0]
+	if got.ID != base.ID || got.Label != "Web renamed" {
+		t.Fatalf("a migrated running forward was restarted: %+v", got)
+	}
+	if got.HostCatalogID != host.CatalogID {
+		t.Fatalf("the running forward did not take the pinned host id: %+v", got)
+	}
+}
+
 func TestForwardWaitsForSSHStartsAndStopsWithSession(t *testing.T) {
 	world, options := newWorld(t)
 	state := newTestState(t, options)

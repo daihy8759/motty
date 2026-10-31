@@ -64,16 +64,19 @@ func TestHostDialogValidationAndSubmit(t *testing.T) {
 		t.Fatalf("empty form submitted: open=%v error=%q", (state.modal == modalNewHost), state.dialogError)
 	}
 
-	// Duplicate address must not submit.
+	// An invalid port must not submit.
 	typeInto(state, hitDialogLabel, "Edge")
 	typeInto(state, hitDialogAddress, "prod.example.com")
 	typeInto(state, hitDialogUser, "deploy")
+	state.editor.port.SetSelection(text.Range{Start: 0, End: len("22")})
+	typeInto(state, hitDialogPort, "70000")
 	state.Click(hitDialogSubmit)
-	if !(state.modal == modalNewHost) || state.dialogError != state.messages.ErrAddressTaken {
-		t.Fatalf("duplicate host accepted: error=%q", state.dialogError)
+	if !(state.modal == modalNewHost) || state.dialogError != state.messages.ErrPortInvalid {
+		t.Fatalf("invalid port accepted: error=%q", state.dialogError)
 	}
 
 	// A valid form appends the host and closes.
+	state.editor.port = text.Editor{}
 	state.editor.address.SetSelection(text.Range{Start: 0, End: len("prod.example.com")})
 	typeInto(state, hitDialogAddress, "edge.example.com")
 	state.editor.user.SetSelection(text.Range{Start: 0, End: len("deploy")})

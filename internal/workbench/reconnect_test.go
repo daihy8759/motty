@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -133,6 +134,25 @@ func TestAutomaticReconnectStopsForCredentialAndHostKeyErrors(t *testing.T) {
 				t.Fatalf("terminal error left reconnect %+v", session)
 			}
 		})
+	}
+}
+
+func TestMalformedDisconnectIsNotRetriedAutomaticallyButEnterStillConnects(t *testing.T) {
+	state, world, connection, _ := reconnectingSession(t, reconnectForever)
+	connection.set(func(status *sshconn.Status) {
+		status.Phase = sshconn.PhaseClosed
+		status.Err = fmt.Errorf("%w: %w", sshconn.ErrDisconnected, sshconn.ErrMalformedDisconnect)
+	})
+	state.Wake()
+	session := &state.sessions[0]
+	if session.reconnectPending || session.reconnectAttempt != 0 {
+		t.Fatalf("a malformed disconnect scheduled a blind retry: %+v", session)
+	}
+	// It stays a user-visible failure, and pressing Enter is still the explicit
+	// way to try again after fixing the server.
+	key(state, 0, ui.KeyEvent{Key: ui.KeyEnter})
+	if len(world.conns) != 2 {
+		t.Fatalf("Enter dialed %d connections, want 2", len(world.conns))
 	}
 }
 

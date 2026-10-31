@@ -102,6 +102,43 @@ func TestANewTabOnAConnectedHostSharesToo(t *testing.T) {
 	}
 }
 
+// Two saved entries at one endpoint can use different keys or agents. Borrowing
+// the first entry's authenticated connection for the second would bypass its
+// settings, so the second must dial; a new tab on either entry still shares.
+func TestASecondSavedHostAtTheSameEndpointIsDialedNotShared(t *testing.T) {
+	world, options := newSharingWorld(t)
+	state := newTestState(t, options)
+	production := state.hosts[0]
+	alt := addHostAtSharedEndpoint(t, state, production, "Production alt", func(state *State) {
+		state.editor.auth = authAgent
+	})
+	state.selectedHostID = production.ID
+	state.hostSelections = nil
+	world.connectFirst(t, state)
+
+	state.Click(hitHosts)
+	state.Click(hitHostList.At(int(alt.ID)))
+	openHost(state)
+	if len(world.conns) != 2 || len(world.shared) != 0 {
+		t.Fatalf("dials=%d shares=%d: a different entry at the same endpoint must dial", len(world.conns), len(world.shared))
+	}
+	if len(world.configs) != 2 || world.configs[1].Host != production.Address || world.configs[1].Port != production.Port {
+		t.Fatalf("second dial configs = %+v", world.configs)
+	}
+	endpoint := sshconn.Endpoint{Host: production.Address, Port: production.Port, User: production.User}
+	if world.configs[0].Authentication[endpoint].Methods == world.configs[1].Authentication[endpoint].Methods {
+		t.Fatalf("the second entry did not dial with its own authentication: %+v",
+			world.configs[1].Authentication[endpoint])
+	}
+
+	state.Click(hitHosts)
+	state.Click(hitHostList.At(int(production.ID)))
+	openHost(state)
+	if len(world.conns) != 2 || len(world.shared) != 1 {
+		t.Fatalf("dials=%d shares=%d: the same entry should still share", len(world.conns), len(world.shared))
+	}
+}
+
 func TestContainerTabSharesOnlyItsSourceAndOpensIndependentPTY(t *testing.T) {
 	world, options := newSharingWorld(t)
 	state := newTestState(t, options)

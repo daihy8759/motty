@@ -35,15 +35,18 @@ type fakeConn struct {
 	sftp              sftpclient.Remote
 	sftpErr           error
 	sftpOpens         int
-	scp               sftpclient.Remote
-	scpOpens          int
-	dial              func(context.Context, string, string) (net.Conn, error)
-	dialCalls         []fakeDialCall
-	listen            func(string, string) (net.Listener, error)
-	listenCalls       []fakeListenCall
-	runCommand        func(context.Context, string, int) ([]byte, error)
-	streamCommand     func(context.Context, string, int, func([]byte) bool) error
-	commandCalls      []string
+	// extraChannels, when set, decides PermitsExtraChannels; nil keeps the old
+	// default of allowing a second channel (non-SSH adaptors and most tests).
+	extraChannels *bool
+	scp           sftpclient.Remote
+	scpOpens      int
+	dial          func(context.Context, string, string) (net.Conn, error)
+	dialCalls     []fakeDialCall
+	listen        func(string, string) (net.Listener, error)
+	listenCalls   []fakeListenCall
+	runCommand    func(context.Context, string, int) ([]byte, error)
+	streamCommand func(context.Context, string, int, func([]byte) bool) error
+	commandCalls  []string
 }
 
 type fakeDialCall struct {
@@ -90,6 +93,14 @@ func (fake *fakeConn) OpenSCP() (sftpclient.Remote, error) {
 		return nil, errors.New("test SCP client is not configured")
 	}
 	return fake.scp, nil
+}
+
+// PermitsExtraChannels stands in for a single-session server when extraChannels
+// is false; unset keeps the old default of allowing extras.
+func (fake *fakeConn) PermitsExtraChannels() bool {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return fake.extraChannels == nil || *fake.extraChannels
 }
 
 func (fake *fakeConn) DialContext(ctx context.Context, network, address string) (net.Conn, error) {

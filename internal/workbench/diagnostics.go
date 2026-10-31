@@ -232,7 +232,12 @@ func errorKind(err error) string {
 	}{
 		{sshconn.ErrCanceled, "canceled"}, {sshconn.ErrHostKeyRejected, "host-key-rejected"},
 		{sshconn.ErrHostKeyChanged, "host-key-changed"}, {sshconn.ErrAuthFailed, "auth-failed"},
-		{sshconn.ErrDisconnected, "disconnected"}, {sshconn.ErrKeepAliveTimeout, "keepalive-timeout"},
+		// More specific first: malformed disconnects, closed transports and
+		// keepalive timeouts also satisfy errors.Is(ErrDisconnected).
+		{sshconn.ErrMalformedDisconnect, "malformed-disconnect"},
+		{sshconn.ErrTransportClosed, "transport-closed"},
+		{sshconn.ErrKeepAliveTimeout, "keepalive-timeout"},
+		{sshconn.ErrDisconnected, "disconnected"},
 	} {
 		if errors.Is(err, known.err) {
 			return known.name

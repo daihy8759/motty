@@ -58,7 +58,10 @@ func reconnectTerminalError(err error) bool {
 	return errors.Is(err, sshconn.ErrCanceled) ||
 		errors.Is(err, sshconn.ErrAuthFailed) ||
 		errors.Is(err, sshconn.ErrHostKeyChanged) ||
-		errors.Is(err, sshconn.ErrHostKeyRejected)
+		errors.Is(err, sshconn.ErrHostKeyRejected) ||
+		// A malformed SSH disconnect is a deterministic protocol violation on
+		// the server side (or a middlebox); reconnecting only repeats it.
+		errors.Is(err, sshconn.ErrMalformedDisconnect)
 }
 
 func (state *State) cancelReconnect(session *Session) {

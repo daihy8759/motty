@@ -162,7 +162,6 @@ func TestWithoutASecretACodeQuestionIsTheUsers(t *testing.T) {
 		t.Fatalf("modal %d, sent %v", state.modal, fake.passwords)
 	}
 }
-
 func TestSavingASecretNeedsAnUnlockedVault(t *testing.T) {
 	state, _ := otpState(t)
 	if err := state.secrets.vault.LegacyForTests("master-pass"); err != nil {

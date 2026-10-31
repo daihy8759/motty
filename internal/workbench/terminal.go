@@ -465,6 +465,9 @@ func (t *terminal) sendSecret(p []byte) bool {
 	accepted := t.shell.Write(p)
 	t.inputSent = t.inputSent || accepted
 	if accepted {
+		// A remote that echoes the reply puts it into future output; tell the
+		// recording so it can leave the echo out.
+		t.recording.addSecret(p)
 		t.noteShellInput(p)
 	}
 	return accepted
@@ -620,12 +623,24 @@ func (t *terminal) abandonShell() {
 // shellOpened is what becomes of a session once its shell is, or is not, open.
 func (state *State) shellOpened(session *Session, shell Shell, err error) {
 	t := session.term
-	if err != nil && session.shared && session.containerCommand == "" {
+	if err != nil && session.shared && session.containerCommand == "" &&
+		!errors.Is(err, sshconn.ErrDisconnected) && !errors.Is(err, sshconn.ErrTransportClosed) {
 		// A server limits how many shells one connection may carry. Where the
 		// borrowed connection is full, connect separately instead of failing.
 		t.say(sgrWarn, fmt.Sprintf(state.messages.ConnShareRefusedFmt, err))
 		session.avoidShare = true
 		state.startConnectionMode(session, session.host, false)
+		return
+	}
+	if err != nil && (errors.Is(err, sshconn.ErrDisconnected) || errors.Is(err, sshconn.ErrTransportClosed)) {
+		// The transport itself is gone, so the shell never had a chance. The
+		// connection status reports that single cause; blaming the shell as well
+		// would state the same failure twice with two different wordings.
+		t.ended = true
+		session.tone = toneFail
+		session.err, session.shellFailed = err, false
+		session.finished = state.now()
+		state.describe(session)
 		return
 	}
 	if err != nil {
@@ -639,6 +654,12 @@ func (state *State) shellOpened(session *Session, shell Shell, err error) {
 	}
 	t.shell = shell
 	t.shellOpened = state.now()
+	// Only now may the optional SFTP panel open its subsystem: opening it before
+	// or beside the shell gives a single-session server a second session and
+	// tears the transport down. The shell is always the first channel.
+	if session.ID == state.activeSessionID {
+		state.ensureContextSFTP()
+	}
 	forwardNotes := 0
 	if reporter, ok := shell.(interface{ X11Err() error }); ok && session.host.ForwardX11 {
 		if err := reporter.X11Err(); err != nil {
@@ -780,6 +801,7 @@ func (state *State) shellEnded(session *Session) {
 	t.shell.Close()
 	t.shell = nil
 	t.finishExec(false, false)
+	t.recording.finishSecrets(state.now())
 	t.recording.stop()
 	t.ended = true
 	t.prediction.reset()

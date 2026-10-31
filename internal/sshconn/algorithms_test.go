@@ -57,25 +57,58 @@ func TestParseRefusesWhatItDoesNotKnow(t *testing.T) {
 	}
 }
 
+// An RSA host key on file must still be offered with the SHA-1 signature as a
+// last resort, or a server that can only sign that way has no common host-key
+// algorithm with us; the modern SHA-2 variants stay first.
+func TestAlgorithmsForKeepsSSHRSAAsTheLastResortForRSAKeys(t *testing.T) {
+	got := algorithmsFor(ssh.KeyAlgoRSA)
+	want := []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
+	if !slices.Equal(got, want) {
+		t.Fatalf("RSA key algorithms = %v, want %v", got, want)
+	}
+	if got := algorithmsFor(ssh.KeyAlgoED25519); !slices.Equal(got, []string{ssh.KeyAlgoED25519}) {
+		t.Fatalf("ed25519 key algorithms = %v", got)
+	}
+}
+
 func TestHostKeyAlgorithmsKeepTheKnownKeyInCharge(t *testing.T) {
 	known := []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
-	if got := hostKeyAlgorithms(nil, nil); got != nil {
-		t.Fatalf("new host, defaults: %v", got)
+	if got, err := hostKeyAlgorithms(nil, nil); got != nil || err != nil {
+		t.Fatalf("new host, defaults: %v, %v", got, err)
 	}
-	if got := hostKeyAlgorithms(known, nil); !slices.Equal(got, known) {
-		t.Fatalf("known host, defaults: %v", got)
+	if got, err := hostKeyAlgorithms(known, nil); err != nil || !slices.Equal(got, known) {
+		t.Fatalf("known host, defaults: %v, %v", got, err)
 	}
 	wanted := []string{ssh.KeyAlgoED25519, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
-	if got := hostKeyAlgorithms(nil, wanted); !slices.Equal(got, wanted) {
-		t.Fatalf("new host, wanted: %v", got)
+	if got, err := hostKeyAlgorithms(nil, wanted); err != nil || !slices.Equal(got, wanted) {
+		t.Fatalf("new host, wanted: %v, %v", got, err)
 	}
 	// The trusted RSA key is checked, and an old server that signs with SHA-1 is
 	// still allowed because ssh-rsa was asked for.
-	if got := hostKeyAlgorithms(known, wanted); !slices.Equal(got, []string{ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}) {
-		t.Fatalf("known and wanted: %v", got)
+	if got, err := hostKeyAlgorithms(known, wanted); err != nil || !slices.Equal(got, []string{ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}) {
+		t.Fatalf("known and wanted: %v, %v", got, err)
 	}
-	if got := hostKeyAlgorithms(known, []string{ssh.KeyAlgoED25519}); !slices.Equal(got, known) {
-		t.Fatalf("no overlap falls back to the trusted key: %v", got)
+	// A list that shares nothing with the trusted key is refused rather than
+	// silently widened to the trusted key.
+	if got, err := hostKeyAlgorithms(known, []string{ssh.KeyAlgoED25519}); !errors.As(err, new(*HostKeyAlgorithmError)) || got != nil {
+		t.Fatalf("no overlap: %v, %v", got, err)
+	}
+}
+
+// The default offer for a known RSA key keeps ssh-rsa after the SHA-2 variants,
+// while a custom list that leaves ssh-rsa out still forbids it. A custom list
+// that shares nothing with the key -- even with ssh-rsa present in the known
+// set -- must not fall back to it.
+func TestHostKeyAlgorithmsKeepSSHRSAReachableForAKnownRSAKey(t *testing.T) {
+	known := algorithmsFor(ssh.KeyAlgoRSA)
+	if got, err := hostKeyAlgorithms(known, nil); err != nil || !slices.Equal(got, known) {
+		t.Fatalf("default offer for a known RSA key = %v, %v, want %v", got, err, known)
+	}
+	if got, err := hostKeyAlgorithms(known, []string{ssh.KeyAlgoRSASHA256}); err != nil || slices.Contains(got, ssh.KeyAlgoRSA) {
+		t.Fatalf("a custom list without ssh-rsa offered it: %v, %v", got, err)
+	}
+	if got, err := hostKeyAlgorithms(known, []string{ssh.KeyAlgoED25519}); !errors.As(err, new(*HostKeyAlgorithmError)) || got != nil {
+		t.Fatalf("an unrelated custom list fell back to the known key: %v, %v", got, err)
 	}
 }
 

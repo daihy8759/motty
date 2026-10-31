@@ -15,9 +15,13 @@ import (
 )
 
 type forwardRecord struct {
-	ID              uint32
-	Label           string
-	Mode            portforward.Mode
+	ID    uint32
+	Label string
+	Mode  portforward.Mode
+	// HostCatalogID is the stable id of the host the forward belongs to. It is
+	// empty only for records restored from old files that name the host by its
+	// endpoint.
+	HostCatalogID   string
 	HostLabel       string
 	HostAddress     string
 	HostUser        string
@@ -88,7 +92,30 @@ func (forward *forwardRecord) savedMode() string {
 }
 
 func (forward forwardRecord) matchesHost(host Host) bool {
+	if forward.HostCatalogID != "" {
+		return host.CatalogID == forward.HostCatalogID
+	}
 	return forward.HostAddress == host.Address && forward.HostUser == host.User && forward.HostPort == host.Port
+}
+
+// forwardHostForRestore finds the host a saved forward belongs to: its stable id
+// when it has one (a missing host stays missing, never falling back), otherwise
+// the first SSH host at its endpoint, which is how old id-less records matched.
+func (state *State) forwardHostForRestore(forward forwardRecord) (Host, bool) {
+	if forward.HostCatalogID != "" {
+		for _, host := range state.hosts {
+			if host.CatalogID == forward.HostCatalogID {
+				return host, true
+			}
+		}
+		return Host{}, false
+	}
+	for _, host := range state.hosts {
+		if host.isSSH() && forward.matchesHost(host) {
+			return host, true
+		}
+	}
+	return Host{}, false
 }
 
 func (forward *forwardRecord) refresh(messages i18n.Messages, hostAvailable bool) {
@@ -238,7 +265,7 @@ func (editor *forwardEditor) record(id uint32, host Host) forwardRecord {
 	localPort, _ := editor.port(forwardFieldLocalPort)
 	forward := forwardRecord{
 		ID: id, Label: editor.value(forwardFieldLabel), Mode: editor.mode,
-		HostLabel: host.Label, HostAddress: host.Address, HostUser: host.User, HostPort: host.Port,
+		HostCatalogID: host.CatalogID, HostLabel: host.Label, HostAddress: host.Address, HostUser: host.User, HostPort: host.Port,
 		LocalPort: localPort,
 	}
 	if !editor.usesClientDestination() {
@@ -580,17 +607,31 @@ func (state *State) restoreForwards(saved []savedForward) {
 		}
 		forward := forwardRecord{
 			ID: next, Label: entry.Label, Mode: mode,
-			HostLabel: entry.HostLabel, HostAddress: entry.HostAddress, HostUser: entry.HostUser, HostPort: entry.HostPort,
+			HostCatalogID: entry.HostID,
+			HostLabel:     entry.HostLabel, HostAddress: entry.HostAddress, HostUser: entry.HostUser, HostPort: entry.HostPort,
 			LocalPort: entry.LocalPort,
 		}
 		if mode == portforward.ModeLocal || mode == portforward.ModeRemote {
 			forward.DestinationHost = entry.DestinationHost
 			forward.DestinationPort = entry.DestinationPort
 		}
+		// An old record without an id named its host by endpoint. Pin the host it
+		// matches now, before another entry can appear at that endpoint; an id
+		// the record already carries is never replaced or second-guessed.
+		if forward.HostCatalogID == "" {
+			if host, ok := state.forwardHostForRestore(forward); ok {
+				forward.HostCatalogID = host.CatalogID
+			}
+		}
 		if index := slices.IndexFunc(previous, forward.sameAs); index >= 0 {
 			kept := previous[index]
 			previous = slices.Delete(previous, index, index+1)
 			kept.Label, kept.HostLabel = forward.Label, forward.HostLabel
+			// An old running record may have no id yet; keep its transport but
+			// take the id this restore pinned, so the migration sticks.
+			if kept.HostCatalogID == "" {
+				kept.HostCatalogID = forward.HostCatalogID
+			}
 			forward = kept
 		} else {
 			next++
@@ -611,12 +652,22 @@ func (state *State) restoreForwards(saved []savedForward) {
 	state.refreshForwardCount()
 }
 
-// sameAs says whether two records are the same forward: what is listened on and
-// where it goes, whatever it is called.
+// sameAs says whether two records are the same forward: what it listens on, where
+// it goes, and the host connection it uses. A stable host id distinguishes two
+// hosts at one endpoint, but it never replaces the connection fields: a forward
+// whose endpoint changed under the same host is a new running configuration. An
+// old id-less record is the same running forward when those fields still match,
+// so migration can give it an id without restarting it.
 func (forward forwardRecord) sameAs(other forwardRecord) bool {
-	return forward.Mode == other.Mode && forward.HostAddress == other.HostAddress && forward.HostUser == other.HostUser &&
-		forward.HostPort == other.HostPort && forward.LocalPort == other.LocalPort &&
-		forward.DestinationHost == other.DestinationHost && forward.DestinationPort == other.DestinationPort
+	if forward.Mode != other.Mode || forward.LocalPort != other.LocalPort ||
+		forward.DestinationHost != other.DestinationHost || forward.DestinationPort != other.DestinationPort ||
+		forward.HostAddress != other.HostAddress || forward.HostUser != other.HostUser || forward.HostPort != other.HostPort {
+		return false
+	}
+	if forward.HostCatalogID != "" && other.HostCatalogID != "" {
+		return forward.HostCatalogID == other.HostCatalogID
+	}
+	return true
 }
 
 func restoreForwardMode(saved string) (portforward.Mode, bool) {

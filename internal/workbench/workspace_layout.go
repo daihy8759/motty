@@ -246,9 +246,27 @@ func (state *State) ensureContextSFTP() {
 	if !ok || !context.Open || context.Kind != layoutcore.ContextSFTP {
 		return
 	}
-	if session, ok := state.sessionByIDPointer(state.activeSessionID); ok && session.files == nil {
-		state.openSFTP(session) // a session that is not connected is left alone
+	session, ok := state.sessionByIDPointer(state.activeSessionID)
+	if !ok || session.files != nil {
+		return
 	}
+	if session.isLocal() {
+		state.openSFTP(session)
+		return
+	}
+	// This is the automatic path (after a restart that reconnected the session,
+	// after moving to a connected session, or after the shell opened). The
+	// shell must exist first, and the transport must positively allow a second
+	// channel: an unidentified host may be a single-session appliance, where an
+	// automatic SFTP session would tear the user's shell down. The empty panel
+	// then offers Open, which is the user's explicit choice.
+	if session.conn == nil || session.term == nil || session.term.shell == nil {
+		return
+	}
+	if !permitsExtraChannels(session.conn) {
+		return
+	}
+	state.openSFTP(session)
 }
 
 func (state *State) activeWorkspaceLayout() (layoutcore.WorkspaceID, *layoutcore.Layout) {

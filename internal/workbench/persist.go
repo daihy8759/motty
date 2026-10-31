@@ -172,8 +172,12 @@ type savedHostGroup struct {
 }
 
 type savedForward struct {
-	Label           string `json:"label"`
-	Mode            string `json:"mode,omitempty"`
+	Label string `json:"label"`
+	Mode  string `json:"mode,omitempty"`
+	// HostID is the catalog id of the host the forward belongs to. It is absent
+	// in old files, where the address, user and port identify the host instead;
+	// with repeated endpoints only it tells two hosts apart.
+	HostID          string `json:"host_id,omitempty"`
 	HostLabel       string `json:"host_label"`
 	HostAddress     string `json:"host_address"`
 	HostUser        string `json:"host_user,omitempty"`
@@ -184,21 +188,28 @@ type savedForward struct {
 }
 
 type savedProxy struct {
+	// TargetID and JumpID are the catalog ids of the route's ends. Old files
+	// leave them empty and name the hosts by address, user and port instead.
+	TargetID      string `json:"target_id,omitempty"`
 	TargetAddress string `json:"target_address"`
 	TargetUser    string `json:"target_user,omitempty"`
 	TargetPort    uint16 `json:"target_port"`
+	JumpID        string `json:"jump_id,omitempty"`
 	JumpAddress   string `json:"jump_address"`
 	JumpUser      string `json:"jump_user,omitempty"`
 	JumpPort      uint16 `json:"jump_port"`
 }
 
 type savedSession struct {
-	Label     string `json:"label,omitempty"`
-	Address   string `json:"address"`
-	User      string `json:"user,omitempty"`
-	Port      uint16 `json:"port,omitempty"`
-	System    string `json:"system,omitempty"`
+	Label   string `json:"label,omitempty"`
+	Address string `json:"address"`
+	User    string `json:"user,omitempty"`
+	Port    uint16 `json:"port,omitempty"`
+	System  string `json:"system,omitempty"`
+	// SavedHost says the tab was opened from a saved host. HostID is that host's
+	// catalog id; old files leave it empty and fall back to the endpoint.
 	SavedHost bool   `json:"saved_host,omitempty"`
+	HostID    string `json:"host_id,omitempty"`
 	// Local marks a shell on this computer: it has no address to dial.
 	Local          bool   `json:"local,omitempty"`
 	LocalDirectory string `json:"local_directory,omitempty"`
@@ -483,7 +494,7 @@ func (state *State) snapshot() savedState {
 	}
 	for _, forward := range state.forwards {
 		saved.Forwards = append(saved.Forwards, savedForward{
-			Label: forward.Label, Mode: forward.savedMode(), HostLabel: forward.HostLabel, HostAddress: forward.HostAddress,
+			Label: forward.Label, Mode: forward.savedMode(), HostID: forward.HostCatalogID, HostLabel: forward.HostLabel, HostAddress: forward.HostAddress,
 			HostUser: forward.HostUser, HostPort: forward.HostPort, LocalPort: forward.LocalPort,
 			DestinationHost: forward.DestinationHost, DestinationPort: forward.DestinationPort,
 		})
@@ -495,8 +506,8 @@ func (state *State) snapshot() savedState {
 			continue
 		}
 		saved.Proxies = append(saved.Proxies, savedProxy{
-			TargetAddress: target.Address, TargetUser: target.User, TargetPort: target.Port,
-			JumpAddress: jump.Address, JumpUser: jump.User, JumpPort: jump.Port,
+			TargetID: target.CatalogID, TargetAddress: target.Address, TargetUser: target.User, TargetPort: target.Port,
+			JumpID: jump.CatalogID, JumpAddress: jump.Address, JumpUser: jump.User, JumpPort: jump.Port,
 		})
 	}
 	for index := range state.sessions {
@@ -511,9 +522,13 @@ func (state *State) snapshot() savedState {
 			}
 			continue
 		}
+		savedHostID := ""
+		if session.HostID != 0 {
+			savedHostID = session.host.CatalogID
+		}
 		saved.Sessions = append(saved.Sessions, savedSession{
 			Label: session.Title, Address: session.host.Address, User: session.host.User,
-			Port: session.host.Port, System: session.host.System.String(), SavedHost: session.HostID != 0,
+			Port: session.host.Port, System: session.host.System.String(), SavedHost: session.HostID != 0, HostID: savedHostID,
 			savedTransport: session.host.transport(),
 		})
 		if session.ID == state.activeSessionID {
@@ -861,6 +876,16 @@ func (state *State) restoreSessionHost(entry savedSession) (Host, bool) {
 	}
 	host.normalizeEndpoint()
 	if entry.SavedHost {
+		// A saved tab belongs to the exact host it was opened from. Older files
+		// have no id, so the endpoint is the only clue they carry.
+		if entry.HostID != "" {
+			for _, saved := range state.hosts {
+				if saved.CatalogID == entry.HostID {
+					return saved, true
+				}
+			}
+			return Host{}, false
+		}
 		for _, saved := range state.hosts {
 			if sameEndpoint(saved, host) {
 				return saved, true

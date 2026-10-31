@@ -302,7 +302,7 @@ func TestEditHostUpdatesSessionForwardAndProxyReferences(t *testing.T) {
 	}
 }
 
-func TestCopyHostRequiresAnEditedUniqueDestination(t *testing.T) {
+func TestCopyHostAtTheSameDestinationIsAnIndependentEntry(t *testing.T) {
 	options := testOptions(t)
 	state := newTestState(t, options)
 	clickHostAction(state, hitCopyHost)
@@ -310,17 +310,114 @@ func TestCopyHostRequiresAnEditedUniqueDestination(t *testing.T) {
 		t.Fatalf("copy dialog mode=%d label=%q", state.hostDialogMode, state.editor.value(fieldLabel))
 	}
 	state.Click(hitDialogSubmit)
-	if state.modal != modalNewHost || state.dialogError != state.messages.ErrAddressTaken || len(state.hosts) != 3 {
-		t.Fatalf("unchanged copy silently saved: modal=%d error=%q hosts=%d", state.modal, state.dialogError, len(state.hosts))
+	if state.modal != modalNone || len(state.hosts) != 4 {
+		t.Fatalf("copy at the same destination was refused: modal=%d error=%q hosts=%d", state.modal, state.dialogError, len(state.hosts))
 	}
-	state.editor.address = text.Editor{}
-	typeInto(state, hitDialogAddress, "prod-copy.example.com")
-	state.Click(hitDialogSubmit)
-	if len(state.hosts) != 4 || state.hosts[3].Label != "Production Copy" || state.hosts[3].Address != "prod-copy.example.com" {
-		t.Fatalf("copy = %+v", state.hosts)
+	copied, original := state.hosts[3], state.hosts[0]
+	if copied.Label != "Production Copy" || copied.Address != "prod.example.com" {
+		t.Fatalf("copy = %+v", copied)
 	}
-	if restarted := newTestState(t, options); len(restarted.hosts) != 4 || restarted.hosts[3].Address != "prod-copy.example.com" {
+	if copied.ID == original.ID || copied.CatalogID == original.CatalogID {
+		t.Fatalf("copy shares identity with its source: copy=%+v original=%+v", copied, original)
+	}
+	restarted := newTestState(t, options)
+	if len(restarted.hosts) != 4 || restarted.hosts[3].Address != "prod.example.com" || restarted.hosts[3].CatalogID != copied.CatalogID {
 		t.Fatalf("copy was not persisted: %+v", restarted.hosts)
+	}
+}
+
+// Two hosts may name one destination. They stay separate entries: each has its
+// own label and catalog id, and editing one leaves the other alone.
+func TestHostsMayShareAnEndpointAsIndependentEntries(t *testing.T) {
+	options := testOptions(t)
+	state := newTestState(t, options)
+	production := state.hosts[0]
+
+	state.Click(hitAddHost)
+	typeInto(state, hitDialogLabel, "Production again")
+	typeInto(state, hitDialogAddress, production.Address)
+	typeInto(state, hitDialogUser, production.User)
+	state.Click(hitDialogSubmit)
+	if state.modal != modalNone || len(state.hosts) != 4 {
+		t.Fatalf("same-endpoint host was refused: modal=%d error=%q hosts=%d", state.modal, state.dialogError, len(state.hosts))
+	}
+	added := state.hosts[len(state.hosts)-1]
+	if added.Address != production.Address || added.User != production.User || added.Port != production.Port {
+		t.Fatalf("added endpoint = %+v", added)
+	}
+	if added.ID == production.ID || added.CatalogID == production.CatalogID {
+		t.Fatalf("added host shares identity with the existing one: added=%+v existing=%+v", added, production)
+	}
+
+	// Editing one entry, though it shares the destination, leaves the other as it was.
+	state.openEditHostID(added.ID)
+	state.editor.label = text.Editor{}
+	typeInto(state, hitDialogLabel, "Production alt")
+	state.Click(hitDialogSubmit)
+	if state.modal != modalNone {
+		t.Fatalf("renaming a shared-endpoint host failed: %q", state.dialogError)
+	}
+	if state.hosts[0].Label != production.Label || state.hosts[0].CatalogID != production.CatalogID {
+		t.Fatalf("editing one entry changed another: %+v", state.hosts[0])
+	}
+	renamed := state.hosts[len(state.hosts)-1]
+	if renamed.ID != added.ID || renamed.CatalogID != added.CatalogID || renamed.Label != "Production alt" {
+		t.Fatalf("renamed host = %+v", renamed)
+	}
+
+	// Both survive a restart with their own number and catalog id.
+	restarted := newTestState(t, options)
+	if len(restarted.hosts) != 4 {
+		t.Fatalf("restored hosts = %+v", restarted.hosts)
+	}
+	var shared []Host
+	for _, host := range restarted.hosts {
+		if host.Address == production.Address && host.User == production.User && host.Port == production.Port {
+			shared = append(shared, host)
+		}
+	}
+	if len(shared) != 2 {
+		t.Fatalf("shared destination restored as %d entries: %+v", len(shared), restarted.hosts)
+	}
+	if shared[0].ID == shared[1].ID || shared[0].CatalogID == shared[1].CatalogID {
+		t.Fatalf("restored entries are not independent: %+v", shared)
+	}
+}
+
+// Editing a host onto a destination another host already uses is accepted, and
+// the edit keeps the host's own identity.
+func TestEditingAHostOntoAnExistingEndpointIsAllowed(t *testing.T) {
+	state := newTestState(t, testOptions(t))
+	production := state.hosts[0]
+	staging := state.hosts[1]
+
+	state.openEditHostID(staging.ID)
+	state.editor.address = text.Editor{}
+	typeInto(state, hitDialogAddress, production.Address)
+	state.Click(hitDialogSubmit)
+	if state.modal != modalNone {
+		t.Fatalf("editing onto an existing endpoint was refused: %q", state.dialogError)
+	}
+	edited := state.hosts[1]
+	if edited.Address != production.Address || edited.User != production.User || edited.Port != production.Port {
+		t.Fatalf("edited endpoint = %+v", edited)
+	}
+	if edited.ID != staging.ID || edited.CatalogID != staging.CatalogID {
+		t.Fatalf("edit changed identity: %+v was %+v", edited, staging)
+	}
+	if state.hosts[0].CatalogID != production.CatalogID {
+		t.Fatalf("editing one host changed the other: %+v", state.hosts[0])
+	}
+
+	restarted := newTestState(t, state.options)
+	var shared []Host
+	for _, host := range restarted.hosts {
+		if host.Address == production.Address && host.User == production.User && host.Port == production.Port {
+			shared = append(shared, host)
+		}
+	}
+	if len(shared) != 2 || shared[0].CatalogID == shared[1].CatalogID {
+		t.Fatalf("shared endpoint after restart = %+v", shared)
 	}
 }
 

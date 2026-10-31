@@ -1,30 +1,49 @@
 package sshconn
 
 import (
-	"context"
 	"path"
 	"strings"
-	"time"
 )
 
-const shellIntegrationProbe = `printf '\036motty-shell:%s\037' "$SHELL"`
-
+// shellIntegrationCommand returns the command that starts the user's login
+// shell with directory and prompt reporting, or "" when the shell should start
+// plainly.
+//
+// Earlier versions discovered the remote shell by opening a separate command
+// session before the real shell. That extra session is fatal on a server that
+// allows only one: the second channel is refused with a malformed disconnect or
+// tears the mux down, and the user's shell then fails with the library's opaque
+// "channel open: <nil>". Instead the shell is always exactly one channel. When
+// the banner positively identifies a general-purpose OS, that one channel is a
+// tiny sh wrapper that reads $SHELL, enables the Bash/Zsh shim for it, and
+// otherwise execs the login shell unchanged. Any other banner gets one plain
+// `session.Shell()` with no wrapper and no probe (see shellProbeSafe).
 func (conn *Conn) shellIntegrationCommand(token string) string {
-	ctx, cancel := context.WithTimeout(conn.ctx, 2*time.Second)
-	defer cancel()
-	data, err := conn.RunCommand(ctx, shellIntegrationProbe, 4096)
-	if err != nil {
+	status := conn.Status()
+	if networkApplianceBanner(status.ServerVersion) || !shellProbeSafe(status.ServerVersion) {
 		return ""
 	}
-	_, value, ok := strings.Cut(string(data), "\x1emotty-shell:")
-	if !ok {
+	return integrationWrapperCommand(token)
+}
+
+// integrationWrapperCommand is a single-session replacement for the old probe:
+// it runs under sh and starts the shell named by $SHELL, selecting the Bash or
+// Zsh shim at runtime. A shell with no shim, or no $SHELL, is exec'd as a plain
+// login shell. $1 is still the shell path, so integrationScript is unchanged.
+func integrationWrapperCommand(tokens ...string) string {
+	bash := integrationScript("/bin/bash", tokens...)
+	zsh := integrationScript("/bin/zsh", tokens...)
+	if bash == "" || zsh == "" {
 		return ""
 	}
-	shell, _, ok := strings.Cut(value, "\x1f")
-	if !ok {
-		return ""
-	}
-	return integrationCommand(shell, token)
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
+	wrapper := `_motty_shell=${SHELL:-/bin/sh}
+case ${_motty_shell##*/} in
+bash) exec sh -c ` + quote(bash) + ` sh "$_motty_shell" ;;
+zsh) exec sh -c ` + quote(zsh) + ` sh "$_motty_shell" ;;
+*) exec "$_motty_shell" -l ;;
+esac`
+	return "sh -c " + quote(wrapper)
 }
 
 // IntegrationArgs is how a shell of this machine starts with directory and

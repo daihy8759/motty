@@ -43,6 +43,21 @@ func (err *UnknownAlgorithmError) Error() string {
 	return fmt.Sprintf("sshconn: %q is not an algorithm this program implements", err.Name)
 }
 
+// HostKeyAlgorithmError reports an explicit host-key algorithm list that shares
+// no algorithm with the key already trusted for the host. Offering the trusted
+// key anyway would ignore the caller's restriction, and offering a key type that
+// is not on file would only surface as a spurious "host key changed"; the
+// connection therefore stops before the handshake.
+type HostKeyAlgorithmError struct {
+	Wanted  []string
+	Trusted []string
+}
+
+func (err *HostKeyAlgorithmError) Error() string {
+	return fmt.Sprintf("sshconn: the allowed host-key algorithms (%s) share none with the trusted key (%s)",
+		strings.Join(err.Wanted, ", "), strings.Join(err.Trusted, ", "))
+}
+
 // ParseAlgorithms reads names separated by commas or blanks and sorts each into
 // the kind it belongs to, keeping the order given: the first is preferred. A
 // kind the list does not mention keeps the defaults. A name this build does not
@@ -141,16 +156,20 @@ func negotiatedFrom(metadata ssh.ConnMetadata) (Negotiated, bool) {
 
 // hostKeyAlgorithms picks what to offer for the host key. known are the
 // signature algorithms of keys already on file for the host (nil for a new one),
-// wanted the caller's list (nil for the defaults). A known key narrows the offer
-// to it, so a server with several key types is checked against the one the user
-// trusted, as before; an old server that can only sign RSA keys with SHA-1 is
-// still reachable when the caller allows ssh-rsa.
-func hostKeyAlgorithms(known, wanted []string) []string {
+// wanted the caller's explicit host-key list (nil to keep the defaults). A known
+// key narrows the offer to it, so a server with several key types is checked
+// against the one the user trusted. For an RSA key that list keeps ssh-rsa as
+// its last entry, so an old server that can only sign with SHA-1 stays reachable;
+// a caller's list that leaves ssh-rsa out still forbids it. A caller's list that
+// shares nothing with the trusted key is an error rather than a silent fallback,
+// because returning the trusted key would ignore the restriction while returning
+// nil would hand the choice back to the library defaults.
+func hostKeyAlgorithms(known, wanted []string) ([]string, error) {
 	if len(wanted) == 0 {
-		return known
+		return known, nil
 	}
 	if len(known) == 0 {
-		return wanted
+		return wanted, nil
 	}
 	var offer []string
 	for _, name := range wanted {
@@ -163,7 +182,7 @@ func hostKeyAlgorithms(known, wanted []string) []string {
 		offer = append(offer, ssh.KeyAlgoRSA)
 	}
 	if len(offer) == 0 {
-		return known
+		return nil, &HostKeyAlgorithmError{Wanted: append([]string(nil), wanted...), Trusted: append([]string(nil), known...)}
 	}
-	return offer
+	return offer, nil
 }

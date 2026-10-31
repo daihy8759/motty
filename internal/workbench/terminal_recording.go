@@ -32,10 +32,13 @@ type terminalRecordingEvent struct {
 }
 
 type terminalRecording struct {
-	started   time.Duration
-	events    []terminalRecordingEvent
-	bytes     int
-	active    bool
+	started time.Duration
+	events  []terminalRecordingEvent
+	bytes   int
+	active  bool
+	// secret removes a sensitive reply's remote echo from output events. The
+	// screen is written independently, so this only changes what is recorded.
+	secret    secretRedactor
 	truncated bool
 }
 
@@ -45,9 +48,35 @@ func (recording *terminalRecording) start(now time.Duration) {
 
 func (recording *terminalRecording) stop() { recording.active = false }
 
+// addSecret tells the recording that a sensitive reply was just written to the
+// shell, so any echo of it is left out of later output.
+func (recording *terminalRecording) addSecret(payload []byte) { recording.secret.add(payload) }
+
+// finishSecrets settles bytes held for a possible reply when the stream ends: a
+// complete trailing reply is still removed, an incomplete prefix is ordinary
+// output. It clears the state so a later recording starts clean.
+func (recording *terminalRecording) finishSecrets(now time.Duration) {
+	if recording.active {
+		if tail := recording.secret.finish(); len(tail) > 0 {
+			recording.append(now, terminalRecordingOutput, tail)
+		}
+	}
+	recording.secret.reset()
+}
+
+// resetSecrets forgets held bytes and replies without writing them. A reconnect
+// or a stopped recording must not carry a previous shell's secrets forward.
+func (recording *terminalRecording) resetSecrets() { recording.secret.reset() }
+
 func (recording *terminalRecording) append(now time.Duration, direction terminalRecordingDirection, data []byte) {
 	if !recording.active || len(data) == 0 {
 		return
+	}
+	if direction == terminalRecordingOutput {
+		data = recording.secret.redact(data)
+		if len(data) == 0 {
+			return
+		}
 	}
 	at := max(now-recording.started, 0)
 	for len(data) > 0 {
@@ -152,10 +181,15 @@ func (state *State) toggleTerminalRecording(session *Session) {
 	}
 	recording := &session.term.recording
 	if recording.active {
+		recording.finishSecrets(state.now())
 		recording.stop()
+		recording.resetSecrets()
 		state.status = state.messages.RecordingStopped
 		return
 	}
+	// Nothing sent before recording started belongs in it, and no earlier reply
+	// may redact text from this recording.
+	recording.resetSecrets()
 	recording.start(state.now())
 	state.status = state.messages.RecordingStarted
 }

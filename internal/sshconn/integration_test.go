@@ -1,8 +1,6 @@
 package sshconn
 
 import (
-	"context"
-	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -11,15 +9,16 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func TestIntegrationProbeCancellationWhileExecAcknowledgmentIsWithheld(t *testing.T) {
+const ubuntuBanner = "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13"
+
+func TestIntegrationExecCancellationWhileAcknowledgmentIsWithheld(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	server := startServer(t, func(server *testServer) {
+		server.version = ubuntuBanner
 		server.password, server.shell = "secret", echoShell
-		server.beforeExecReply = func(command string) {
-			if command == shellIntegrationProbe {
-				close(started)
-				<-release
-			}
+		server.beforeExecReply = func(string) {
+			close(started)
+			<-release
 		}
 		server.command = func(_ string, channel ssh.Channel) {
 			defer channel.Close()
@@ -28,70 +27,107 @@ func TestIntegrationProbeCancellationWhileExecAcknowledgmentIsWithheld(t *testin
 	})
 	defer close(release)
 	h := connect(t, server)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		_, err := h.conn.RunCommand(ctx, shellIntegrationProbe, 4096)
+		_, err := h.conn.OpenShell(ShellConfig{Cols: 80, Rows: 24, IntegrateShell: true})
 		result <- err
 	}()
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("probe never reached exec request")
+		t.Fatal("the integration wrapper never reached the exec request")
 	}
-	cancel()
+	h.conn.Cancel()
 	select {
 	case err := <-result:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("canceled establishment returned %v", err)
+		if err == nil {
+			t.Fatal("canceling while the exec acknowledgment was withheld still opened a shell")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cancellation is waiting for the withheld exec acknowledgment")
 	}
-	w := openShell(t, h, 80, 24)
-	w.until("normal shell fallback", func(output string) bool { return strings.Contains(output, "welcome") })
 }
 
 func TestIntegrationSSHStartupAndFallback(t *testing.T) {
-	for _, mode := range []string{"integrated", "probe-refused", "unsupported", "exec-refused", "custom-command"} {
+	for _, mode := range []string{"integrated", "unknown-banner", "exec-refused", "custom-command"} {
 		t.Run(mode, func(t *testing.T) {
 			server := startServer(t, func(server *testServer) {
 				server.password, server.shell = "secret", echoShell
-				server.version = "SSH-2.0-OpenSSH_9.6" // probes run only on known implementations
+				if mode != "unknown-banner" {
+					server.version = ubuntuBanner
+				}
 				server.command = func(command string, channel ssh.Channel) {
 					defer channel.Close()
 					text := "integrated-startup"
-					if command == shellIntegrationProbe {
-						text = "\x1emotty-shell:/bin/bash\x1f"
-						if mode == "unsupported" {
-							text = "\x1emotty-shell:/bin/fish\x1f"
-						}
-					} else if mode == "custom-command" {
+					if mode == "custom-command" {
 						if command != "custom shell" {
 							t.Errorf("custom command replaced by %q", command)
 						}
 						text = "custom-startup"
+					} else if !strings.Contains(command, "motty-shell") {
+						t.Errorf("integration wrapper missing from %q", command)
 					}
 					io.WriteString(channel, text)
 					channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 				}
 				server.refuseCommand = func(command string) bool {
-					return mode == "probe-refused" && command == shellIntegrationProbe ||
-						mode == "exec-refused" && command != shellIntegrationProbe
+					return mode == "exec-refused" && strings.Contains(command, "motty-shell")
 				}
 			})
 			h := connect(t, server)
 			config := ShellConfig{Cols: 80, Rows: 24, IntegrateShell: true}
 			want := "integrated-startup"
-			if mode == "custom-command" {
+			switch mode {
+			case "custom-command":
 				config.Command, want = "custom shell", "custom-startup"
-			} else if mode != "integrated" {
+			case "unknown-banner", "exec-refused":
 				want = "welcome"
 			}
 			w := openShellWith(t, h, config)
 			w.until(want, func(output string) bool { return strings.Contains(output, want) })
 		})
+	}
+}
+
+// TestIntegrationWrapperIsOneChannel proves the discovery that used to be a
+// second session is now baked into the shell command itself, so an unsupported
+// shell still starts plainly without Motty opening anything extra.
+func TestIntegrationWrapperIsOneChannel(t *testing.T) {
+	if got := integrationWrapperCommand("pty-token"); got == "" {
+		t.Fatal("a valid token should build the wrapper")
+	} else if !strings.Contains(got, "bash") || !strings.Contains(got, "zsh") {
+		t.Fatalf("wrapper does not select both shells: %q", got)
+	}
+	for _, token := range []string{"bad token", "bad;rm", strings.Repeat("x", 129)} {
+		if got := integrationWrapperCommand(token); got != "" {
+			t.Errorf("invalid token %q enabled integration", token)
+		}
+	}
+	if integrationWrapperCommand() == "" {
+		t.Fatal("the wrapper should still work without a token")
+	}
+}
+
+func TestShellProbeSafetyIsAPositiveAllowList(t *testing.T) {
+	for _, banner := range []string{ubuntuBanner, "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3"} {
+		if !shellProbeSafe(banner) {
+			t.Errorf("shellProbeSafe(%q) = false, want true", banner)
+		}
+	}
+	for _, banner := range []string{
+		"", "SSH-2.0-OpenSSH_9.7", "SSH-2.0-HUAWEI-1.5", "SSH-2.0-GopTest",
+	} {
+		if shellProbeSafe(banner) {
+			t.Errorf("shellProbeSafe(%q) = true, want false for an unidentified host", banner)
+		}
+	}
+	// The exported policy the workbench uses for automatic file sessions and
+	// connection sharing is exactly this allow-list.
+	if !SafeForAuxiliaryChannels(ubuntuBanner) {
+		t.Error("an identified host should permit auxiliary channels")
+	}
+	if SafeForAuxiliaryChannels("SSH-2.0-OpenSSH_9.7") {
+		t.Error("an unidentified host must not permit auxiliary channels")
 	}
 }
 

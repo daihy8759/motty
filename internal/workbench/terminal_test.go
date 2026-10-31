@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -330,6 +331,35 @@ func TestAShellThatCannotStartIsReportedOnTheScreen(t *testing.T) {
 	state.Wake()
 	if !strings.Contains(screenText(state, 0), "Could not start a shell: pty refused") || state.sessions[0].tone != toneFail {
 		t.Fatalf("screen:\n%s", screenText(state, 0))
+	}
+}
+
+func TestMalformedDisconnectShellFailureIsUsefulAndLeavesNoShell(t *testing.T) {
+	world, options := newWorld(t)
+	state := newTestState(t, options)
+	fake := connect(t, state, world)
+	fake.shellErr = fmt.Errorf("%w: ssh: unmarshal error for field Language of type disconnectMsg", sshconn.ErrMalformedDisconnect)
+	fake.set(func(s *sshconn.Status) { s.Phase = sshconn.PhaseConnected })
+	state.Wake()
+
+	screen := screenText(state, 0)
+	for _, want := range []string{"Could not start a shell:", "malformed SSH disconnect", "unmarshal error for field Language"} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("screen is missing %q:\n%s", want, screen)
+		}
+	}
+	session := &state.sessions[0]
+	if session.tone != toneFail || !session.shellFailed || session.err == nil {
+		t.Fatalf("session did not record the failure: tone=%v shellFailed=%v err=%v", session.tone, session.shellFailed, session.err)
+	}
+	if len(fake.shells) != 0 || session.term.shell != nil || session.term.opening != nil {
+		t.Fatal("a shell that failed to start was left attached to the session")
+	}
+
+	// Closing the tab still releases the connection that carried the failure.
+	state.closeSession(session.ID)
+	if fake.canceled == 0 {
+		t.Fatal("closing the failed tab did not release its connection")
 	}
 }
 

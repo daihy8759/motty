@@ -211,6 +211,12 @@ type Config struct {
 	// Algorithms sets what each endpoint negotiates, keyed by "host:port" as
 	// Endpoint formats it. An endpoint without an entry keeps the defaults.
 	Algorithms map[string]Algorithms
+	// DetectSystem runs an extra command session after connecting to refine the
+	// operating system guessed from the banner. It defaults to off: a second
+	// session tears down servers that allow only one, and it must never race the
+	// user's shell. Callers that know the host is a general-purpose, multi-session
+	// OS may enable it; the GUI leaves it off and trusts the banner.
+	DetectSystem bool
 	// Notify is called from the connection goroutine after every change of
 	// Status. It must be safe to call from any goroutine and must not block.
 	Notify func()
@@ -469,6 +475,10 @@ func (conn *Conn) run() {
 	}
 	if conn.ctx.Err() != nil && !errors.Is(err, ErrHostKeyChanged) {
 		err = ErrCanceled
+	} else {
+		// Errors from dialing a jump host or forwarding a stream reach here
+		// without passing through handshake's explain.
+		err = normalizeServerError(err)
 	}
 	conn.update(func(status *Status) {
 		status.Phase = PhaseFailed
@@ -537,15 +547,35 @@ func (conn *Conn) connect() error {
 		status.Method = method
 		status.System = classifyBanner(serverVersion)
 	})
-	if system := conn.Status().System; standardImplementation(serverVersion) &&
-		(system == SystemUnknown || system == SystemUbuntu || system == SystemDebian) {
-		go conn.detectSystem(client, serverVersion)
+	// The system probe is opt-in and never started by default: it opens a second
+	// session, which makes a single-session server drop the whole transport and
+	// take the user's shell with it. Callers that enable it are still limited to
+	// standard SSH implementations; an unrecognized banner may be a gateway or
+	// appliance that answers the probe by ending the whole connection.
+	if conn.config.DetectSystem {
+		if system := conn.Status().System; standardImplementation(serverVersion) &&
+			(system == SystemUnknown || system == SystemUbuntu || system == SystemDebian) {
+			go conn.detectSystem(client, serverVersion)
+		}
 	}
 	return nil
 }
 
 func (conn *Conn) detectSystem(client *ssh.Client, serverVersion string) {
-	system := detectRemoteSystem(client, serverVersion)
+	system, err := detectRemoteSystem(client, serverVersion)
+	if err != nil {
+		// A transport failure on the optional probe is not something to swallow:
+		// record it once so the connection reports the real cause and nobody
+		// opens another session on a dead client.
+		loss := normalizeServerError(err)
+		if !errors.Is(loss, ErrDisconnected) {
+			loss = fmt.Errorf("%w: %w", ErrDisconnected, loss)
+		}
+		if conn.recordDisconnect(loss) {
+			_ = client.Close()
+		}
+		return
+	}
 	if system == SystemUnknown || conn.ctx.Err() != nil {
 		return
 	}
@@ -615,6 +645,11 @@ func (conn *Conn) beginEndpoint(endpoint Endpoint, role EndpointRole) {
 func (conn *Conn) handshake(endpoint Endpoint, socket net.Conn, known *hostKeys) (*ssh.Client, string, error) {
 	address := endpoint.address()
 	wanted := conn.config.Algorithms[address]
+	hostKeys, err := hostKeyAlgorithms(known.algorithms(address), wanted.HostKeys)
+	if err != nil {
+		socket.Close()
+		return nil, "", err
+	}
 	authentication := conn.authentication(endpoint)
 	clientConfig := &ssh.ClientConfig{
 		Config: ssh.Config{KeyExchanges: wanted.KeyExchanges, Ciphers: wanted.Ciphers, MACs: wanted.MACs},
@@ -627,7 +662,7 @@ func (conn *Conn) handshake(endpoint Endpoint, socket net.Conn, known *hostKeys)
 			conn.update(func(status *Status) { status.Banner = message })
 			return nil
 		},
-		HostKeyAlgorithms: hostKeyAlgorithms(known.algorithms(address), wanted.HostKeys),
+		HostKeyAlgorithms: hostKeys,
 		ClientVersion:     "SSH-2.0-Motty",
 	}
 
@@ -662,11 +697,16 @@ func (conn *Conn) authentication(endpoint Endpoint) Authentication {
 // explain turns a handshake error into one of the package errors when it is
 // one, so callers can branch on errors.Is.
 func (conn *Conn) explain(err error) error {
+	err = normalizeServerError(err)
 	conn.mu.Lock()
 	status := conn.status
 	conn.mu.Unlock()
 	switch {
 	case errors.Is(err, ErrCanceled), errors.Is(err, ErrHostKeyRejected), errors.Is(err, ErrHostKeyChanged):
+		return err
+	case errors.Is(err, ErrMalformedDisconnect):
+		// A malformed disconnect is a protocol failure, not bad credentials,
+		// even when it arrives while several password attempts are open.
 		return err
 	case status.Attempt >= maxPasswordAttempts || containsAuthFailure(err):
 		return fmt.Errorf("%w: %v", ErrAuthFailed, err)

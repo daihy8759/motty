@@ -304,6 +304,7 @@ type Messages struct {
 	FieldVNCPassword            string
 	HostPasswordShared          string
 	HostPasswordNotCarried      string
+	HostOTPShared               string
 	FieldGroup                  string
 	FieldGroupPlaceholder       string
 	FieldPort                   string
@@ -339,7 +340,6 @@ type Messages struct {
 	IconDesktop                 string
 	ErrLabelRequired            string
 	ErrGroupRequired            string
-	ErrAddressTaken             string
 	ErrPortInvalid              string
 	ErrHostTagsInvalid          string
 	Cancel                      string

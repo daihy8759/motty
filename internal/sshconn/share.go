@@ -26,7 +26,8 @@ func (conn *Conn) Share(notify func()) (*Conn, error) {
 	}
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
-	if owner.terminated || owner.client == nil || owner.ctx.Err() != nil || !owner.retired && owner.status.Phase != PhaseConnected {
+	if owner.terminated || owner.client == nil || owner.ctx.Err() != nil ||
+		owner.disconnectErr != nil || !owner.retired && owner.status.Phase != PhaseConnected {
 		return nil, ErrNotShareable
 	}
 	ctx, cancel := context.WithCancel(context.Background())

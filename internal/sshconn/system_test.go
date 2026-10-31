@@ -54,6 +54,29 @@ func TestStandardImplementation(t *testing.T) {
 	}
 }
 
+func TestNetworkApplianceBannersAreNotProbed(t *testing.T) {
+	for _, banner := range []string{
+		"SSH-2.0-HUAWEI-1.5",
+		"SSH-2.0-H3C-Software",
+		"SSH-2.0-Cisco-1.25",
+		"SSH-2.0-MikroTik-6.49",
+		"SSH-2.0-RouterOS-7.1",
+	} {
+		if !networkApplianceBanner(banner) {
+			t.Errorf("networkApplianceBanner(%q) = false, want true", banner)
+		}
+	}
+	for _, banner := range []string{
+		"SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13",
+		"SSH-2.0-OpenSSH_for_Windows_9.5",
+		"SSH-2.0-GopTest",
+	} {
+		if networkApplianceBanner(banner) {
+			t.Errorf("networkApplianceBanner(%q) = true, want false", banner)
+		}
+	}
+}
+
 func TestRemoteSystemPersistenceNamesRoundTrip(t *testing.T) {
 	for system := SystemUnknown; system <= SystemManjaro; system++ {
 		if got := ParseRemoteSystem(system.String()); got != system {

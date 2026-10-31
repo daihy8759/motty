@@ -26,7 +26,7 @@ func (conn *Conn) RunCommand(ctx context.Context, command string, maxOutputBytes
 	if errors.Is(err, ErrCanceled) || ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 		return nil, err
 	}
-	return data, err
+	return data, normalizeServerError(err)
 }
 
 // ExecResult is how a command run by Exec ended.
@@ -57,7 +57,7 @@ func (conn *Conn) Exec(ctx context.Context, command string, maxOutputBytes int) 
 		result.ExitCode = exit.ExitStatus()
 		return result, nil
 	}
-	return result, err
+	return result, normalizeServerError(err)
 }
 
 // runCommand starts command and waits for it. The output is stdout, plus
@@ -209,7 +209,8 @@ func (output *commandOutput) result() ([]byte, bool) {
 // ends the command's session, and ErrCommandOutputTooLarge for a line longer
 // than maxLineBytes. When the command ends by itself the result is its exit
 // status. Canceling ctx closes only this command session.
-func (conn *Conn) StreamCommand(ctx context.Context, command string, maxLineBytes int, line func([]byte) bool) error {
+func (conn *Conn) StreamCommand(ctx context.Context, command string, maxLineBytes int, line func([]byte) bool) (err error) {
+	defer func() { err = normalizeServerError(err) }()
 	if command == "" {
 		return errors.New("sshconn: empty command")
 	}

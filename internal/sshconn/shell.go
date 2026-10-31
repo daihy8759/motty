@@ -69,6 +69,19 @@ type Shell struct {
 	agentForwardErr error
 }
 
+// shellStartError classifies an error from asking the server for a pty, a
+// shell or a command. x/crypto answers a pending channel request with io.EOF
+// once the mux loop has exited, so a transport that died mid-start would
+// otherwise surface as a bare io.EOF and the failure would be blamed on the
+// request instead of the lost connection. Every other error goes through
+// normalizeServerError unchanged.
+func shellStartError(err error) error {
+	if errors.Is(err, io.EOF) {
+		return &transportClosedError{cause: err}
+	}
+	return normalizeServerError(err)
+}
+
 // OpenShell starts the user's login shell on a pty. The connection must be
 // connected (see Status). It returns once the shell is running.
 func (conn *Conn) OpenShell(config ShellConfig) (*Shell, error) {
@@ -85,7 +98,7 @@ func (conn *Conn) OpenShell(config ShellConfig) (*Shell, error) {
 	}
 	session, err := client.NewSession()
 	if err != nil {
-		return nil, err
+		return nil, normalizeServerError(err)
 	}
 	// A gateway with its own menu may end the connection on an env request it
 	// does not implement, before the shell ever starts, so only a standard
@@ -102,7 +115,7 @@ func (conn *Conn) OpenShell(config ShellConfig) (*Shell, error) {
 	modes := ssh.TerminalModes{ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 38400, ssh.TTY_OP_OSPEED: 38400}
 	if err := session.RequestPty(term, max(config.Rows, 1), max(config.Cols, 1), modes); err != nil {
 		session.Close()
-		return nil, err
+		return nil, shellStartError(err)
 	}
 	shell := &Shell{session: session, notify: config.Notify, done: make(chan struct{})}
 	if config.X11 != nil {
@@ -125,7 +138,7 @@ func (conn *Conn) OpenShell(config ShellConfig) (*Shell, error) {
 	if err != nil {
 		shell.releaseX11()
 		session.Close()
-		return nil, err
+		return nil, normalizeServerError(err)
 	}
 	var startErr error
 	if command == "" {
@@ -134,9 +147,13 @@ func (conn *Conn) OpenShell(config ShellConfig) (*Shell, error) {
 		startErr = session.Start(command)
 	}
 	if startErr != nil {
+		startErr = shellStartError(startErr)
 		shell.releaseX11()
 		session.Close()
-		if config.Command == "" && command != "" {
+		// A shell-integration wrapper is optional, so a server that refuses it
+		// still gets a plain shell. A broken SSH transport is not a wrapper
+		// problem: retrying on the same dead connection only hides the cause.
+		if config.Command == "" && command != "" && !transportGone(startErr) {
 			config.IntegrateShell = false
 			return conn.OpenShell(config)
 		}
@@ -144,7 +161,7 @@ func (conn *Conn) OpenShell(config ShellConfig) (*Shell, error) {
 	}
 	go shell.sendLoop(stdin)
 	go func() {
-		err := session.Wait()
+		err := normalizeServerError(session.Wait())
 		shell.releaseX11()
 		shell.input.close()
 		shell.output.finish()

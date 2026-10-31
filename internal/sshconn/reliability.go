@@ -116,14 +116,26 @@ func (conn *Conn) closedError(waitErr error) error {
 	if conn.ctx.Err() != nil {
 		return nil
 	}
+	waitErr = normalizeServerError(waitErr)
 	conn.mu.Lock()
 	err := conn.disconnectErr
 	conn.mu.Unlock()
 	if err != nil {
-		return err
+		err = normalizeServerError(err)
+		// keepalive 只能观察到传输已死（超时或 EOF）；Wait 拿到的才是传输结束
+		// 的直接原因。当那个原因被识别为畸形断连时，展示它胜过展示 keepalive
+		// 的伴生症状，也让重连策略能认出这个确定性的协议错误。
+		if !errors.Is(waitErr, ErrMalformedDisconnect) {
+			return err
+		}
 	}
 	if waitErr == nil {
 		return ErrDisconnected
+	}
+	if errors.Is(waitErr, ErrMalformedDisconnect) || errors.Is(waitErr, ErrTransportClosed) {
+		// Already carries ErrDisconnected and the raw cause; wrapping it again
+		// would only repeat the "sshconn: disconnected" prefix.
+		return waitErr
 	}
 	return fmt.Errorf("%w: %w", ErrDisconnected, waitErr)
 }

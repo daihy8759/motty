@@ -66,11 +66,20 @@ type testServer struct {
 	// channel, the way a remote ssh-add would.
 	agentForward bool
 	lastConn     *ssh.ServerConn // the most recent connection, guarded by mu
+	// sessionCount counts session channel open requests, guarded by mu;
+	// onSessionOpen runs for each one before the channel is accepted. Returning
+	// true makes the server tear the connection down without answering, the way
+	// a single-session appliance does when a second session arrives.
+	onSessionOpen func(index int) bool
+	// killOnExec tears the connection down when the system probe's command is
+	// accepted, standing in for a server that drops the transport mid-probe.
+	killOnExec bool
 
-	mu        sync.Mutex
-	passwords []string // every password the server was offered
-	active    int      // authenticated SSH connections currently open
-	group     sync.WaitGroup
+	mu           sync.Mutex
+	passwords    []string // every password the server was offered
+	sessionCount int
+	active       int // authenticated SSH connections currently open
+	group        sync.WaitGroup
 }
 
 func newSigner(t *testing.T) ssh.Signer {
@@ -209,6 +218,17 @@ func startServer(t *testing.T, configure func(*testServer)) *testServer {
 						}
 						switch newChannel.ChannelType() {
 						case "session":
+							server.mu.Lock()
+							server.sessionCount++
+							index := server.sessionCount
+							hook := server.onSessionOpen
+							server.mu.Unlock()
+							if hook != nil && hook(index) {
+								// No reply, no channel: just drop the transport, like
+								// a device that permits a single session.
+								_ = serverConn.Close()
+								return
+							}
 							if server.shell == nil && server.exec == nil && server.command == nil {
 								newChannel.Reject(ssh.Prohibited, "no session channels in tests")
 								continue
@@ -411,6 +431,12 @@ func (server *testServer) activeConnections() int {
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	return server.active
+}
+
+func (server *testServer) sessionOpens() int {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	return server.sessionCount
 }
 
 // harness wires a connection to a notification channel so tests wait on
@@ -631,6 +657,10 @@ func serveSession(server *testServer, conn ssh.Conn, channel ssh.Channel, reques
 			if accepted {
 				started = true
 				if system {
+					if server.killOnExec {
+						_ = conn.Close()
+						return
+					}
 					output, status := server.exec(payload.Command)
 					_, _ = channel.Write([]byte(output))
 					_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))

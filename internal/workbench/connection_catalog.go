@@ -106,6 +106,33 @@ func (catalog *hostCatalog) secretOwner(target Host, endpoint sshconn.Endpoint, 
 	return catalogIDFor(Host{Protocol: protocolSSH, Address: endpoint.Host, User: endpoint.User, Port: endpoint.Port})
 }
 
+// hostByCatalogID is the host with that stable catalog id, if it still exists.
+func (catalog *hostCatalog) hostByCatalogID(id string) (Host, bool) {
+	if id == "" {
+		return Host{}, false
+	}
+	for _, host := range catalog.hosts {
+		if host.CatalogID == id {
+			return host, true
+		}
+	}
+	return Host{}, false
+}
+
+// savedEnd resolves one end of a saved proxy: the stable catalog id when the
+// file has one, and only otherwise the old endpoint trio. An id that no host
+// holds is a missing host, never a cue to bind a same-endpoint namesake.
+func (catalog *hostCatalog) savedEnd(id, address, user string, port uint16) (Host, bool) {
+	if id != "" {
+		host, ok := catalog.hostByCatalogID(id)
+		if !ok || !host.isSSH() {
+			return Host{}, false
+		}
+		return host, true
+	}
+	return catalog.hostByConnection(address, user, port)
+}
+
 func (catalog *hostCatalog) identityPaths() []string {
 	paths := make([]string, 0, len(catalog.identities))
 	for _, identity := range catalog.identities {
@@ -369,8 +396,8 @@ func decodeProxies(saved []savedProxy, hosts []Host) []proxyRecord {
 	catalog := hostCatalog{hosts: hosts}
 	next := uint32(1)
 	for _, entry := range saved {
-		target, targetOK := catalog.hostByConnection(entry.TargetAddress, entry.TargetUser, entry.TargetPort)
-		jump, jumpOK := catalog.hostByConnection(entry.JumpAddress, entry.JumpUser, entry.JumpPort)
+		target, targetOK := catalog.savedEnd(entry.TargetID, entry.TargetAddress, entry.TargetUser, entry.TargetPort)
+		jump, jumpOK := catalog.savedEnd(entry.JumpID, entry.JumpAddress, entry.JumpUser, entry.JumpPort)
 		if !targetOK || !jumpOK || target.ID == jump.ID || catalog.proxyTargetConfigured(target.ID) || catalog.proxyWouldCycle(target.ID, jump.ID) {
 			continue
 		}

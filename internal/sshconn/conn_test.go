@@ -372,26 +372,82 @@ func TestSkippingEncryptedIdentityFallsBackToPassword(t *testing.T) {
 }
 
 func TestConnectedStatusDetectsRemoteSystemOnASeparateSession(t *testing.T) {
+	probed := make(chan string, 1)
 	server := startServer(t, func(server *testServer) {
+		server.version = ubuntuBanner
 		server.password = "pw"
 		server.version = "SSH-2.0-OpenSSH_9.6" // probes run only on known implementations
 		server.exec = func(command string) (string, uint32) {
 			if !strings.Contains(command, "/etc/os-release") {
 				t.Fatalf("system command = %q", command)
 			}
-			return "kernel=Linux\nid=ubuntu\n", 0
+			select {
+			case probed <- command:
+			default:
+			}
+			return "kernel=Linux\nid=raspbian\n", 0
 		}
+	})
+	// The system probe is opt-in: it opens a second session and must not be
+	// started automatically where it could race (or kill) the user's shell.
+	h := dial(t, server, func(config *Config) { config.DetectSystem = true })
+	h.phase(PhaseHostKeyPrompt)
+	h.conn.TrustHostKey(false)
+	h.phase(PhasePasswordPrompt)
+	h.conn.SubmitPassword("pw")
+	status := h.until("Raspberry Pi system", func(status Status) bool {
+		return status.Phase == PhaseConnected && status.System == SystemRaspberryPi
+	})
+	if status.Method != "password" {
+		t.Fatalf("connected status = %+v", status)
+	}
+	select {
+	case <-probed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the opt-in system probe never opened its session")
+	}
+}
+
+func TestNetworkApplianceBannerOpensNoSessionBeforeTheShell(t *testing.T) {
+	extra := make(chan string, 4)
+	shellStarted := make(chan struct{})
+	server := startServer(t, func(server *testServer) {
+		server.version = "SSH-2.0-HUAWEI-1.5"
+		server.password = "pw"
+		server.exec = func(command string) (string, uint32) {
+			extra <- command
+			return "", 1
+		}
+		server.command = func(command string, channel ssh.Channel) {
+			extra <- command
+			channel.Close()
+		}
+		server.shell = func(*fakeShell) { close(shellStarted) }
 	})
 	h := dial(t, server, nil)
 	h.phase(PhaseHostKeyPrompt)
 	h.conn.TrustHostKey(false)
 	h.phase(PhasePasswordPrompt)
 	h.conn.SubmitPassword("pw")
-	status := h.until("Ubuntu system", func(status Status) bool {
-		return status.Phase == PhaseConnected && status.System == SystemUbuntu
-	})
-	if status.Method != "password" {
-		t.Fatalf("connected status = %+v", status)
+	h.phase(PhaseConnected)
+
+	// Integration is requested, but a network appliance must get a plain shell:
+	// probing its system or wrapping its CLI would open the extra sessions such
+	// devices answer with a malformed disconnect.
+	shell, err := h.conn.OpenShell(ShellConfig{Cols: 80, Rows: 24, IntegrateShell: true})
+	if err != nil {
+		t.Fatalf("OpenShell: %v", err)
+	}
+	defer shell.Close()
+	select {
+	case <-shellStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the plain shell did not start")
+	}
+	select {
+	case command := <-extra:
+		t.Fatalf("an extra session ran %q before the shell", command)
+	case <-time.After(250 * time.Millisecond):
 	}
 }
 

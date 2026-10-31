@@ -100,6 +100,50 @@ func standardImplementation(banner string) bool {
 		strings.Contains(banner, "libssh")
 }
 
+// networkApplianceBanner reports SSH servers that are really the management CLI
+// of a network device. These devices commonly allow one session at a time, and
+// some answer a second session with an SSH_MSG_DISCONNECT that omits the
+// mandatory language tag (which x/crypto/ssh reports as an unmarshal error).
+// The name list is only a hint: shellProbeSafe is what actually guards sessions,
+// because a vendor string can be missing, obfuscated or simply unknown.
+func networkApplianceBanner(banner string) bool {
+	banner = strings.ToLower(banner)
+	for _, vendor := range []string{
+		"huawei", "h3c", "cisco", "ruijie", "juniper", "mikrotik", "routeros",
+		"arista", "fortinet", "paloalto", "zyxel", "tp-link", "d-link", "netgear",
+		"zte", "brocade", "extreme", "big-ip",
+	} {
+		if strings.Contains(banner, vendor) {
+			return true
+		}
+	}
+	return false
+}
+
+// shellProbeSafe reports whether Motty may open an auxiliary session next to the
+// user's shell. It is deliberately a positive allow-list: only a host that
+// identifies itself as a general-purpose operating system is considered safe.
+// An unknown identification string may belong to a single-session network
+// appliance, which can answer a second session by tearing the whole transport
+// down (the malformed disconnect and the channel-open "<nil>" seen in the
+// field). Guessing from a vendor block-list is not enough, so anything not
+// positively recognised is started as one plain shell with no probe at all.
+func shellProbeSafe(serverVersion string) bool {
+	switch classifyBanner(serverVersion) {
+	case SystemUbuntu, SystemDebian, SystemWindows, SystemDarwin, SystemFreeBSD:
+		return true
+	}
+	return false
+}
+
+// SafeForAuxiliaryChannels reports whether Motty may open an optional second
+// channel (an SFTP subsystem, a stats command, another shell, a probe) on an
+// established connection. Only a server that positively identifies itself as a
+// general-purpose operating system qualifies; anything else may be a
+// single-session appliance whose transport dies when a second session appears.
+// Callers keep using the shell itself regardless; this only governs extras.
+func SafeForAuxiliaryChannels(serverVersion string) bool { return shellProbeSafe(serverVersion) }
+
 // classifyBanner is what the server's identification string alone says. A
 // distribution banner is only a first guess: derivatives share their parent's
 // OpenSSH, so a Linux guess is refined by asking the host.
@@ -160,26 +204,34 @@ func classifyProbe(output string) RemoteSystem {
 
 // detectRemoteSystem asks the host what it is when the banner could not say, or
 // said only a Linux distribution that a derivative may share. The answer is the
-// banner's guess when the host refuses a command session.
-func detectRemoteSystem(client *ssh.Client, banner string) RemoteSystem {
+// banner's guess when the host refuses a command session. A transport-level
+// failure is returned as an error so the caller can stop using the connection
+// instead of swallowing the cause and opening the shell on a dead client.
+func detectRemoteSystem(client *ssh.Client, banner string) (RemoteSystem, error) {
 	guess := classifyBanner(banner)
 	if guess == SystemWindows || guess == SystemDarwin || guess == SystemFreeBSD {
-		return guess
+		return guess, nil
 	}
 	session, err := client.NewSession()
 	if err != nil {
-		return guess
+		if transportGone(err) {
+			return guess, err
+		}
+		return guess, nil
 	}
 	timer := time.AfterFunc(1500*time.Millisecond, func() { _ = session.Close() })
 	output, err := session.Output(remoteSystemCommand)
 	if !timer.Stop() || err != nil {
-		return guess
+		if transportGone(err) {
+			return guess, err
+		}
+		return guess, nil
 	}
 	system := classifyProbe(string(output))
 	if system == SystemUnknown || system == SystemLinux && guess.IsLinux() {
 		// A derivative with no badge of its own (Pop!_OS, Zorin) keeps the family
 		// its banner named rather than falling back to plain Linux.
-		return guess
+		return guess, nil
 	}
-	return system
+	return system, nil
 }
