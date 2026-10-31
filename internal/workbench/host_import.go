@@ -59,12 +59,12 @@ func (state *State) importSSHConfig() {
 		return
 	}
 	if err != nil {
-		state.status = fmt.Sprintf(state.messages.SSHConfigImportFailedFmt, err)
+		state.showActionFailure(state.messages.SSHConfigPickerTitle, err, state.messages.ActionFeedback.FilePickerFailed)
 		return
 	}
 	parsed, err := sshconfig.ParseFile(paths[0])
 	if err != nil {
-		state.status = fmt.Sprintf(state.messages.SSHConfigImportFailedFmt, err)
+		state.showFileReadFailure(state.messages.SSHConfigPickerTitle, err, state.messages.ActionFeedback.ImportSSHConfigFailed)
 		return
 	}
 	plan := newHostImportBuilder(state, parsed).build(parsed.Hosts)

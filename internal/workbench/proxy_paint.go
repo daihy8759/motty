@@ -8,7 +8,7 @@ import (
 
 func (state *State) paintProxiesWorkspace(canvas *ui.Canvas, bounds ui.Rect) {
 	pal, messages := state.pal, state.messages
-	canAdd := len(state.hosts) >= 2
+	canAdd := state.sshHostCount() >= 2
 	// The title keeps a readable column beside the buttons; a card too narrow for
 	// both shows the buttons as their icons, whose tooltips name them.
 	const (

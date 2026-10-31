@@ -22,7 +22,14 @@ func startBackend(config Config) (backend, error) {
 	if program == "" {
 		program = defaultShell()
 	}
-	config = integrateWindowsShell(config, program)
+	if distro, ok := WSLDistro(program); ok {
+		var err error
+		if program, config, err = prepareWSL(config, distro); err != nil {
+			return backend{}, err
+		}
+	} else {
+		config = integrateWindowsShell(config, program)
+	}
 
 	var inRead, inWrite, outRead, outWrite windows.Handle
 	if err := windows.CreatePipe(&inRead, &inWrite, nil, 0); err != nil {

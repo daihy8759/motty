@@ -139,6 +139,9 @@ func (state *State) sftpMenuRows(session *Session, view *sftpView) menuRows {
 	var rows menuRows
 	if one {
 		rows.add(components.ContextMenuItem{ID: hitSFTPMenuOpen, Label: messages.SFTPOpen, Icon: icon(iconFolderOpen), Disabled: busy})
+		if local && selected.Mode.IsRegular() {
+			rows.add(components.ContextMenuItem{ID: hitSFTPMenuEdit, Label: messages.Tools.ExtEditButton, Icon: icon(iconExternal)})
+		}
 		rows.separate()
 	}
 	switch {

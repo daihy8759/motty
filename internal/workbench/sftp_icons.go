@@ -77,6 +77,11 @@ func sftpFileIcon(name string, mode os.FileMode) (icon *ui.Icon, mono bool) {
 	switch {
 	case mode&os.ModeSymlink != 0:
 		return &icons.Link, true
+	case isApplicationBundle(name, mode):
+		// A bundle is a folder on disk but one thing to the person: a program.
+		// This is its stand-in where the system's own icon for it is out of reach,
+		// as on a server's disk.
+		return &icons.MitExe, false
 	case mode.IsDir():
 		return &icons.FolderSolid, false
 	}

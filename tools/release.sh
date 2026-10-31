@@ -140,9 +140,12 @@ check_release_dir() {
 	else
 		(cd "$dir" && shasum -a 256 -c SHA256SUMS >/dev/null) || { echo "   SHA256SUMS does not match the files" >&2; return 1; }
 	fi
-	local sigs
+	local packages sigs
+	# One signature per package, never per manifest: the count comes from the
+	# matrix so a new package format cannot leave this check behind.
+	packages=$(printf '%s\n' "$expected" | awk '$0 != "SHA256SUMS" && $0 != "SIGNATURES" {n++} END {print n+0}')
 	sigs=$(wc -l <"$dir/SIGNATURES" | tr -d ' ')
-	[ "$sigs" = 10 ] || { echo "   SIGNATURES has $sigs entries, not one per package" >&2; return 1; }
+	[ "$sigs" = "$packages" ] || { echo "   SIGNATURES has $sigs entries, not one per package ($packages)" >&2; return 1; }
 	local args=(-version "$version" -dir "$dir")
 	[ -z "$key" ] || args+=(-pubkey "$key")
 	(cd "$here" && go run ./tools/updatesign verify "${args[@]}") || {

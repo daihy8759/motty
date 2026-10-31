@@ -3,11 +3,12 @@ package buildinfo
 import "testing"
 
 func TestProductNameMatchesTheBuildTag(t *testing.T) {
-	want := "Motty"
+	want, wantBadge := "Motty", ""
 	if Development {
-		want = "Motty Dev"
+		want, wantBadge = "Motty Dev", "DEV"
 	}
-	if ProductName != want || Development != developmentBuild {
-		t.Fatalf("ProductName = %q, want %q; Development = %t, want %t", ProductName, want, Development, developmentBuild)
+	if ProductName != want || Development != developmentBuild || DockBadge != wantBadge {
+		t.Fatalf("ProductName = %q, want %q; Development = %t, want %t; DockBadge = %q, want %q",
+			ProductName, want, Development, developmentBuild, DockBadge, wantBadge)
 	}
 }

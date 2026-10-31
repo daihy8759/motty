@@ -2,6 +2,7 @@ package vault
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,11 +13,6 @@ import (
 	"sync"
 	"testing"
 )
-
-func init() {
-	// A cost the tests can afford many times; Open never reads this default.
-	defaultKDF = kdfParams{Name: "argon2id", Time: 1, MemoryKiB: 64, Threads: 1}
-}
 
 // memoryKeystore is a system store in memory, which a test can take away.
 type memoryKeystore struct {
@@ -32,6 +28,9 @@ func (store *memoryKeystore) Store(service, account string, secret []byte) error
 	defer store.mu.Unlock()
 	if store.unavailable {
 		return ErrKeystoreUnavailable
+	}
+	if store.denied {
+		return ErrKeystoreDenied
 	}
 	if store.items == nil {
 		store.items = make(map[[2]string][]byte)
@@ -115,8 +114,8 @@ func TestASavedSecretComesBackAfterTheFileIsOpenedAgain(t *testing.T) {
 	if _, found, _ := again.Get("password:other@host:22"); found {
 		t.Fatal("found a secret that was never saved")
 	}
-	if again.Len() != 1 || again.HasMasterPassword() {
-		t.Fatalf("Len %d, master password %v", again.Len(), again.HasMasterPassword())
+	if again.Len() != 1 || again.NeedsConversion() {
+		t.Fatalf("Len %d, needs conversion %v", again.Len(), again.NeedsConversion())
 	}
 }
 
@@ -190,124 +189,6 @@ func TestApplyChangesAllSecretsOrNone(t *testing.T) {
 	}
 	if got, found, _ := vault.Get("c"); !found || got != "see" {
 		t.Fatalf("c after batch = %q, %t", got, found)
-	}
-}
-
-func TestNothingCanBeSavedWithoutAStoreOrAMasterPassword(t *testing.T) {
-	keys := &memoryKeystore{unavailable: true}
-	vault, path := openVault(t, keys)
-	if err := vault.Set("a", "x"); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("Set without a store = %v", err)
-	}
-	if err := vault.Prepare(); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("Prepare = %v", err)
-	}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("a failed save wrote a file")
-	}
-	// A master password needs no store.
-	if err := vault.SetMasterPassword("long enough"); err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.Set("a", "x"); err != nil {
-		t.Fatalf("Set under a master password = %v", err)
-	}
-	if err := vault.RemoveMasterPassword(); !errors.Is(err, ErrUnavailable) || !vault.HasMasterPassword() {
-		t.Fatalf("removing the password with no store to take the key = %v", err)
-	}
-	if got, _, _ := vault.Get("a"); got != "x" {
-		t.Fatal("the failed removal lost the secret")
-	}
-}
-
-func TestAMasterPasswordLocksTheVaultAndTheWrongOneDoesNotOpenIt(t *testing.T) {
-	keys := &memoryKeystore{}
-	vault, path := openVault(t, keys)
-	if err := vault.Set("a", "alpha"); err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.SetMasterPassword("short"); !errors.Is(err, ErrWeakPassword) {
-		t.Fatalf("a short password = %v", err)
-	}
-	if err := vault.SetMasterPassword("correct horse"); err != nil {
-		t.Fatal(err)
-	}
-	if keys.has() {
-		t.Fatal("the data key stayed in the system's store beside a master password")
-	}
-	if got, _, err := vault.Get("a"); err != nil || got != "alpha" {
-		t.Fatalf("the unlocked vault stopped answering: %q, %v", got, err)
-	}
-
-	again, err := Open(path, keys)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !again.HasMasterPassword() || again.Unlocked() {
-		t.Fatal("a reopened vault with a master password is not locked")
-	}
-	if _, _, err := again.Get("a"); !errors.Is(err, ErrLocked) {
-		t.Fatalf("Get while locked = %v", err)
-	}
-	if err := again.Set("b", "x"); !errors.Is(err, ErrLocked) {
-		t.Fatalf("Set while locked = %v", err)
-	}
-	if err := again.Unlock("wrong password"); !errors.Is(err, ErrWrongPassword) {
-		t.Fatalf("a wrong password = %v", err)
-	}
-	if err := again.Unlock("correct horse"); err != nil {
-		t.Fatal(err)
-	}
-	if got, found, err := again.Get("a"); err != nil || !found || got != "alpha" {
-		t.Fatalf("after unlock = %q, %v, %v", got, found, err)
-	}
-	again.Lock()
-	if again.Unlocked() {
-		t.Fatal("Lock left the key in memory")
-	}
-	if _, _, err := again.Get("a"); !errors.Is(err, ErrLocked) {
-		t.Fatalf("Get after Lock = %v", err)
-	}
-}
-
-func TestChangingAndRemovingTheMasterPassword(t *testing.T) {
-	keys := &memoryKeystore{}
-	vault, path := openVault(t, keys)
-	if err := vault.SetMasterPassword("first password"); err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.Set("a", "alpha"); err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.SetMasterPassword("second password"); err != nil {
-		t.Fatal(err)
-	}
-	reopened, _ := Open(path, keys)
-	if err := reopened.Unlock("first password"); !errors.Is(err, ErrWrongPassword) {
-		t.Fatalf("the old password after a change = %v", err)
-	}
-	if err := reopened.Unlock("second password"); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := reopened.RemoveMasterPassword(); err != nil {
-		t.Fatal(err)
-	}
-	if !keys.has() || reopened.HasMasterPassword() {
-		t.Fatalf("after removal: key in store %v, password %v", keys.has(), reopened.HasMasterPassword())
-	}
-	third, _ := Open(path, keys)
-	if got, found, err := third.Get("a"); err != nil || !found || got != "alpha" {
-		t.Fatalf("a vault with no password = %q, %v, %v", got, found, err)
-	}
-
-	locked, _ := Open(path, keys)
-	if err := locked.SetMasterPassword("third password"); err != nil {
-		t.Fatalf("setting a password on a vault whose key the store gives: %v", err)
-	}
-	relocked, _ := Open(path, keys)
-	if err := relocked.RemoveMasterPassword(); !errors.Is(err, ErrLocked) {
-		t.Fatalf("removing a password from a locked vault = %v", err)
 	}
 }
 
@@ -393,51 +274,6 @@ func TestFilesThatAreNotVaultsAreRefused(t *testing.T) {
 		if _, err := Open(path, nil); !errors.Is(err, ErrCorrupt) {
 			t.Errorf("%s: Open = %v, want ErrCorrupt", name, err)
 		}
-	}
-}
-
-func TestTheWrappedKeyUsesTheCostsRecordedInTheFile(t *testing.T) {
-	keys := &memoryKeystore{}
-	vault, path := openVault(t, keys)
-	if err := vault.SetMasterPassword("a long enough one"); err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.Set("a", "alpha"); err != nil {
-		t.Fatal(err)
-	}
-	defaultKDF = kdfParams{Name: "argon2id", Time: 2, MemoryKiB: 128, Threads: 2} // a later release's defaults
-	defer func() { defaultKDF = kdfParams{Name: "argon2id", Time: 1, MemoryKiB: 64, Threads: 1} }()
-	reopened, err := Open(path, keys)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reopened.Unlock("a long enough one"); err != nil {
-		t.Fatalf("a vault made with other costs did not open: %v", err)
-	}
-	salts := bytes.Equal(reopened.file.KDF.Salt, make([]byte, 16))
-	if salts {
-		t.Fatal("the salt is zero")
-	}
-}
-
-func TestClearingWithAMasterPasswordDropsItToo(t *testing.T) {
-	keys := &memoryKeystore{}
-	vault, path := openVault(t, keys)
-	if err := vault.SetMasterPassword("a long enough one"); err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.Set("a", "alpha"); err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.Clear(); err != nil {
-		t.Fatal(err)
-	}
-	fresh, _ := Open(path, keys)
-	if fresh.HasMasterPassword() || fresh.Len() != 0 {
-		t.Fatalf("after Clear: password %v, Len %d", fresh.HasMasterPassword(), fresh.Len())
-	}
-	if err := fresh.Set("a", "alpha"); err != nil {
-		t.Fatalf("saving after a Clear: %v", err)
 	}
 }
 
@@ -635,55 +471,6 @@ func TestExportStampsSecretsSavedBeforeStampsExisted(t *testing.T) {
 	}
 }
 
-func TestExportAndMergeNeedAnUnlockedVault(t *testing.T) {
-	keys := &memoryKeystore{}
-	vault, path := openVault(t, keys)
-	if secrets, err := vault.Export(); secrets != nil || err != nil {
-		t.Fatalf("Export of an empty vault = %+v, %v", secrets, err)
-	}
-	vault.Set("a", "alpha")
-	if err := vault.SetMasterPassword("correct horse"); err != nil {
-		t.Fatal(err)
-	}
-	locked, _ := Open(path, keys)
-	if _, err := locked.Export(); !errors.Is(err, ErrLocked) {
-		t.Fatalf("Export while locked = %v", err)
-	}
-	if _, err := locked.Merge([]Secret{{Name: "b", Value: "x", Stamp: "s1"}}); !errors.Is(err, ErrLocked) {
-		t.Fatalf("Merge while locked = %v", err)
-	}
-}
-
-func TestChangingTheMasterPasswordKeepsTombstonesAndStamps(t *testing.T) {
-	keys := &memoryKeystore{}
-	vault, path := openVault(t, keys)
-	stamps := &counter{}
-	vault.SetStamper(stamps.next)
-	vault.Set("a", "alpha")
-	vault.Set("b", "bee")
-	vault.Delete("a")
-	want := mustExport(t, vault)
-	if err := vault.SetMasterPassword("first password"); err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.SetMasterPassword("second password"); err != nil {
-		t.Fatal(err)
-	}
-	reopened, _ := Open(path, keys)
-	if err := reopened.Unlock("second password"); err != nil {
-		t.Fatal(err)
-	}
-	if got := mustExport(t, reopened); !reflect.DeepEqual(got, want) {
-		t.Fatalf("Export = %+v, want %+v", got, want)
-	}
-	if err := reopened.RemoveMasterPassword(); err != nil {
-		t.Fatal(err)
-	}
-	if got := mustExport(t, reopened); !reflect.DeepEqual(got, want) {
-		t.Fatalf("Export after removal = %+v, want %+v", got, want)
-	}
-}
-
 func TestPruneDropsOnlyOldTombstones(t *testing.T) {
 	vault, _, _ := stampedVault(t)
 	vault.Set("a", "alpha") // s0001
@@ -715,31 +502,169 @@ func FuzzOpenNeverPanicsOnAnyFile(f *testing.F) {
 		if err != nil {
 			return
 		}
-		vault.Unlock("password")
+		_ = vault.ConvertLegacy("password")
 		vault.Names()
 		vault.Get("a")
 	})
 }
 
-// A portable copy keeps no key in the system's store, so the file must open on
-// another computer from the master password alone.
-func TestAVaultWithNoKeystoreIsKeptByTheMasterPasswordAlone(t *testing.T) {
-	vault, path := openVault(t, NoKeystore{})
-	if err := vault.Set("a", "alpha"); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("Set before a master password = %v", err)
-	}
-	if err := vault.SetMasterPassword("correct horse"); err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.Set("a", "alpha"); err != nil {
-		t.Fatal(err)
-	}
-
-	elsewhere, err := Open(path, &memoryKeystore{})
+// legacyVault writes a vault the way a version with a master password did: the
+// data key wrapped by a key derived from the password, and no key in any store.
+func legacyVault(t *testing.T, password string, secrets map[string]string) string {
+	t.Helper()
+	key := bytes.Repeat([]byte{7}, keySize)
+	params := kdfParams{Name: "argon2id", Time: 1, MemoryKiB: 64, Threads: 1, Salt: bytes.Repeat([]byte{3}, 16)}
+	kek := deriveKey(password, &params)
+	gcm, err := newGCM(kek)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := elsewhere.Unlock("correct horse"); err != nil {
+	nonce := bytes.Repeat([]byte{9}, gcm.NonceSize())
+	file := fileData{Version: fileVersion, KDF: &params, WrappedKey: gcm.Seal(nonce, nonce, key, []byte(wrapAssociated))}
+	for name, value := range secrets {
+		sealed, err := seal(key, plainRecord{Name: name, Value: value, Stamp: "s1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		file.Records = append(file.Records, sealed)
+	}
+	path := filepath.Join(t.TempDir(), "vault.json")
+	data, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestAVaultKeptByAMasterPasswordIsConvertedOnceAndThenNeedsNoPassword(t *testing.T) {
+	path := legacyVault(t, "correct horse", map[string]string{"password:ops@host:22": "hunter2", "aikey:x": "sk-1"})
+	keys := &memoryKeystore{}
+	vault, err := Open(path, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !vault.NeedsConversion() {
+		t.Fatal("a vault kept by a password does not say so")
+	}
+	if _, _, err := vault.Get("aikey:x"); !errors.Is(err, ErrNeedsConversion) {
+		t.Fatalf("Get before converting = %v", err)
+	}
+	if err := vault.Set("b", "x"); !errors.Is(err, ErrNeedsConversion) {
+		t.Fatalf("Set before converting = %v", err)
+	}
+	if err := vault.ConvertLegacy("wrong horse"); !errors.Is(err, ErrWrongPassword) || !vault.NeedsConversion() || keys.has() {
+		t.Fatalf("a wrong password converted the vault: %v", err)
+	}
+
+	if err := vault.ConvertLegacy("correct horse"); err != nil {
+		t.Fatal(err)
+	}
+	if got, found, err := vault.Get("password:ops@host:22"); err != nil || !found || got != "hunter2" {
+		t.Fatalf("after converting = %q, %v, %v", got, found, err)
+	}
+	reopened, err := Open(path, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.NeedsConversion() {
+		t.Fatal("the file is still kept by the password")
+	}
+	if got, found, err := reopened.Get("aikey:x"); err != nil || !found || got != "sk-1" {
+		t.Fatalf("a fresh start reads %q, %v, %v", got, found, err)
+	}
+}
+
+func TestAConversionThatCannotKeepTheKeyLeavesTheVaultAsItWas(t *testing.T) {
+	path := legacyVault(t, "correct horse", map[string]string{"a": "alpha"})
+	before, _ := os.ReadFile(path)
+	vault, _ := Open(path, &memoryKeystore{denied: true})
+	if err := vault.ConvertLegacy("correct horse"); !errors.Is(err, ErrKeystoreDenied) {
+		t.Fatalf("ConvertLegacy with the store refusing = %v", err)
+	}
+	after, _ := os.ReadFile(path)
+	if !bytes.Equal(before, after) || !vault.NeedsConversion() {
+		t.Fatal("a failed conversion changed the vault")
+	}
+}
+
+func TestAKeyFileHoldsTheKeyForASystemWithoutAStore(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "vault.key")
+	vaultPath := filepath.Join(dir, "vault.json")
+	keys := FallbackKeystore{System: &memoryKeystore{unavailable: true}, File: FileKeystore{Path: keyPath}}
+	vault, err := Open(vaultPath, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.Set("a", "alpha"); err != nil {
+		t.Fatalf("Set without a system store = %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(keyPath); err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("key file = %v, %v", info, err)
+		}
+	}
+	again, err := Open(vaultPath, FallbackKeystore{System: &memoryKeystore{unavailable: true}, File: FileKeystore{Path: keyPath}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, found, err := again.Get("a"); err != nil || !found || got != "alpha" {
+		t.Fatalf("after a restart = %q, %v, %v", got, found, err)
+	}
+
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	lost, _ := Open(vaultPath, FallbackKeystore{System: &memoryKeystore{unavailable: true}, File: FileKeystore{Path: keyPath}})
+	if _, _, err := lost.Get("a"); !errors.Is(err, ErrKeyLost) {
+		t.Fatalf("with the key file gone = %v", err)
+	}
+}
+
+func TestTheSystemStoreComesFirstAndARefusalIsNeverAnsweredWithAFile(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "vault.key")
+	system := &memoryKeystore{}
+	keys := FallbackKeystore{System: system, File: FileKeystore{Path: keyPath}}
+	vault, _ := Open(filepath.Join(dir, "vault.json"), keys)
+	if err := vault.Set("a", "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) || !system.has() {
+		t.Fatal("a key was written to a file although the system has a store")
+	}
+
+	system.denied = true
+	other, _ := Open(filepath.Join(dir, "other.json"), keys)
+	if err := other.Set("a", "alpha"); !errors.Is(err, ErrKeystoreDenied) {
+		t.Fatalf("Set with the store refusing = %v", err)
+	}
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a refusal was answered by a key file")
+	}
+}
+
+func TestAPortableKeyFileTravelsWithTheVault(t *testing.T) {
+	dir := t.TempDir()
+	vault, _ := Open(filepath.Join(dir, "vault.json"), FileKeystore{Path: filepath.Join(dir, "vault.key")})
+	if err := vault.Set("a", "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	moved := t.TempDir()
+	for _, name := range []string{"vault.json", "vault.key"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(moved, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	elsewhere, err := Open(filepath.Join(moved, "vault.json"), FileKeystore{Path: filepath.Join(moved, "vault.key")})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got, found, err := elsewhere.Get("a"); err != nil || !found || got != "alpha" {

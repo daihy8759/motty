@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/vivaui/viva/ui"
@@ -129,5 +130,90 @@ func TestSnippetsPageSteadyPaintDoesNotAllocate(t *testing.T) {
 	})
 	if allocations != 0 {
 		t.Fatalf("snippets page paint allocations = %v", allocations)
+	}
+}
+
+func TestASnippetWithoutAShortcutIsSentFromItsPage(t *testing.T) {
+	world, options := newSharingWorld(t)
+	state := newTestState(t, options)
+	state.snippets.list = []snippet{{Name: "list all", Command: "ls --all", Run: true}}
+	state.refreshSnippets()
+
+	// With no terminal open there is nothing to send to, and the page stays.
+	state.Click(hitSnippets)
+	state.Click(hitSnippetSend)
+	if state.activeSection != sectionSnippets || state.status != state.messages.Tools.StatusSnippetNoTerminal {
+		t.Fatalf("section=%d status=%q", state.activeSection, state.status)
+	}
+
+	state.Click(hitHosts)
+	world.connectFirst(t, state)
+	shell := world.conns[0].shell(t)
+	state.Click(hitSnippets)
+	state.Click(hitSnippetSend)
+	if state.activeSection != sectionTerminal || shell.typed() != "ls --all\r" {
+		t.Fatalf("button: section=%d, shell heard %q", state.activeSection, shell.typed())
+	}
+	if title := state.sessions[0].Title; !strings.Contains(state.status, title) {
+		t.Fatalf("status %q does not name the terminal %q", state.status, title)
+	}
+
+	state.Click(hitSnippets)
+	if got := doubleClick(state, hitSnippetRowList.At(0)); !got.Handled || state.activeSection != sectionTerminal || shell.typed() != "ls --all\rls --all\r" {
+		t.Fatalf("double click: handled=%v section=%d, shell heard %q", got.Handled, state.activeSection, shell.typed())
+	}
+}
+
+func TestRightClickingASnippetRowOpensItsMenu(t *testing.T) {
+	world, options := newSharingWorld(t)
+	state := newTestState(t, options)
+	state.snippets.list = []snippet{{Name: "a", Command: "echo a"}, {Name: "b", Command: "echo b", Run: true}}
+	state.refreshSnippets()
+	state.Click(hitHosts)
+	world.connectFirst(t, state)
+	shell := world.conns[0].shell(t)
+
+	state.Click(hitSnippets)
+	secondary := ui.PointerEvent{Kind: ui.PointerDown, Button: ui.PointerButtonSecondary, Target: hitSnippetRowList.At(1)}
+	if got := pointer(state, secondary); !got.Handled || !state.snippetMenu.open || state.snippetMenu.index != 1 || state.snippets.selected != 1 {
+		t.Fatalf("handled=%v menu=%+v selected=%d", got.Handled, state.snippetMenu, state.snippets.selected)
+	}
+	state.Click(hitSnippetMenuSend)
+	if state.snippetMenu.open || state.activeSection != sectionTerminal || shell.typed() != "echo b\r" {
+		t.Fatalf("menu open=%v section=%d, shell heard %q", state.snippetMenu.open, state.activeSection, shell.typed())
+	}
+
+	state.Click(hitSnippets)
+	pointer(state, ui.PointerEvent{Kind: ui.PointerDown, Button: ui.PointerButtonSecondary, Target: hitSnippetRowList.At(0)})
+	state.Click(hitSnippetMenuDelete)
+	if len(state.snippets.list) != 1 || state.snippets.list[0].Name != "b" {
+		t.Fatalf("snippets after delete: %+v", state.snippets.list)
+	}
+}
+
+func TestSendingASnippetFromThePageAsksWhichTerminalWhenThereAreSeveral(t *testing.T) {
+	world, options := newSharingWorld(t)
+	state := newTestState(t, options)
+	state.snippets.list = []snippet{{Name: "list", Command: "ls", Run: true}}
+	state.refreshSnippets()
+	first := world.connectFirst(t, state)
+	state.Click(hitPaneSplitHorizontal)
+	firstShell, splitShell := first.shell(t), world.shared[0].shell(t)
+	firstID := state.sessions[0].ID
+	if state.activeSessionID == firstID {
+		t.Fatalf("the split should be the active session")
+	}
+
+	state.Click(hitSnippets)
+	state.Click(hitSnippetSend)
+	if !state.snippetMenu.open || !state.snippetMenu.pick || firstShell.typed() != "" || splitShell.typed() != "" {
+		t.Fatalf("menu=%+v, first heard %q, split heard %q: nothing is sent before a terminal is chosen", state.snippetMenu, firstShell.typed(), splitShell.typed())
+	}
+	state.Click(hitSnippetPickList.At(int(firstID)))
+	if firstShell.typed() != "ls\r" || splitShell.typed() != "" {
+		t.Fatalf("first heard %q, split heard %q", firstShell.typed(), splitShell.typed())
+	}
+	if state.activeSection != sectionTerminal || state.activeSessionID != firstID {
+		t.Fatalf("section=%d active=%d, want the chosen terminal shown", state.activeSection, state.activeSessionID)
 	}
 }

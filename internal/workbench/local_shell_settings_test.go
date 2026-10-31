@@ -23,10 +23,10 @@ func TestLocalShellSettingVisibilityAndPosition(t *testing.T) {
 			t.Fatalf("local shell visible=%v on %s", visible, runtime.GOOS)
 		}
 		if visible {
-			suggest, _ := hitByID(&canvas, hitSettingsSuggestToggle)
+			suggest, _ := hitByID(&canvas, hitSettingsCompletionOff)
 			clear, _ := hitByID(&canvas, hitSettingsHistoryClear)
 			if hit.Role != ui.RoleCombobox || hit.Bounds.Y <= suggest.Bounds.Y || hit.Bounds.Y >= clear.Bounds.Y {
-				t.Fatalf("shell select is not between inline suggestions and clear history: %+v", hit)
+				t.Fatalf("shell select is not between command completion and clear history: %+v", hit)
 			}
 		}
 		searchSettings(t, state, state.messages.SettingsLocalShell)

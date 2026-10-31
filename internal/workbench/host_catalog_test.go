@@ -179,7 +179,7 @@ func TestHostCatalogExportsCheckedSubsetAndHandlesPickerErrors(t *testing.T) {
 	options.OpenFiles = func(app.OpenFileOptions) ([]string, error) { return nil, errors.New("picker failed") }
 	state = newTestState(t, options)
 	state.Click(hitImportHostCatalog)
-	if len(state.hosts) != 0 || !strings.Contains(state.status, "picker failed") {
+	if len(state.hosts) != 0 || state.status != state.messages.ActionFeedback.FilePickerFailed {
 		t.Fatalf("failed import hosts=%d status=%q", len(state.hosts), state.status)
 	}
 }
@@ -261,15 +261,15 @@ func TestHostIconListScrollsToTheEntriesBelow(t *testing.T) {
 	}
 }
 
-// With a secret that can be checked or removed the row has three buttons; the
+// With a secret that can be removed the row has three buttons; the
 // code field must keep room to show what it says, so the scan and paste buttons
 // go on a row of their own under it.
 func TestOTPFieldKeepsItsWidthWhateverButtonsItHas(t *testing.T) {
-	for _, checked := range []bool{false, true} {
+	for _, saved := range []bool{false, true} {
 		state := newTestState(t, testOptions(t))
 		clickHostAction(state, hitAddHost)
 		state.Click(hitDialogAdvanced)
-		state.editor.otpChecked = checked
+		state.editor.otpSaved = saved
 		canvas, _ := paintedTexts(state)
 		state.editor.form.offset = state.editor.form.geometry.MaxOffsetY
 		canvas, _ = paintedTexts(state)
@@ -281,26 +281,26 @@ func TestOTPFieldKeepsItsWidthWhateverButtonsItHas(t *testing.T) {
 			}
 		}
 		if field.Bounds.Width < 250 {
-			t.Fatalf("checked=%v: the code field is %v wide, too narrow for its placeholder", checked, field.Bounds.Width)
+			t.Fatalf("saved=%v: the code field is %v wide, too narrow for its placeholder", saved, field.Bounds.Width)
 		}
 		scan, _ := hitByID(canvas, hitDialogOTPScan)
 		if scan.Bounds.Y <= field.Bounds.Y+field.Bounds.Height-1 {
-			t.Fatalf("checked=%v: scan %+v should sit under the field %+v", checked, scan.Bounds, field.Bounds)
+			t.Fatalf("saved=%v: scan %+v should sit under the field %+v", saved, scan.Bounds, field.Bounds)
 		}
 		for _, id := range []ui.ID{hitDialogOTPScan, hitDialogOTPPaste, hitDialogForwardX11, hitDialogNoHistory, hitDialogAgentAccess} {
 			hit, found := hitByID(canvas, id)
 			if !found || hit.Bounds.Y+hit.Bounds.Height > float32(state.windowRect().Height) {
-				t.Fatalf("checked=%v: control %v is missing or off screen: %+v", checked, id, hit)
+				t.Fatalf("saved=%v: control %v is missing or off screen: %+v", saved, id, hit)
 			}
 		}
 		x11, _ := hitByID(canvas, hitDialogForwardX11)
 		history, _ := hitByID(canvas, hitDialogNoHistory)
 		if x11.Bounds.Y+x11.Bounds.Height > history.Bounds.Y {
-			t.Fatalf("checked=%v: the two switches overlap: %+v and %+v", checked, x11.Bounds, history.Bounds)
+			t.Fatalf("saved=%v: the two switches overlap: %+v and %+v", saved, x11.Bounds, history.Bounds)
 		}
 		access, _ := hitByID(canvas, hitDialogAgentAccess)
 		if history.Bounds.Y+history.Bounds.Height > access.Bounds.Y {
-			t.Fatalf("checked=%v: the agent switch overlaps the one above it: %+v and %+v", checked, history.Bounds, access.Bounds)
+			t.Fatalf("saved=%v: the agent switch overlaps the one above it: %+v and %+v", saved, history.Bounds, access.Bounds)
 		}
 	}
 }

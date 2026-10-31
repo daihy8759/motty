@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vivaui/viva/app"
+	"motty/internal/crashlog"
 	"motty/internal/diag"
 	"motty/internal/sshconn"
 	"motty/internal/update"
@@ -196,6 +197,21 @@ func (state *State) diagnosticReport() string {
 		}
 	}
 
+	if state.options.LogDir != "" {
+		report.Section("Log files")
+		report.Field("directory", state.options.LogDir)
+	}
+	if state.options.PreviousCrash != "" {
+		report.Section("Previous crash")
+		if text, err := crashlog.ReadReport(state.options.PreviousCrash); err != nil {
+			report.Fact("unreadable", err)
+		} else {
+			for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+				report.Line(line)
+			}
+		}
+	}
+
 	report.Section("Recent log")
 	lines := state.options.Log.Lines()
 	if len(lines) == 0 {
@@ -237,11 +253,12 @@ func (state *State) openExportDiagnostics() {
 	if errors.Is(err, app.ErrCanceled) || err == nil && path == "" {
 		return
 	}
-	if err == nil {
-		err = writePrivateAtomic(path, []byte(state.diagnosticReport()))
-	}
 	if err != nil {
-		state.status = fmt.Sprintf(m.DiagnosticsFailedFmt, err)
+		state.showActionFailure(m.DiagnosticsSaveTitle, err, state.messages.ActionFeedback.FilePickerFailed)
+		return
+	}
+	if err = writePrivateAtomic(path, []byte(state.diagnosticReport())); err != nil {
+		state.showFileSaveFailure(m.DiagnosticsSaveTitle, err)
 		return
 	}
 	state.status = fmt.Sprintf(m.DiagnosticsSavedFmt, path)

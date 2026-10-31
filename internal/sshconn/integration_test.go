@@ -58,6 +58,7 @@ func TestIntegrationSSHStartupAndFallback(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			server := startServer(t, func(server *testServer) {
 				server.password, server.shell = "secret", echoShell
+				server.version = "SSH-2.0-OpenSSH_9.6" // probes run only on known implementations
 				server.command = func(command string, channel ssh.Channel) {
 					defer channel.Close()
 					text := "integrated-startup"
@@ -91,5 +92,20 @@ func TestIntegrationSSHStartupAndFallback(t *testing.T) {
 			w := openShellWith(t, h, config)
 			w.until(want, func(output string) bool { return strings.Contains(output, want) })
 		})
+	}
+}
+
+func TestWSLIntegrationScriptRefusesWhatCouldBeInjected(t *testing.T) {
+	for _, test := range []struct{ token, variable string }{
+		{"", "MOTTY_CD"}, {"bad token", "MOTTY_CD"}, {"tok';touch /tmp/no", "MOTTY_CD"}, {strings.Repeat("a", 129), "MOTTY_CD"},
+		{"token", ""}, {"token", "lower"}, {"token", "A;touch /tmp/no"}, {"token", "A B"}, {"token", "1A"},
+	} {
+		if script := WSLIntegrationScript(test.token, test.variable); script != "" {
+			t.Errorf("token %q and variable %q were accepted", test.token, test.variable)
+		}
+	}
+	script := WSLIntegrationScript("token-1", "MOTTY_CD")
+	if script == "" || strings.Contains(script, "__MOTTY_SUFFIX__") || !strings.Contains(script, ";motty=token-1") {
+		t.Fatalf("script = %q", script)
 	}
 }

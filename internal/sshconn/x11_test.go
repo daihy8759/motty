@@ -3,6 +3,7 @@ package sshconn
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -79,8 +80,8 @@ func TestX11ChannelOfTheShellReachesTheLocalDisplayWithItsRealCookie(t *testing.
 	})
 	h := connect(t, server)
 	w := openShellWith(t, h, ShellConfig{Cols: 80, Rows: 24, X11: &env})
-	if note := w.shell.X11Note(); note != "" {
-		t.Fatalf("X11 not active: %s", note)
+	if err := w.shell.X11Err(); err != nil {
+		t.Fatalf("X11 not active: %v", err)
 	}
 	w.until("welcome", func(output string) bool { return len(output) > 0 })
 	server.mu.Lock()
@@ -117,12 +118,19 @@ func TestX11ChannelOfTheShellReachesTheLocalDisplayWithItsRealCookie(t *testing.
 }
 
 func TestShellOpensWithAReasonWhenX11CannotBeForwarded(t *testing.T) {
+	var unreachable *x11fwd.UnreachableError
+	liveX, _ := localX(t)
 	cases := map[string]struct {
 		env    x11fwd.Environ
 		refuse bool
+		is     func(error) bool
 	}{
-		"no display": {env: x11fwd.Environ{GOOS: "linux"}},
-		"refused":    {env: x11fwd.Environ{Display: ":0", GOOS: "linux"}, refuse: true},
+		"no display": {env: x11fwd.Environ{GOOS: "linux"},
+			is: func(err error) bool { return errors.Is(err, x11fwd.ErrNoDisplay) }},
+		"no server": {env: x11fwd.Environ{Display: "/nonexistent/org.xquartz:0", GOOS: "darwin"},
+			is: func(err error) bool { return errors.As(err, &unreachable) }},
+		"refused": {env: liveX, refuse: true,
+			is: func(err error) bool { return errors.Is(err, ErrX11Refused) }},
 	}
 	for name, c := range cases {
 		server := startServer(t, func(server *testServer) {
@@ -133,8 +141,8 @@ func TestShellOpensWithAReasonWhenX11CannotBeForwarded(t *testing.T) {
 		h := connect(t, server)
 		env := c.env
 		w := openShellWith(t, h, ShellConfig{Cols: 80, Rows: 24, X11: &env})
-		if w.shell.X11Note() == "" {
-			t.Errorf("%s: no reason given", name)
+		if err := w.shell.X11Err(); !c.is(err) {
+			t.Errorf("%s: reason = %v", name, err)
 		}
 		w.until("the shell greets", func(output string) bool { return len(output) > 0 })
 	}

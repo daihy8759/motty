@@ -75,7 +75,7 @@ func (e *LimitError) Error() string {
 // Is makes errors.Is(err, ErrTooLarge) true.
 func (e *LimitError) Is(target error) bool { return target == ErrTooLarge }
 
-const schemaVersion = 5
+const schemaVersion = 6
 
 var migrations = [...]string{
 	// version 1
@@ -136,6 +136,9 @@ var migrations = [...]string{
 		outcome    TEXT NOT NULL
 	);
 	CREATE INDEX agent_audit_at ON agent_audit(at DESC, id DESC);`,
+	// version 6: an OpenAI-compatible provider may speak the Responses API
+	// instead of Chat Completions. The empty value keeps Chat Completions.
+	`ALTER TABLE providers ADD COLUMN api_format TEXT NOT NULL DEFAULT '';`,
 }
 
 const sqliteMagic = "SQLite format 3\x00"
@@ -326,6 +329,18 @@ func ValidAuthStyle(style string) bool {
 	return style == "" || style == AuthStyleAPIKey || style == AuthStyleBearer
 }
 
+// API formats of an OpenAI-compatible provider. The empty value means Chat
+// Completions, which nearly every compatible endpoint implements.
+const (
+	APIFormatChat      = "chat"
+	APIFormatResponses = "responses"
+)
+
+// ValidAPIFormat reports whether format is one a provider may store.
+func ValidAPIFormat(format string) bool {
+	return format == "" || format == APIFormatChat || format == APIFormatResponses
+}
+
 func IsCLIKind(kind string) bool {
 	return kind == KindClaudeCLI || kind == KindCodexCLI || kind == KindOpenCodeCLI
 }
@@ -349,6 +364,9 @@ type Provider struct {
 	// AuthStyle selects the Anthropic request header. Empty has the historical
 	// meaning: x-api-key for Anthropic, bearer for OpenAI-compatible endpoints.
 	AuthStyle string
+	// APIFormat selects the OpenAI-compatible request protocol. Empty has the
+	// historical meaning: Chat Completions. Anthropic providers have none.
+	APIFormat string
 }
 
 func (p Provider) redacted() string {
@@ -356,8 +374,8 @@ func (p Provider) redacted() string {
 	if p.APIKey != "" {
 		key = "<redacted>"
 	}
-	return fmt.Sprintf("Provider{ID:%q Name:%q Kind:%q BaseURL:%q AuthStyle:%q APIKey:%q HasKey:%t Enabled:%t}",
-		p.ID, p.Name, p.Kind, p.BaseURL, p.AuthStyle, key, p.HasKey, p.Enabled)
+	return fmt.Sprintf("Provider{ID:%q Name:%q Kind:%q BaseURL:%q AuthStyle:%q APIFormat:%q APIKey:%q HasKey:%t Enabled:%t}",
+		p.ID, p.Name, p.Kind, p.BaseURL, p.AuthStyle, p.APIFormat, key, p.HasKey, p.Enabled)
 }
 
 // String implements fmt.Stringer and hides the API key.
@@ -372,29 +390,38 @@ func (s *Store) SaveProvider(p Provider) error {
 	if p.ID == "" || !ValidProviderKind(p.Kind) {
 		return fmt.Errorf("%w: provider needs an id and a supported kind", ErrInvalid)
 	}
-	if IsCLIKind(p.Kind) && (p.BaseURL != "" || p.APIKey != "" || p.HasKey || p.AuthStyle != "") {
+	if IsCLIKind(p.Kind) && (p.BaseURL != "" || p.APIKey != "" || p.HasKey || p.AuthStyle != "" || p.APIFormat != "") {
 		return fmt.Errorf("%w: CLI providers use their own authentication", ErrInvalid)
 	}
 	if !ValidAuthStyle(p.AuthStyle) {
 		return fmt.Errorf("%w: unsupported authentication style", ErrInvalid)
 	}
+	if !ValidAPIFormat(p.APIFormat) {
+		return fmt.Errorf("%w: unsupported API format", ErrInvalid)
+	}
 	// Only Anthropic has a choice of header. OpenAI-compatible requests always
 	// use bearer authentication, so keeping a style there would be misleading.
-	authStyle := p.AuthStyle
+	// The API format is the mirror image: only OpenAI-compatible providers
+	// have one. The default is stored as the empty value, never as "chat", so
+	// there is exactly one spelling of it.
+	authStyle, apiFormat := p.AuthStyle, p.APIFormat
 	if p.Kind != KindAnthropic {
 		authStyle = ""
 	}
-	_, err := s.db.Exec(`INSERT INTO providers(id,name,kind,base_url,api_key,has_key,enabled,cli_path,auth_style) VALUES(?,?,?,?,'',?,?,?,?)
+	if p.Kind != KindOpenAI || apiFormat == APIFormatChat {
+		apiFormat = ""
+	}
+	_, err := s.db.Exec(`INSERT INTO providers(id,name,kind,base_url,api_key,has_key,enabled,cli_path,auth_style,api_format) VALUES(?,?,?,?,'',?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind,
 		base_url=excluded.base_url, has_key=excluded.has_key, enabled=excluded.enabled,
-		cli_path=excluded.cli_path, auth_style=excluded.auth_style`,
-		p.ID, p.Name, p.Kind, p.BaseURL, b2i(p.HasKey), b2i(p.Enabled), p.CLIPath, authStyle)
+		cli_path=excluded.cli_path, auth_style=excluded.auth_style, api_format=excluded.api_format`,
+		p.ID, p.Name, p.Kind, p.BaseURL, b2i(p.HasKey), b2i(p.Enabled), p.CLIPath, authStyle, apiFormat)
 	return wrapDB(err)
 }
 
 // Providers lists all providers ordered by name then ID.
 func (s *Store) Providers() ([]Provider, error) {
-	rows, err := s.db.Query(`SELECT id,name,kind,base_url,has_key,enabled,cli_path,auth_style FROM providers ORDER BY name, id`)
+	rows, err := s.db.Query(`SELECT id,name,kind,base_url,has_key,enabled,cli_path,auth_style,api_format FROM providers ORDER BY name, id`)
 	if err != nil {
 		return nil, wrapDB(err)
 	}
@@ -403,7 +430,7 @@ func (s *Store) Providers() ([]Provider, error) {
 	for rows.Next() {
 		var p Provider
 		var hk, en int
-		if err := rows.Scan(&p.ID, &p.Name, &p.Kind, &p.BaseURL, &hk, &en, &p.CLIPath, &p.AuthStyle); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Kind, &p.BaseURL, &hk, &en, &p.CLIPath, &p.AuthStyle, &p.APIFormat); err != nil {
 			return nil, wrapDB(err)
 		}
 		p.HasKey = hk != 0

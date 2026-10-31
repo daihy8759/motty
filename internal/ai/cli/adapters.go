@@ -201,6 +201,10 @@ func buildCommand(kind string, c command, req llm.Request, dir, url, token strin
 	for _, s := range req.Tools {
 		names = append(names, s.Name)
 	}
+	images, err := writeImages(dir, conversationImages(req.Messages))
+	if err != nil {
+		return command{}, err
+	}
 	switch kind {
 	case store.KindClaudeCLI:
 		disabledPlugins := make(map[string]bool)
@@ -237,6 +241,11 @@ func buildCommand(kind string, c command, req llm.Request, dir, url, token strin
 		entries = append(entries, strconv.Quote(server)+"={url="+strconv.Quote(url)+`,bearer_token_env_var="MOTTY_CLI_TOKEN",required=true,default_tools_approval_mode="approve",enabled_tools=`+jsonString(names)+",tool_timeout_sec=900}")
 		c.args = append(c.args, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only")
 		c.args = withOverrides(c.args, append(append([]string{}, codexControls...), "mcp_servers={"+strings.Join(entries, ",")+"}"))
+		// --image takes any number of values, so each is joined to its flag and
+		// cannot swallow the prompt placeholder that ends the arguments.
+		for _, file := range images {
+			c.args = append(c.args, "--image="+file)
+		}
 		c.env = append(c.env, "MOTTY_CLI_TOKEN="+token)
 		if req.Model != "" && req.Model != "default" {
 			c.args = append(c.args, "--model", req.Model)
@@ -262,6 +271,9 @@ func buildCommand(kind string, c command, req llm.Request, dir, url, token strin
 		c.args = append(c.args, "run", "--format", "json", "--pure", "--agent", server)
 		if req.Model != "" && req.Model != "default" {
 			c.args = append(c.args, "--model", req.Model)
+		}
+		for _, file := range images {
+			c.args = append(c.args, "--file="+file)
 		}
 	default:
 		return command{}, errors.New("cli: unsupported_provider")

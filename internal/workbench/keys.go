@@ -123,22 +123,24 @@ func (state *State) importKeys() {
 	paths, err := state.options.OpenFiles(app.OpenFileOptions{
 		Title: state.messages.KeyImportTitle, AllowMultiple: true,
 	})
-	if errors.Is(err, app.ErrCanceled) {
+	if errors.Is(err, app.ErrCanceled) || err == nil && len(paths) == 0 {
 		state.status = state.messages.KeyImportCanceled
 		return
 	}
 	if err != nil {
-		state.status = fmt.Sprintf(state.messages.KeyImportFailedFmt, err)
+		state.showActionFailure(state.messages.KeyImportTitle, err, state.messages.ActionFeedback.FilePickerFailed)
 		return
 	}
 	added := 0
+	hadError := false
 	for _, path := range paths {
 		if path == "" || state.hasIdentityPath(path) {
 			continue
 		}
 		record := inspectIdentity(state.nextIdentityID, path, state.keyMessages())
 		if record.Error != "" {
-			state.status = fmt.Sprintf(state.messages.KeyInvalidFmt, filepath.Base(path), record.Error)
+			hadError = true
+			state.showActionFailure(state.messages.KeyImportTitle, errors.New(record.Error), fmt.Sprintf(state.messages.ActionFeedback.ImportPrivateKeyFailedFmt, elideMiddleRunes(filepath.Base(path), 64)))
 			continue
 		}
 		state.identities = append(state.identities, record)
@@ -150,8 +152,8 @@ func (state *State) importKeys() {
 		state.refreshIdentityCount()
 		state.status = fmt.Sprintf(state.messages.KeyImportedFmt, added)
 		state.save()
-	} else if err == nil && state.status != state.messages.KeyImportCanceled {
-		state.status = state.messages.KeyNothingImported
+	} else if !hadError {
+		state.showActionInfo(state.messages.KeyImportTitle, state.messages.KeyNothingImported)
 	}
 }
 
@@ -188,7 +190,7 @@ func (state *State) keepKeyPassphrase(identity identityRecord, passphrase string
 			return m.KeyPassphraseWrong
 		}
 	}
-	if vaultFile.HasMasterPassword() && !vaultFile.Unlocked() {
+	if vaultFile.NeedsConversion() {
 		state.openVaultUnlock(nil, func() {
 			if message := state.keepKeyPassphrase(identity, passphrase); message != "" {
 				state.status = message
@@ -221,7 +223,7 @@ func (state *State) removeSelectedIdentity() {
 		}
 		for _, host := range state.hosts {
 			if host.Auth == authPrivateKey && identity.Fingerprint != "" && host.Identity == identity.Fingerprint {
-				state.status = fmt.Sprintf(state.messages.KeyInUseFmt, host.Label)
+				state.showActionWarning(state.messages.KeyTitle, fmt.Sprintf(state.messages.KeyInUseFmt, host.Label))
 				return
 			}
 		}

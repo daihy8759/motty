@@ -3,6 +3,7 @@
 package workbench
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,8 @@ func shellSelectState(t *testing.T, choices []localshell.Choice) *State {
 	t.Helper()
 	state := newTestState(t, testOptions(t))
 	state.localShellMenu.discover = func() []localshell.Choice { return choices }
+	// The machine's own distributions are not what these tests are about.
+	state.localShellMenu.discoverWSL = func(context.Context) []localshell.Choice { return nil }
 	state.Click(hitSettings)
 	state.selectSettingsCategory(settingsTerminal)
 	return state

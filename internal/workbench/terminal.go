@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 	"unicode/utf8"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/vivaui/viva/ui"
 	"motty/internal/autofill"
 	"motty/internal/cmdhistory"
+	"motty/internal/i18n"
 	"motty/internal/sshconn"
 	"motty/internal/term"
 	layoutcore "motty/internal/workspace"
@@ -78,17 +80,23 @@ type terminal struct {
 	commandReporting      bool
 	submittedLines        int
 	blink                 cursorBlink
-	wheelX                float32 // horizontal wheel travel not yet worth a whole cell
-	wheelY                float32 // vertical wheel travel not yet worth a whole cell
+	wheelX                float32       // horizontal wheel travel not yet worth a whole cell
+	wheelY                float32       // vertical wheel travel not yet worth a whole cell
+	barDragging           bool          // the scrollbar thumb is held
+	barGrab               float32       // where on the thumb it was taken
+	barOffset             int           // view offset the scrollbar last saw, to notice the view moving
+	barSince              time.Duration // when the scrollbar was last lit
+	barLit                bool          // the scrollbar is lit or still lingering
 
 	// label is the accessible name of the terminal, rebuilt only when the
 	// language or the address it is made from changes.
 	label, labelFormat, labelAddress string
 
 	// preedit is the input-method composition, shown at the cursor.
-	preedit app.TextState
-	input   app.TextInput // reused, so resolving the text input allocates nothing
-	cache   rowCache
+	preedit    app.TextState
+	inputGuard terminalInputGuard
+	input      app.TextInput // reused, so resolving the text input allocates nothing
+	cache      rowCache
 	// rowIDs are the visible rows' line identities, kept between paints so an
 	// image can find its row without scanning the whole scrollback.
 	rowIDs    []uint64
@@ -116,6 +124,14 @@ type terminal struct {
 	// takeOutput brings in what the shell has already echoed, so the screen is
 	// read after the echo of the keys that came before an Enter.
 	takeOutput func()
+	// completionFeed says whether the recorder must follow typing for command
+	// completion even when the history itself is not wanted: the built-in
+	// catalog is public data and works with learning off.
+	completionFeed func() bool
+	// completionInput runs after the shell accepted input, so an open list
+	// closes on the first typed byte instead of offering a stale line.
+	completionInput   func()
+	suggestionPending *suggestionEcho
 
 	// exec is the command the assistant is waiting on in this terminal.
 	exec *aiExec
@@ -251,7 +267,9 @@ func (state *State) configureTerminal(session *Session) {
 	// An image decoded off the window thread asks for the frame that shows it.
 	session.term.screen.SetImageWake(state.options.Invalidate)
 	state.attachHistory(session)
+	state.attachCompletion(session)
 	state.stampTerminal(session.term)
+	state.reportTerminalColors(session.term)
 	sessionID := session.ID
 	session.term.screen.SetSyncHold(func(on bool) {
 		if current, ok := state.sessionByIDPointer(sessionID); ok && current.term != nil {
@@ -264,11 +282,13 @@ func (state *State) configureTerminal(session *Session) {
 	session.term.screen.SetNotify(func(note term.Notification) {
 		state.terminalNotification(sessionID, note)
 	})
+	session.term.screen.SetBell(func() { state.terminalBell(sessionID) })
 	session.term.screen.SetCwdReport(func(cwd term.Cwd) {
 		state.recordTerminalDirectory(sessionID, cwd, false)
 	})
 	session.term.screen.SetPromptStart(func() {
 		if current, ok := state.sessionByIDPointer(sessionID); ok && current.term != nil {
+			current.term.inputGuard.start()
 			current.term.promptVersion++
 			current.term.folderIntegrationSeen = true
 			current.term.promptStarted = true
@@ -279,12 +299,14 @@ func (state *State) configureTerminal(session *Session) {
 		if current, ok := state.sessionByIDPointer(sessionID); ok && current.term != nil {
 			t := current.term
 			t.promptReady = t.promptStarted && !t.promptDirty && t.commandReporting && t.submittedLines == 0
+			t.inputGuard.active = t.promptReady
 		}
 	})
 	session.term.screen.SetCommandStart(func() {
 		if current, ok := state.sessionByIDPointer(sessionID); ok && current.term != nil {
 			t := current.term
 			t.commandReporting = true
+			t.inputGuard.start()
 			t.promptReady, t.promptStarted = false, false
 			t.promptVersion++
 			if t.submittedLines > 0 {
@@ -292,9 +314,14 @@ func (state *State) configureTerminal(session *Session) {
 			}
 		}
 	})
+	session.term.screen.SetInputEnvironment(func(environment term.InputEnvironment) {
+		state.receiveInputEnvironment(sessionID, environment)
+	})
 }
 
 func (t *terminal) resetFolderSync() {
+	t.inputGuard = terminalInputGuard{}
+	t.suggestionPending = nil
 	t.folderToken = rand.Text()
 	t.screen.SetPromptToken(t.folderToken)
 	t.promptReady, t.promptStarted, t.promptDirty = false, false, false
@@ -319,6 +346,29 @@ func (t *terminal) say(style, line string) {
 	t.write([]byte(style + line + sgrReset + "\r\n"))
 }
 
+// clearScreen empties the terminal: the scrollback and every row above the line
+// the cursor is on, which becomes the first row. The selection goes with the
+// rows it pointed at, and an open find rescans the rows that are left. Nothing
+// is sent to the shell, whose prompt line survives, so the line editor keeps
+// writing where it expects. The assistant's marks go with the rows it ran in:
+// a row that was erased is not the assistant's command when it is written again.
+func (t *terminal) clearScreen(messages i18n.Messages) {
+	if !t.screen.ClearScreen() {
+		return
+	}
+	t.selection.clear()
+	t.find.refreshIfChanged(t.screen, messages, 0)
+	kept := t.screen.Row(0).ID
+	if t.aiStartID != kept {
+		t.aiStartID = 0
+	}
+	for id := range t.aiRows {
+		if id != kept {
+			delete(t.aiRows, id)
+		}
+	}
+}
+
 func (t *terminal) write(p []byte) {
 	t.selection.clear()
 	t.prediction.reset()
@@ -332,14 +382,23 @@ func (t *terminal) writeRemote(p []byte, now time.Duration) {
 	t.selection.clear()
 	t.prediction.observe(p, now)
 	t.screen.Write(p)
+	if t.inputGuard.active && cmdhistory.PasswordPrompt(t.screen.RowText(t.screen.Cursor().Y)) {
+		t.inputGuard.start()
+	}
 }
 
 // send writes input to the shell. Typing returns the view to the live screen.
 func (t *terminal) send(p []byte) bool {
+	return t.sendInput(p, true)
+}
+
+// A confirmed input snapshot has already drained and validated its owner.
+// Consuming another transition after that check would invalidate the decision.
+func (t *terminal) sendInput(p []byte, drain bool) bool {
 	if t.shell == nil || len(p) == 0 {
 		return false
 	}
-	if t.takeOutput != nil {
+	if drain && t.takeOutput != nil {
 		t.takeOutput()
 		if t.shell == nil {
 			return false
@@ -351,8 +410,12 @@ func (t *terminal) send(p []byte) bool {
 	t.selection.clear()
 	t.screen.ScrollToBottom()
 	t.autofill.Typed(p)
-	if t.historyOn != nil && t.historyOn() {
-		if t.takeOutput != nil && bytes.ContainsAny(p, "\r\n") {
+	feed := t.historyOn != nil && t.historyOn()
+	if !feed && t.completionFeed != nil {
+		feed = t.completionFeed()
+	}
+	if feed {
+		if drain && t.takeOutput != nil && bytes.ContainsAny(p, "\r\n") {
 			t.takeOutput()
 		}
 		if command, ok := t.recorder.Typed(p, cmdhistory.TermScreen{Term: t.screen}, t.recordingNow()); ok && t.onCommand != nil {
@@ -363,7 +426,13 @@ func (t *terminal) send(p []byte) bool {
 	if accepted {
 		t.inputSent = true
 		t.noteShellInput(p)
+		if bytes.ContainsAny(p, "\r\n\x03\x04") {
+			t.suggestionPending = nil
+		}
 		t.recording.append(t.recordingNow(), terminalRecordingInput, p)
+		if t.completionInput != nil {
+			t.completionInput()
+		}
 	}
 	return accepted
 }
@@ -402,6 +471,7 @@ func (t *terminal) sendSecret(p []byte) bool {
 }
 
 func (t *terminal) noteShellInput(p []byte) {
+	t.inputGuard.observe(p)
 	atPrompt := t.promptReady
 	t.promptReady, t.promptStarted = false, false
 	t.promptVersion++
@@ -551,9 +621,9 @@ func (state *State) shellOpened(session *Session, shell Shell, err error) {
 	t.shell = shell
 	t.shellOpened = state.now()
 	forwardNotes := 0
-	if noter, ok := shell.(interface{ X11Note() string }); ok && session.host.ForwardX11 {
-		if note := noter.X11Note(); note != "" {
-			line := fmt.Sprintf(state.messages.Tools.X11UnavailableFmt, note)
+	if reporter, ok := shell.(interface{ X11Err() error }); ok && session.host.ForwardX11 {
+		if err := reporter.X11Err(); err != nil {
+			line := fmt.Sprintf(state.messages.Tools.X11UnavailableFmt, state.x11Reason(err, runtime.GOOS))
 			t.say(sgrWarn, line)
 			forwardNotes++
 			if forwardNotes == 1 {
@@ -661,6 +731,12 @@ func (state *State) pump(session *Session) {
 	default:
 		t.rx = t.rx[:0]
 	}
+	if !finished && len(t.rx) == 0 {
+		state.reconcileSuggestionEcho(session)
+	}
+	if !finished && len(t.rx) == 0 && state.completion.list.active && state.completion.list.sessionID == session.ID {
+		state.completionRefresh(session)
+	}
 	if finished {
 		state.shellEnded(session)
 	}
@@ -668,6 +744,9 @@ func (state *State) pump(session *Session) {
 
 // shellEnded tells the screen the session is over and lets the connection go.
 func (state *State) shellEnded(session *Session) {
+	if state.completion.list.active && state.completion.list.sessionID == session.ID {
+		state.closeCompletionList()
+	}
 	t := session.term
 	state.goLive(session) // whatever it said, and that it ended, is the terminal's to show
 	err := t.shell.Err()
@@ -761,7 +840,12 @@ const (
 // terminalInfoBarHeight is the height of a pane's bar. Active or not it is the
 // same: the bar that changed height when focus moved made the terminals under
 // it jump.
-func (state *State) terminalInfoBarHeight(sessionID uint32) float32 { return infoBarHeight }
+func (state *State) terminalInfoBarHeight(sessionID uint32) float32 {
+	if session, ok := state.sessionByIDPointer(sessionID); ok && state.terminalInputNoticeVisible(session) {
+		return infoBarHeight + inputNoticeHeight
+	}
+	return infoBarHeight
+}
 
 // paneIsInactive reports a pane that shares its workspace without being the
 // active one, which keeps only a compact identity in its bar.
@@ -928,6 +1012,9 @@ func (state *State) terminalText(sessionID uint32, event app.TextEvent) app.Text
 	switch event.Kind {
 	case app.TextInsert:
 		t.preedit = app.TextState{}
+		if state.modal == modalTerminalInput || state.guardTerminalText(session, event) {
+			return app.TextState{Redraw: true}
+		}
 		// Typed text is short; a stack buffer keeps this off the heap per key.
 		var scratch [16]byte
 		input := append(scratch[:0], event.Text...)
@@ -938,6 +1025,9 @@ func (state *State) terminalText(sessionID uint32, event app.TextEvent) app.Text
 			redraw = t.prediction.input(t.screen, input, state.now())
 		}
 	case app.TextPaste:
+		if state.modal == modalTerminalInput || state.guardTerminalText(session, event) {
+			return app.TextState{Redraw: true}
+		}
 		redraw = t.prediction.reset()
 		state.typed(session, term.EncodePaste(event.Text, t.screen.Modes().BracketedPaste))
 	case app.TextSetMarked:
@@ -965,12 +1055,27 @@ func displayCells(value string) int {
 	return cells
 }
 
+// commandLineEditChord reports whether key with modifiers is the Command line
+// edit that reaches the program. Only macOS has a Command key; on Windows and
+// Linux Meta is the Super or Windows key, whose chords stay with the
+// application as they always did.
+func commandLineEditChord(key ui.Key, modifiers ui.Modifiers) bool {
+	if defaultShortcutModifier() != ui.ModifierMeta {
+		return false
+	}
+	return term.IsCommandLineEdit(key, modifiers)
+}
+
 // terminalKey handles a raw key for the terminal of session. Command chords
-// drive the tabs; everything else becomes the bytes a program expects.
+// drive the tabs, except on macOS, where the line edits go to the program;
+// everything else becomes the bytes a program expects.
 func (state *State) terminalKey(session *Session, event ui.KeyEvent) ui.EventResult {
 	t := session.term
 	handled := ui.EventResult{Handled: true}
-	if event.Modifiers&ui.ModifierMeta != 0 && !event.Key.IsModifier() {
+	if t.preedit.Composing && event.Key == ui.KeyEnter && event.Modifiers == 0 && !t.screen.Modes().AltScreen {
+		return handled
+	}
+	if event.Modifiers&ui.ModifierMeta != 0 && !event.Key.IsModifier() && !commandLineEditChord(event.Key, event.Modifiers) {
 		return state.commandChord(session, event)
 	}
 	if event.Modifiers == ui.ModifierControl|ui.ModifierShift && event.Text == "c" {
@@ -988,11 +1093,9 @@ func (state *State) terminalKey(session *Session, event ui.KeyEvent) ui.EventRes
 		_, rows := t.screen.Size()
 		switch event.Key {
 		case ui.KeyPageUp:
-			t.selection.clear()
 			t.screen.Scroll(rows - 1)
 			return ui.EventResult{Handled: true, Repaint: true}
 		case ui.KeyPageDown:
-			t.selection.clear()
 			t.screen.Scroll(-(rows - 1))
 			return ui.EventResult{Handled: true, Repaint: true}
 		}
@@ -1029,14 +1132,6 @@ func (state *State) commandChord(session *Session, event ui.KeyEvent) ui.EventRe
 		state.activeSection = sectionHosts
 		state.save()
 	default:
-		if len(event.Text) == 1 && event.Text[0] >= '1' && event.Text[0] <= '9' {
-			index := int(event.Text[0] - '1')
-			if index < len(state.sessions) {
-				state.activeSessionID = state.sessions[index].ID
-				state.save()
-			}
-			return result
-		}
 		return ui.EventResult{Handled: true}
 	}
 	return result
@@ -1049,13 +1144,16 @@ func (state *State) copySelection(session *Session) ui.EventResult {
 	}
 	return ui.EventResult{
 		Handled:       true,
-		ClipboardText: session.term.screen.SelectedText(selection.anchor, selection.focus),
+		ClipboardText: selection.text(session.term.screen),
 	}
 }
 
 // Scroll turns the wheel into scrollback, or arrow keys on the alternate
 // screen, where a pager or editor owns the display and has no scrollback.
 func (state *State) Scroll(event ui.ScrollEvent) ui.EventResult {
+	if result := state.dashboardScroll(event); result.Handled {
+		return result
+	}
 	if state.modal == modalNewHost && state.editor.groupPicker.control.Open {
 		p := &state.editor.groupPicker
 		return ui.EventResult{Handled: true, Repaint: pointInRect(event.X, event.Y, p.popup) && p.control.Wheel(event)}
@@ -1102,6 +1200,9 @@ func (state *State) Scroll(event ui.ScrollEvent) ui.EventResult {
 	if result, handled := state.aiScroll(event); handled {
 		return result
 	}
+	if result, handled := state.scrollMonitor(event); handled {
+		return result
+	}
 	// A wheel over a control of the files panel belongs to the panel's list. It
 	// must not be treated as a pane event: that would shift its coordinates by a
 	// pane's origin.
@@ -1131,7 +1232,7 @@ func (state *State) Scroll(event ui.ScrollEvent) ui.EventResult {
 		event.Target = local
 		return state.scroll(event)
 	}
-	if session := state.terminalSession(event.Target); session != nil {
+	if session := state.terminalOrBarSession(event.Target); session != nil {
 		_, origin, viewport, embedded := state.paneEventGeometry(session.ID, event.Viewport)
 		if embedded {
 			event.X -= origin.X
@@ -1150,7 +1251,7 @@ func (state *State) scroll(event ui.ScrollEvent) ui.EventResult {
 		return state.scrollHosts(event)
 	}
 	session, ok := state.sessionByIDPointer(state.activeSessionID)
-	if hovered := state.terminalSession(event.Target); hovered != nil {
+	if hovered := state.terminalOrBarSession(event.Target); hovered != nil {
 		session, ok = hovered, true
 	}
 	if !ok || state.activeSection != sectionTerminal || state.modal != modalNone || session.term == nil || state.cellWidth <= 0 || state.cellHeight <= 0 || state.showsProgress(session) {
@@ -1169,7 +1270,7 @@ func (state *State) scroll(event ui.ScrollEvent) ui.EventResult {
 			return ui.EventResult{Handled: true}
 		}
 	}
-	t.wheelY += event.DeltaY / state.cellHeight
+	t.wheelY += event.StepY(state.cellHeight) / state.cellHeight
 	lines := int(t.wheelY)
 	if lines == 0 {
 		return ui.EventResult{Handled: true}
@@ -1186,7 +1287,6 @@ func (state *State) scroll(event ui.ScrollEvent) ui.EventResult {
 		}
 		return ui.EventResult{Handled: true}
 	}
-	t.selection.clear()
 	if t.screen.Scroll(-lines) {
 		return ui.EventResult{Handled: true, Repaint: true}
 	}
@@ -1196,7 +1296,7 @@ func (state *State) scroll(event ui.ScrollEvent) ui.EventResult {
 func (state *State) terminalMouseScroll(terminal *terminal, event ui.ScrollEvent) ui.EventResult {
 	position := state.terminalPositionAt(event.Viewport, event.X, event.Y)
 	repaint := false
-	terminal.wheelY += event.DeltaY / state.cellHeight
+	terminal.wheelY += event.StepY(state.cellHeight) / state.cellHeight
 	vertical := int(terminal.wheelY)
 	terminal.wheelY -= float32(vertical)
 	button := term.MouseWheelDown
@@ -1210,7 +1310,7 @@ func (state *State) terminalMouseScroll(terminal *terminal, event ui.ScrollEvent
 		}) || repaint
 	}
 
-	terminal.wheelX += event.DeltaX / state.cellWidth
+	terminal.wheelX += event.StepX(state.cellWidth) / state.cellWidth
 	horizontal := int(terminal.wheelX)
 	terminal.wheelX -= float32(horizontal)
 	button = term.MouseWheelRight

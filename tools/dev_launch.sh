@@ -2,6 +2,14 @@
 # Launch observation shared by tools/dev.sh. The application reports that its
 # first window exists; a child PID alone does not mean it became usable.
 
+# The state exists before the first launch so a signal that arrives while a
+# build is failing still stops cleanly under set -u.
+DEV_LAUNCH_PID=
+DEV_LAUNCH_DRAIN=
+DEV_LAUNCH_STATUS=
+DEV_LAUNCH_RESULT=failed
+DEV_LAUNCH_ACTIVE=0
+
 dev_launch() {
 	local binary=$1 logfile=$2 timeout=${3:-15}
 	local fifo=${TMPDIR:-/tmp}/motty-dev-output.$$.$RANDOM

@@ -8,6 +8,7 @@ import (
 	"github.com/vivaui/viva/text"
 	"github.com/vivaui/viva/ui"
 
+	"motty/internal/keyidentity"
 	"motty/internal/sshconn"
 	"motty/internal/vault"
 )
@@ -184,6 +185,7 @@ func (state *State) openEditHostID(id uint32) {
 	state.hostDialogID = host.ID
 	state.dialogError = ""
 	state.modal = modalNewHost
+	state.prefillHostSecrets()
 }
 
 func (state *State) openCopyHost() {
@@ -208,6 +210,7 @@ func (state *State) openCopyHostID(id uint32) {
 	state.hostDialogID = host.ID
 	state.dialogError = ""
 	state.modal = modalNewHost
+	state.prefillHostSecrets()
 }
 
 func (state *State) singleHostAction() (Host, bool) {
@@ -251,7 +254,7 @@ func (state *State) submitHostDialog() {
 		state.modal = modalNone
 		return
 	}
-	if message := state.otpPrecheck(previous); message != "" {
+	if message := state.otpPrecheck(); message != "" {
 		state.dialogError = message
 		state.editor.advancedOpen = true
 		return
@@ -276,7 +279,7 @@ func (state *State) submitHostDialog() {
 		}
 		candidate.CatalogID = uniqueCatalogID(candidate.CatalogID, candidate, used)
 	}
-	passwordNote, passwordChanges, failure := state.hostDialogPasswordChanges(candidate, source)
+	passwordChanges, failure := state.hostDialogPasswordChanges(candidate, source)
 	if failure != "" {
 		state.dialogError = failure
 		return
@@ -286,7 +289,13 @@ func (state *State) submitHostDialog() {
 		state.dialogError = failure
 		return
 	}
+	passphraseChanges, failure := state.hostPassphraseChanges()
+	if failure != "" {
+		state.dialogError = failure
+		return
+	}
 	changes := append(passwordChanges, proxyChanges...)
+	changes = append(changes, passphraseChanges...)
 	if len(changes) > 0 {
 		vaultFile := state.secrets.vault
 		if vaultFile == nil {
@@ -294,7 +303,7 @@ func (state *State) submitHostDialog() {
 			return
 		}
 		if err := vaultFile.Apply(changes); err != nil {
-			if errors.Is(err, vault.ErrLocked) && len(proxyChanges) > 0 {
+			if errors.Is(err, vault.ErrNeedsConversion) && len(proxyChanges) > 0 {
 				state.dialogError = state.messages.Tools.ProxyPasswordLocked
 			} else {
 				state.dialogError = state.hostPasswordSaveError(err)
@@ -302,13 +311,13 @@ func (state *State) submitHostDialog() {
 			return
 		}
 	}
-	state.editor.password = text.Editor{}
+	state.editor.password, state.editor.passphrase = text.Editor{}, text.Editor{}
 	state.editor.proxyPassword = ""
 	// A copy or a new host is closed to agents unless the switch was turned on in
 	// this very dialog.
 	state.setAgentAccess(candidate, state.editor.agentAccess)
 	if state.hostDialogMode == hostDialogEdit {
-		state.updateHostFromEditor(candidate, *previous, passwordNote, proxyNote)
+		state.updateHostFromEditor(candidate, *previous, proxyNote)
 		return
 	}
 	host := candidate
@@ -323,9 +332,8 @@ func (state *State) submitHostDialog() {
 		state.status = state.messages.StatusHostAdded + host.Label
 	}
 	if state.editor.value(fieldOTP) != "" {
-		state.commitOTP(host, nil) // after the host's own line, so the secret's is the one read
+		state.commitOTP(host) // after the host's own line, so the secret's is the one read
 	}
-	state.appendStatusNote(passwordNote)
 	state.appendStatusNote(proxyNote)
 	state.hostDataChanged()
 	state.save()
@@ -342,7 +350,7 @@ func (state *State) updateHostFromEditor(updated Host, previous Host, notes ...s
 	state.modal = modalNone
 	state.dialogError = ""
 	state.status = state.messages.HostUpdated + updated.Label
-	state.commitOTP(updated, &previous)
+	state.commitOTP(updated)
 	for _, note := range notes {
 		state.appendStatusNote(note)
 	}
@@ -384,103 +392,71 @@ func (state *State) replaceHost(index int, previous, updated Host) {
 	state.refreshProxies()
 }
 
-// hostPasswordSecretName maps a host to the same vault key its connection uses.
-// Desktop accounts are namespaced so they cannot collide with SSH credentials.
-func (state *State) hostPasswordSecretName(host Host) (string, bool) {
-	endpoint := sshconn.Endpoint{Host: host.Address, Port: host.Port}
+// hostPasswordSecretName is where the password of a host is kept, and false for a
+// host that signs in without one. It is kept under the host, not its address:
+// editing the address or the login moves nothing, deleting the host deletes it,
+// and a copy of the host has a password of its own.
+func hostPasswordSecretName(host Host) (string, bool) {
 	switch host.Protocol {
 	case protocolSSH:
 		if host.Auth == authPrivateKey || host.Auth == authAgent {
 			return "", false
 		}
-		endpoint.User = state.login(host)
-	case protocolVNC:
-		endpoint.User = vncAccount
-	case protocolRDP:
-		endpoint.User = rdpAccountPrefix + host.User
+	case protocolVNC, protocolRDP:
 	default:
 		return "", false
 	}
-	return passwordSecretName(endpoint), true
+	return hostSecretName(host.CatalogID, hostPasswordPart), true
 }
 
-// hostPasswordInUse reports whether a host other than skip signs in with the
-// saved password called name. Hosts at one endpoint share a single password,
-// because the connection looks it up by endpoint.
-func (state *State) hostPasswordInUse(name string, skip *Host) bool {
-	for _, other := range state.hosts {
-		if skip != nil && other.ID == skip.ID {
-			continue
-		}
-		if other, ok := state.hostPasswordSecretName(other); ok && other == name {
-			return true
-		}
-	}
-	return false
-}
-
-// hostDialogPasswordChanges plans a typed password, or carries the saved one of
-// the host being copied or edited to the new endpoint. The secret never becomes
-// part of Host; the caller applies these changes atomically with the proxy login.
-func (state *State) hostDialogPasswordChanges(host Host, source *Host) (note string, changes []vault.Change, failure string) {
-	destination, hasPassword := state.hostPasswordSecretName(host)
-	origin, hadPassword := "", false
-	if source != nil {
-		origin, hadPassword = state.hostPasswordSecretName(*source)
-	}
-	editing := state.hostDialogMode == hostDialogEdit && source != nil
-	var self *Host
-	if editing {
-		self = source
-	}
-	vaultFile := state.secrets.vault
-	fail := func(err error) (string, []vault.Change, string) { return "", nil, state.hostPasswordSaveError(err) }
+// hostDialogPasswordChanges plans what the form's password field does to the
+// vault: the text in it is the host's password. A field that held the saved
+// password and was emptied removes it; a field that never showed it (the vault
+// could not be read) leaves it alone. The secret never becomes part of Host; the
+// caller applies these changes atomically with the proxy login.
+func (state *State) hostDialogPasswordChanges(host Host, source *Host) (changes []vault.Change, failure string) {
+	name, hasPassword := hostPasswordSecretName(host)
 	typed := state.editor.password.String()
-	writesPassword := typed != "" && hasPassword
-
-	if writesPassword {
-		if vaultFile == nil {
-			return fail(vault.ErrUnavailable)
+	editing := state.hostDialogMode == hostDialogEdit && source != nil
+	switch {
+	case hasPassword && typed != "":
+		if state.secrets.vault == nil {
+			return nil, state.hostPasswordSaveError(vault.ErrUnavailable)
 		}
-		// Another host at this endpoint would silently get the new password.
-		if !(editing && destination == origin) && state.hostPasswordInUse(destination, self) {
-			existing, found, err := vaultFile.Get(destination)
-			if err != nil {
-				return fail(err)
-			}
-			if found && existing != typed {
-				return "", nil, state.messages.HostPasswordShared
-			}
-		}
-		changes = append(changes, vault.Change{Name: destination, Value: typed})
-	} else if hasPassword && hadPassword && origin != destination && source.Protocol == host.Protocol &&
-		vaultFile != nil && vaultFile.Len() > 0 {
-		// Reading a vault that is not open could ask the system secret store
-		// for its key, which saving a host must not do.
-		if !vaultFile.Unlocked() {
-			return state.messages.HostPasswordNotCarried, nil, ""
-		}
-		value, found, err := vaultFile.Get(origin)
-		if err != nil {
-			return fail(err)
-		}
-		if found {
-			// A password already saved for the destination belongs to its other host.
-			if _, taken, err := vaultFile.Get(destination); err != nil {
-				return fail(err)
-			} else if !taken {
-				changes = append(changes, vault.Change{Name: destination, Value: value})
-			}
+		changes = append(changes, vault.Change{Name: name, Value: typed})
+	case editing && state.editor.passwordSaved && state.secrets.vault != nil:
+		// Emptied by the user, or no longer a host that has a password.
+		if previous, had := hostPasswordSecretName(*source); had {
+			changes = append(changes, vault.Change{Name: previous, Delete: true})
 		}
 	}
+	return changes, ""
+}
 
-	// An edit that leaves its old endpoint, or leaves the protocols that have a
-	// password, must not leave the old secret behind unless another host uses it.
-	if editing && hadPassword && origin != destination && vaultFile != nil && (vaultFile.Unlocked() || writesPassword) &&
-		!state.hostPasswordInUse(origin, self) {
-		changes = append(changes, vault.Change{Name: origin, Delete: true})
+// hostPassphraseChanges plans the passphrase typed for the key the host is
+// pinned to. It is kept under the key, as the Keychain page keeps it, so every
+// host that uses the key and the page itself see the same one. A passphrase that
+// does not open the key is refused here, as there: it would only fail at the
+// next connection.
+func (state *State) hostPassphraseChanges() (changes []vault.Change, failure string) {
+	typed := state.editor.passphrase.String()
+	if typed == "" || !state.hostAsksKeyPassphrase() {
+		return nil, ""
 	}
-	return "", changes, ""
+	identity, ok := state.identityForFingerprint(state.editor.identity)
+	if !ok {
+		return nil, ""
+	}
+	if state.secrets.vault == nil {
+		return nil, state.messages.VaultUnavailable
+	}
+	secret := []byte(typed)
+	_, err := keyidentity.Load(identity.Path, secret)
+	clear(secret)
+	if err != nil {
+		return nil, state.messages.KeyPassphraseWrong
+	}
+	return []vault.Change{{Name: passphraseSecretName(identity.Path), Value: typed}}, ""
 }
 
 func (state *State) appendStatusNote(note string) {
@@ -512,7 +488,7 @@ func (state *State) openDeleteCapturedHosts() {
 		return
 	}
 	if message := state.hostReferenceError(state.hostActionIDs); message != "" {
-		state.status = message
+		state.showActionWarning(state.messages.DeleteHostTitle, message)
 		return
 	}
 	state.dialogError = ""
@@ -560,24 +536,29 @@ func (state *State) confirmDeleteHosts() {
 		state.dialogError = message
 		return
 	}
+	// The host's secrets go with it: its password, its one-time code secret and
+	// the password of its proxy.
 	vaultFile := state.secrets.vault
-	var proxyChanges []vault.Change
+	var changes []vault.Change
 	if vaultFile != nil && vaultFile.Len() > 0 {
 		for _, host := range state.hosts {
-			if !containsHostID(state.hostActionIDs, host.ID) || host.Proxy == nil || host.Proxy.kind == sshconn.ProxyNone || host.Proxy.user == "" {
+			if !containsHostID(state.hostActionIDs, host.ID) {
 				continue
 			}
-			proxyChanges = append(proxyChanges, vault.Change{Name: hostProxyPasswordSecret(host.CatalogID, host.Proxy), Delete: true})
+			changes = append(changes,
+				vault.Change{Name: hostSecretName(host.CatalogID, hostPasswordPart), Delete: true},
+				vault.Change{Name: hostSecretName(host.CatalogID, hostOTPPart), Delete: true})
+			if host.Proxy != nil && host.Proxy.kind != sshconn.ProxyNone && host.Proxy.user != "" {
+				changes = append(changes, vault.Change{Name: hostProxyPasswordSecret(host.CatalogID, host.Proxy), Delete: true})
+			}
 		}
 	}
-	if len(proxyChanges) > 0 {
-		// The default system-keystore vault can be opened by Apply; only a
-		// master-password vault needs an explicit unlock first.
-		if !vaultFile.Unlocked() && vaultFile.HasMasterPassword() {
-			state.dialogError = state.messages.Tools.ProxyPasswordLocked
+	if len(changes) > 0 {
+		if vaultFile.NeedsConversion() {
+			state.dialogError = state.messages.VaultNeedsConversion
 			return
 		}
-		if err := vaultFile.Apply(proxyChanges); err != nil {
+		if err := vaultFile.Apply(changes); err != nil {
 			state.dialogError = state.hostPasswordSaveError(err)
 			return
 		}
@@ -648,6 +629,7 @@ func (state *State) applyHostGroup(group string) {
 }
 
 func (state *State) hostDataChanged() {
+	state.reconcileDashboard()
 	state.sshSyncMark()
 	state.visible = nil
 	state.refreshHostGroups()

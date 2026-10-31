@@ -326,6 +326,79 @@ func TestAIProviderPassesTheAuthenticationStyleToTheRequest(t *testing.T) {
 	}
 }
 
+func TestAIProviderRequestFormatChoice(t *testing.T) {
+	world := newSettingsWorld(t, newLister())
+	state := world.state
+	m := state.messages.AISettings
+
+	// The choice belongs to OpenAI-compatible providers only.
+	state.Click(hitAISetProviderAdd)
+	state.Click(hitAISetFormKindClaude)
+	canvas, _ := world.paint()
+	if _, ok := hitByID(canvas, hitAISetFormFormatResp); ok {
+		t.Fatal("the Anthropic form offers a request format")
+	}
+	state.Click(hitAISetFormKindOpenAI)
+	canvas, texts := world.paint()
+	if _, ok := hitByID(canvas, hitAISetFormFormatResp); !ok || !contains(texts, m.FormFormatChatRoute) {
+		t.Fatalf("the OpenAI form has no request format: %v", texts)
+	}
+
+	world.typeInto(t, hitAISetFormName, "Relay")
+	world.typeInto(t, hitAISetFormURL, "https://relay.example.com/v1")
+	world.typeInto(t, hitAISetFormKey, testSecretKey)
+	state.Click(hitAISetFormFormatResp)
+	if _, texts = world.paint(); !contains(texts, m.FormFormatResponsesRoute) {
+		t.Fatalf("the route under the choice does not follow it: %v", texts)
+	}
+	state.Click(hitAISetFormSubmit)
+	if len(state.ai.providers) != 1 || state.ai.providers[0].APIFormat != store.APIFormatResponses {
+		t.Fatalf("stored providers = %v", state.ai.providers)
+	}
+	if _, texts = world.paint(); !contains(texts, "OpenAI-compatible  ·  "+m.ProviderFormatResponses+"  ·  https://relay.example.com/v1  ·  key saved") {
+		t.Fatalf("the provider row does not name the protocol: %v", texts)
+	}
+
+	// Editing shows the stored choice, and a new window sees it as well.
+	state.Click(hitAISetProviderEdit.At(0))
+	if state.ai.cfg.apiFormat != store.APIFormatResponses {
+		t.Fatalf("edit form format = %q", state.ai.cfg.apiFormat)
+	}
+	state.Click(hitAISetFormFormatChat)
+	state.Click(hitAISetFormSubmit)
+	if got := state.ai.providers[0]; got.APIFormat != "" || state.aiKeyOf(got) != testSecretKey {
+		t.Fatalf("after switching back: %#v", got)
+	}
+}
+
+func TestAIProviderFormatSelectsTheRequestRoute(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{}}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	options := freshOptions(t)
+	options.Keystore = &memKeys{}
+	options.AIProvider = nil // exercise the real wire client
+	state := newTestState(t, options)
+	for format, want := range map[string]string{"": "/chat/completions", store.APIFormatResponses: "/responses"} {
+		path = ""
+		provider := state.aiProvider(store.Provider{Kind: store.KindOpenAI, BaseURL: srv.URL + "/gw", APIKey: "key", APIFormat: format})
+		events, err := provider.Stream(context.Background(), llm.Request{Model: "m", Messages: []llm.Message{{Role: llm.RoleUser, Text: "hi"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range events {
+		}
+		if path != "/gw"+want {
+			t.Fatalf("format %q sent to %q, want %q", format, path, "/gw"+want)
+		}
+	}
+}
+
 func TestAIProviderFormValidates(t *testing.T) {
 	world := newSettingsWorld(t, newLister())
 	state := world.state

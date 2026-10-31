@@ -52,7 +52,13 @@ import (
 // Version 5 preserves device-local toolbar layouts: an older full snapshot
 // writer would otherwise discard the visibility and ordering preferences.
 // Version 6 preserves the device-local shell executable choice.
-const configFormat = 6
+// Version 7 preserves local folder favorites and named paired SFTP profiles.
+// Version 8 preserves independent monitor visibility and panel width.
+// Version 9 keeps a host's password and one-time code secret under the host, not
+// under its login: an older build would look for them where they no longer are.
+// Version 9 was also used by monitoring builds for device-local panel definitions.
+// Version 10 preserves both changes so neither older build can overwrite them.
+const configFormat = 10
 
 const (
 	kindSetting             = "setting"
@@ -147,6 +153,9 @@ var entityFields = []entityField{
 	}},
 	{field: "autofill_rules", kind: "autofill", key: func(fields map[string]json.RawMessage) string { return fieldText(fields, "id") }},
 	{field: "sftp_bookmarks", kind: "bookmark", key: func(fields map[string]json.RawMessage) string {
+		if name := fieldText(fields, "name"); name != "" {
+			return joinKey("profile", fieldText(fields, "host"), fieldText(fields, "shared"), name)
+		}
 		return joinKey(fieldText(fields, "host"), fieldText(fields, "path"))
 	}},
 	{field: "ai_providers", kind: kindAIProvider, keepWhenAbsent: true, key: func(fields map[string]json.RawMessage) string { return fieldText(fields, "id") }},
@@ -164,6 +173,12 @@ var syncedSettings = map[string]bool{
 	"connection_reconnect":         true,
 	"terminal_clipboard":           true,
 	"terminal_cursor_steady":       true,
+	"terminal_copy_on_select":      true,
+	"terminal_right_click_paste":   true,
+	"terminal_tab_title":           true,
+	"terminal_show_latency":        true,
+	"terminal_bell_off":            true,
+	"terminal_link_plain_click":    true,
 	"terminal_scheme":              true,
 	"terminal_scheme_dark":         true,
 	"terminal_scheme_light":        true,
@@ -180,6 +195,7 @@ var syncedSettings = map[string]bool{
 	"sftp_panel_side":              true,
 	"command_history":              true,
 	"command_suggest_off":          true,
+	"command_inline_suggest_off":   true,
 }
 
 // stateVersionFields are written back as this build's own on every load.

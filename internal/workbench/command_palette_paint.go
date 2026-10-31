@@ -9,6 +9,9 @@ import (
 const commandPaletteVisibleRows = 10
 
 func (state *State) paintCommandPalette(canvas *ui.Canvas, viewport ui.Rect) {
+	if state.commandPalette.connect {
+		state.adoptWSLDistros()
+	}
 	state.refreshCommandPalette()
 	dialog := components.BeginDialog(canvas, state.Theme(), viewport, components.DialogOptions{
 		Layer: dialogLayer, Scope: dialogScope,

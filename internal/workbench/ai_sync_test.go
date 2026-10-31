@@ -103,6 +103,33 @@ func TestAProviderKeepsItsAuthStyleAcrossTheOtherComputer(t *testing.T) {
 	}
 }
 
+func TestAProviderKeepsItsRequestFormatAcrossTheOtherComputer(t *testing.T) {
+	server, _ := newFakeDAV(t)
+	first, _, _ := backupTestState(t)
+	second, _, _ := backupTestState(t)
+	configureSync(t, first, server)
+	configureSync(t, second, server)
+	done := first.messages.Tools.SyncDone
+
+	db, err := first.aiStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveProvider(store.Provider{
+		ID: "relay", Name: "Relay", Kind: store.KindOpenAI, BaseURL: "https://relay.example.com/v1",
+		APIFormat: store.APIFormatResponses, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first.reloadAI()
+	syncAndWait(t, first, hitSyncNow, done)
+	syncAndWait(t, second, hitSyncNow, done)
+
+	if len(second.ai.providers) != 1 || second.ai.providers[0].APIFormat != store.APIFormatResponses {
+		t.Fatalf("the other computer has %#v", second.ai.providers)
+	}
+}
+
 // A provider record written before authentication styles existed has no field;
 // reading it keeps the historical x-api-key behavior.
 func TestAProviderRecordWithoutAuthStyleReadsAsTheDefault(t *testing.T) {
@@ -110,7 +137,7 @@ func TestAProviderRecordWithoutAuthStyleReadsAsTheDefault(t *testing.T) {
 	state.importAIProviderCollections(&[]savedAIProvider{{
 		ID: "old", Name: "Old", Kind: store.KindAnthropic, BaseURL: "https://old.example.com", Enabled: true,
 	}}, nil)
-	if len(state.ai.providers) != 1 || state.ai.providers[0].AuthStyle != "" {
+	if len(state.ai.providers) != 1 || state.ai.providers[0].AuthStyle != "" || state.ai.providers[0].APIFormat != "" {
 		t.Fatalf("providers = %#v", state.ai.providers)
 	}
 }

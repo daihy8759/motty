@@ -173,11 +173,12 @@ func (state *State) exportTerminalRecording(session *Session) {
 	if errors.Is(err, app.ErrCanceled) || err == nil && path == "" {
 		return
 	}
-	if err == nil {
-		err = writePrivateAtomic(path, encodeTerminalRecording(&session.term.recording))
-	}
 	if err != nil {
-		state.status = fmt.Sprintf(state.messages.RecordingExportFailedFmt, err)
+		state.showActionFailure(state.messages.RecordingExport, err, state.messages.ActionFeedback.FilePickerFailed)
+		return
+	}
+	if err = writePrivateAtomic(path, encodeTerminalRecording(&session.term.recording)); err != nil {
+		state.showFileSaveFailure(state.messages.RecordingExport, err)
 		return
 	}
 	state.status = fmt.Sprintf(state.messages.RecordingExportedFmt, path)

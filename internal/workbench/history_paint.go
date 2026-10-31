@@ -66,7 +66,9 @@ func (state *State) paintHistory(canvas *ui.Canvas, viewport ui.Rect) {
 				if selected {
 					row.Background(state.pal.accent).Radius(radius.item)
 				}
-				row.HitWith(id, entry.Command, ui.HitOptions{Role: ui.RoleButton}).Children(func() {
+				// The rows touch through the gap between them, so crossing it never
+				// takes the pointer off the list and flashes the keyboard's row.
+				row.HitOutset(1, 0, 1, 0).HitWith(id, entry.Command, ui.HitOptions{Role: ui.RoleButton}).Children(func() {
 					f.Text(entry.Command).FontSize(metrics.FontSizeM).Color(color).Ellipsis().Grow(1)
 					if entry.Count > 1 {
 						f.Text(fmt.Sprintf(m.UsedFmt, entry.Count)).FontSize(metrics.FontSizeS).Color(detailColor).Shrink(0)

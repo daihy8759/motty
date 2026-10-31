@@ -191,10 +191,11 @@ func TestDeletingKeylessCLIProviderDoesNotUnlockTheVault(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.reloadAI()
-	if err := s.secrets.vault.SetMasterPassword("master password"); err != nil {
+	if err := s.secrets.vault.LegacyForTests("master password"); err != nil {
 		t.Fatal(err)
 	}
-	s.secrets.vault.Lock()
+	s.secrets.declined = true
+	s.secrets.vault.DropKeyForTests()
 	s.aiDeleteProvider("cli")
 	if s.modal != modalNone {
 		t.Fatalf("deleting a keyless CLI provider opened modal %d", s.modal)

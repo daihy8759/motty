@@ -91,6 +91,16 @@ func productText(text string) string {
 	return strings.ReplaceAll(text, "Motty", buildinfo.ProductName)
 }
 
+// closeActionVisible reports whether closing a window can leave the application
+// in the status area, so the choice of what it does is worth showing.
+func (state *State) closeActionVisible() bool {
+	return state.options.StatusArea != nil && state.options.StatusArea()
+}
+
+// StaysInTray reports whether closing the last window, or a window that has
+// sessions, hides it into the status area instead of closing it.
+func (state *State) StaysInTray() bool { return state.closeAction == closeToTray }
+
 // WantsToStay reports whether a window with sessions should hide rather than
 // close: closing it would end connections the user may still be using.
 func (state *State) WantsToStay() bool { return len(state.sessions) > 0 }

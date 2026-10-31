@@ -39,12 +39,16 @@ func (state *State) paintTransferCenter(canvas *ui.Canvas) {
 	if state.toolbarVisible(toolbarWindow, hitTransferCenter) {
 		anchor = state.chrome.bar.transfers.Rect()
 	}
+	initialFocus := hitTransfersList
+	if len(center.batch.targets) > 0 {
+		initialFocus = hitTransfersBulkCancel
+	}
 	popover := components.BeginPopover(canvas, state.Theme(), viewport, anchor, components.PopoverOptions{
 		Layer: dialogLayer, Scope: hitTransfersScope, DismissID: hitTransfersDismiss,
 		AnchorDismiss: true,
 		Side:          components.PopoverBottom, Align: components.PopoverAlignEnd, SideOffset: 8,
 		ContentSize:    ui.Size{Width: min(640, viewport.Width-24), Height: min(680, viewport.Height-windowBarHeight-16)},
-		InitialFocusID: hitTransfersList,
+		InitialFocusID: initialFocus,
 		TitleWeight:    ui.WeightBold,
 	})
 	layout := popover.Begin(m.Title, m.Description)
@@ -52,10 +56,15 @@ func (state *State) paintTransferCenter(canvas *ui.Canvas) {
 	closeBox := ui.Rect{X: layout.Header.X + layout.Header.Width - 24, Y: layout.Header.Y - 2, Width: 24, Height: 24}
 	state.paintIconButton(canvas, hitTransfersClose, iconClose, closeBox, m.Close, false, iconButtonQuiet, pal.surface)
 	body := layout.Body
+	if len(center.batch.targets) > 0 {
+		state.paintTransferBatch(canvas, body)
+		popover.End()
+		return
+	}
 	if center.summary == "" {
 		state.describeTransferSummary()
 	}
-	var list, summaryBar flex.Box
+	var list, summaryBar, hostBox flex.Box
 	f := center.view.Begin(canvas, state.Theme(), body)
 	f.Column().Fill().Gap(10).Children(func() {
 		f.Column().Height(48).Shrink(0).PadX(12).Center().Radius(radius.control).Background(pal.accentSoft).Children(func() {
@@ -63,28 +72,34 @@ func (state *State) paintTransferCenter(canvas *ui.Canvas) {
 			summaryBar = f.Slot().Height(3).Width(max(0, body.Width-24))
 		})
 		f.Row().Height(28).Shrink(0).Gap(4).Items(flex.Center).Children(func() {
-			labels := [3]string{m.All, m.Active, m.Ended}
+			labels := [4]string{m.All, m.Active, m.Ended, m.Failed}
 			for index, label := range labels {
 				button := f.Button(hitTransfersFilter.At(index), label).Small().Ghost()
 				if center.filter == index {
 					button.Secondary()
 				}
 			}
+		})
+		f.Row().Height(28).Shrink(0).Gap(4).Items(flex.Center).Children(func() {
+			hostBox = f.Slot().Grow(1).MinWidth(100).Height(28)
+			f.Button(hitTransfersCancelAll, center.cancelLabel).Small().Ghost().Disabled(center.visibleActive == 0)
+			f.Button(hitTransfersClear, center.clearLabel).Small().Ghost().Disabled(center.visibleEnded == 0)
+		})
+		f.Text(center.scopeLabel).FontSize(metrics.FontSizeS).Color(pal.muted).Ellipsis().Height(16).Shrink(0).
+			HitWith(hitTransfersScopeLabel, center.scopeLabel, ui.HitOptions{Role: ui.RoleGroup, SkipFocus: true, Hint: center.scopeLabel})
+		f.Row().Height(28).Shrink(0).Gap(4).Items(flex.Center).Children(func() {
+			f.Button(hitTransfersRetryFailed, center.retryLabel).Small().Ghost().Disabled(center.retryCount == 0)
 			f.Spacer()
-			f.Button(hitTransfersCancelAll, m.CancelAll).Small().Ghost().Disabled(center.active == 0)
-			f.Button(hitTransfersClear, m.Clear).Small().Ghost().Disabled(center.ended == 0)
+			f.Text(center.conflictLabel).FontSize(metrics.FontSizeS).Color(pal.muted)
+			f.Button(hitTransfersSkipVisible, m.Skip).Small().Ghost().Disabled(center.conflictCount == 0)
+			f.Button(hitTransfersReplaceVisible, m.Replace).Small().Outline().Disabled(center.conflictCount == 0)
+			f.Button(hitTransfersResumeVisible, m.Resume).Small().Ghost().Disabled(center.conflictCount == 0)
 		})
 		list = f.Slot().Grow(1)
 	})
 	f.End()
 	paintTransferProgress(canvas, summaryBar.Rect(), center.fraction, pal.accent, pal.line)
 	center.list = list.Rect()
-	center.count = 0
-	for index := range center.entries {
-		if center.shows(&center.entries[index]) {
-			center.count++
-		}
-	}
 	area := components.BeginScrollArea(canvas, state.Theme(), center.list, ui.Size{Height: float32(center.count) * transferCardHeight}).
 		Offset(0, center.scroll).Viewport(hitTransfersList, m.Title).VerticalScrollbar(hitTransfersBar, m.Title, "")
 	geometry := area.BeginContent()
@@ -118,7 +133,66 @@ func (state *State) paintTransferCenter(canvas *ui.Canvas) {
 		}
 	}
 	area.EndContent()
+	center.hostBounds = hostBox.Rect()
+	state.paintTransferHosts(canvas)
 	popover.End()
+}
+
+func (state *State) paintTransferHosts(canvas *ui.Canvas) {
+	center, m := &state.transfers, state.messages.Transfers
+	bounds := center.hostBounds
+	viewport := state.windowRect()
+	height := min(float32(8+(len(center.hosts)+1)*32), min(264, viewport.Height-32))
+	content := ui.Rect{X: bounds.X, Y: bounds.Y + bounds.Height + 4, Width: max(bounds.Width, min(400, viewport.Width-32)), Height: height}
+	content.X = min(content.X, viewport.Width-content.Width-12)
+	if content.Y+height > viewport.Height-12 {
+		content.Y = max(12, bounds.Y-height-4)
+	}
+	opening := center.hostOpen && state.popups.owner != hitTransfersHostDismiss
+	scroll := state.selectScroll(center.hostOpen, hitTransfersHostDismiss)
+	if opening {
+		selected := 0
+		for index, host := range center.hosts {
+			if sameTransferHost(center.host, host) {
+				selected = index + 1
+				break
+			}
+		}
+		scroll.Offset = max(0, min(float32(selected)*32, float32((len(center.hosts)+1)*32)+8-height))
+		canvas.SetInitialFocus(hitTransfersHostItems.At(selected))
+	}
+	control := components.BeginSelect(canvas, state.Theme(), bounds, components.SelectOptions{
+		TriggerID: hitTransfersHost, Label: m.Hosts, Value: center.hostLabel, Hint: center.hostLabel,
+		Open: center.hostOpen, Content: content, Size: components.SelectSizeSmall,
+		Layer: dialogLayer + 1, Scope: hitTransfersHostDismiss, DismissID: hitTransfersHostDismiss,
+		Viewport: viewport, Scroll: scroll,
+	})
+	defer control.End()
+	if !center.hostOpen {
+		return
+	}
+	state.menuPlaced(control.ContentBounds())
+	control.AddItem(components.SelectItem{ID: hitTransfersHostItems.At(0), Label: m.AllHosts, Selected: center.host == nil})
+	for index, host := range center.hosts {
+		control.AddItem(components.SelectItem{ID: hitTransfersHostItems.At(index + 1), Label: host.label, Hint: host.label, Selected: sameTransferHost(center.host, host)})
+	}
+}
+
+func (state *State) paintTransferBatch(canvas *ui.Canvas, bounds ui.Rect) {
+	center, pal := &state.transfers, state.pal
+	f := center.view.Begin(canvas, state.Theme(), bounds)
+	f.Column().Fill().Gap(16).Children(func() {
+		f.Wrap(center.batch.title).FontSize(metrics.FontSizeL).Weight(ui.WeightSemibold).Color(pal.text)
+		f.Wrap(center.batch.description).FontSize(metrics.FontSizeS).Color(pal.muted).
+			HitWith(hitTransfersBulkDescription, center.batch.title, ui.HitOptions{Role: ui.RoleGroup, SkipFocus: true, Hint: center.batch.description})
+		f.Spacer()
+		f.Row().Height(32).Shrink(0).Gap(8).Items(flex.Center).Children(func() {
+			f.Spacer()
+			f.Button(hitTransfersBulkCancel, state.messages.Cancel).Secondary()
+			f.Button(hitTransfersBulkConfirm, center.batch.action).Destructive()
+		})
+	})
+	f.End()
 }
 
 func paintTransferProgress(canvas *ui.Canvas, box ui.Rect, fraction float32, fill, background ui.Color) {
@@ -211,14 +285,7 @@ func (state *State) transferCenterScroll(event ui.ScrollEvent) (ui.EventResult, 
 	if !center.open || !state.transferCenterAvailable() || !pointInRect(event.X, event.Y, center.surface) {
 		return ui.EventResult{}, false
 	}
-	before, step := center.scroll, event.DeltaY
-	if !event.Precise && step != 0 && step > -36 && step < 36 {
-		if step < 0 {
-			step = -36
-		} else {
-			step = 36
-		}
-	}
+	before, step := center.scroll, event.StepY(36)
 	center.scroll = min(max(center.scroll+step, 0), center.geometry.MaxOffsetY)
 	return ui.EventResult{Handled: true, Repaint: before != center.scroll}, true
 }
@@ -250,8 +317,30 @@ func (state *State) transferCenterKey(event ui.KeyEvent) (ui.EventResult, bool) 
 		return ui.EventResult{}, false
 	}
 	if event.Key == ui.KeyEscape {
-		center.open, center.dragging = false, false
+		if center.hostOpen {
+			center.hostOpen = false
+		} else if len(center.batch.targets) > 0 {
+			center.batch = transferBatch{}
+		} else {
+			center.open, center.dragging = false, false
+		}
 		return ui.EventResult{Handled: true, Repaint: true}, true
+	}
+	if center.hostOpen {
+		if result, handled := state.menuKey(event); handled {
+			return result, true
+		}
+	}
+	if event.Target == hitTransfersHost && (event.Key == ui.KeyDown || event.Key == ui.KeyUp) {
+		center.hostOpen = true
+		return ui.EventResult{Handled: true, Repaint: true}, true
+	}
+	if len(center.batch.targets) > 0 {
+		if (event.Key == ui.KeyEnter || event.Key == ui.KeySpace) && !event.Repeat && (event.Target == hitTransfersBulkConfirm || event.Target == hitTransfersBulkCancel) {
+			state.clickTransferCenter(event.Target)
+			return ui.EventResult{Handled: true, Repaint: true}, true
+		}
+		return ui.EventResult{}, false
 	}
 	if event.Target == hitTransfersList {
 		area := components.BeginScrollArea(nil, state.Theme(), center.list, ui.Size{Height: float32(center.count) * transferCardHeight})

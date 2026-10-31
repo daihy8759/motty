@@ -8,7 +8,7 @@ const (
 	maxRows            = 500
 	maxMarks           = 32   // combining marks kept per line
 	maxTitle           = 1024 // bytes of window title
-	maxOSC             = 4096 // bytes of one OSC string; longer ones are ignored whole
+	maxOSC             = 4096 // bytes of one OSC string; longer ones are ignored whole (but see oscPrefixLimits)
 	maxHyperlinkTarget = 2048 // bytes retained for one OSC 8 target
 	maxHyperlinks      = 8192 // live target slots per terminal; oldest tokens expire after this
 )
@@ -177,20 +177,22 @@ type Terminal struct {
 	imageBytes int
 	imageWake  func()
 
-	replyFn        func([]byte)
-	clipboardFn    func(ClipboardWrite)
-	notifyFn       func(Notification)
-	cwdFn          func(Cwd)
-	cwdReportFn    func(Cwd)
-	promptReadyFn  func()
-	promptStartFn  func()
-	promptToken    string
-	commandStartFn func()
-	syncFn         func(bool)
-	cwd            Cwd
-	kittyNotes     []kittyPending // OSC 99 notifications still waiting for chunks
-	defFG, defBG   [3]uint8
-	haveDefaults   bool
+	replyFn            func([]byte)
+	clipboardFn        func(ClipboardWrite)
+	notifyFn           func(Notification)
+	bellFn             func()
+	cwdFn              func(Cwd)
+	cwdReportFn        func(Cwd)
+	promptReadyFn      func()
+	promptStartFn      func()
+	promptToken        string
+	inputEnvironmentFn func(InputEnvironment)
+	commandStartFn     func()
+	syncFn             func(bool)
+	cwd                Cwd
+	kittyNotes         []kittyPending // OSC 99 notifications still waiting for chunks
+	defFG, defBG       [3]uint8
+	haveDefaults       bool
 
 	lastRune rune // for REP
 	nextID   uint64
@@ -273,6 +275,30 @@ func (t *Terminal) ClearScrollback() {
 	t.version++
 }
 
+// ClearScreen drops the history and erases every row except the one the cursor
+// is on, which becomes the first row with the cursor in its column. A shell's
+// prompt and the command typed on it therefore survive the clear, and the line
+// editor's idea of where it is writing stays true: nothing has been sent to the
+// shell. It reports false, and leaves the screen alone, on the alternate screen,
+// which a full-screen program owns and would paint over the blank rows without
+// knowing to redraw them.
+func (t *Terminal) ClearScreen() bool {
+	if t.onAlt {
+		return false
+	}
+	lines := t.main.lines
+	lines[t.cy], lines[0] = lines[0], lines[t.cy]
+	for i := 1; i < len(lines); i++ {
+		t.eraseLine2(lines[i])
+	}
+	// What stays on the line above is gone, so it no longer continues it.
+	lines[0].wrapped = false
+	t.clearHistory()
+	t.cy = 0
+	t.version++
+	return true
+}
+
 // ScrollbackLimit is the configured maximum retained history length.
 func (t *Terminal) ScrollbackLimit() int { return t.histMax }
 
@@ -344,8 +370,9 @@ func (t *Terminal) Cursor() Cursor {
 }
 
 // Row returns view row i (0 is the top).
-func (t *Terminal) Row(i int) Row {
-	l := t.lineAt(i)
+func (t *Terminal) Row(i int) Row { return t.rowOf(t.lineAt(i)) }
+
+func (t *Terminal) rowOf(l *line) Row {
 	cells := l.cells
 	if len(cells) > t.cols {
 		cells = cells[:t.cols]
@@ -460,7 +487,10 @@ func (t *Terminal) resetState() {
 	t.top, t.bot = 0, t.rows-1
 	t.charsets, t.gl = [4]charset{}, 0
 	t.cursor, t.cursorSteady = CursorBlock, false
-	t.modes = Modes{CursorVisible: true, Autowrap: true}
+	// Alternate scroll starts on, as in VTE, kitty and Windows Terminal: a pager
+	// or editor that did not ask for the mouse still scrolls with the wheel. A
+	// program turns it off with 1007 reset.
+	t.modes = Modes{CursorVisible: true, Autowrap: true, AlternateScroll: true}
 	t.resetKeyboard()
 	t.tabs = defaultTabs(t.cols, nil)
 	t.version++

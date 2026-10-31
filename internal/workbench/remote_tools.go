@@ -550,7 +550,7 @@ func (state *State) refreshRemoteTools() {
 	view.serial++
 	serial, tab, key, sourceID := view.serial, view.tab, view.sort, session.ID
 	view.loading, view.failed, view.status = true, false, state.messages.Tools.RemoteLoading
-	runner := remotetools.Runner(session.conn)
+	runner := remotetools.ForSystem(session.conn, session.host.System.String())
 	go func() {
 		ctx, cancel := context.WithTimeout(state.remoteToolsContext(), remoteTimeout)
 		defer cancel()
@@ -635,7 +635,7 @@ func (state *State) runRemoteAction(done string, action func(context.Context, re
 	view.serial++
 	serial, tab, sourceID := view.serial, view.tab, session.ID
 	view.loading, view.failed, view.status = true, false, state.messages.Tools.RemoteLoading
-	runner := remotetools.Runner(session.conn)
+	runner := remotetools.ForSystem(session.conn, session.host.System.String())
 	go func() {
 		ctx, cancel := context.WithTimeout(state.remoteToolsContext(), remoteTimeout)
 		defer cancel()
@@ -693,7 +693,7 @@ func (state *State) openContainerShell(container remotetools.Container) {
 	view.serial++
 	serial, sourceID := view.serial, session.ID
 	view.loading, view.failed, view.status = true, false, state.messages.Tools.RemoteLoading
-	runner := remotetools.Runner(session.conn)
+	runner := remotetools.ForSystem(session.conn, session.host.System.String())
 	go func() {
 		ctx, cancel := context.WithTimeout(state.remoteToolsContext(), remoteTimeout)
 		defer cancel()

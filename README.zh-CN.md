@@ -71,7 +71,7 @@ win32-input-mode。连字在固定网格内按单元格整形。标签可以重�
 
 主机可以分组、打标签、搜索，也可以从 OpenSSH config、PuTTY、Xshell、MobaXterm、
 WindTerm、Electerm 导入。TOTP/HOTP 种子可以存入保险库并自动填充。密码和私钥口令
-进入 AES-256-GCM 保险库，密钥放在系统密钥存储，或由 Argon2id 主密码包裹。
+进入 AES-256-GCM 保险库，跟随各自的主机；密钥放在系统密钥存储，没有时（以及便携版）放在保险库旁的密钥文件里。
 
 <p align="center">
   <a href="assets/readme-hosts.webp"><img src="assets/readme-hosts.webp" width="720" alt="主机列表，带分组标签和远程桌面标记" /></a>
@@ -144,7 +144,10 @@ WebDAV 和 S3 默认要求远程地址使用 HTTPS。使用局域网 HTTP 服务
 
 Windows 下可在 **设置 → 终端 → 本地 Shell**（“行内建议”下方）的下拉框中选择
 本地终端使用的 Shell。Motty 会从 PATH 和常见安装目录中自动检测 PowerShell、
-CMD、Git Bash 等已安装的 Shell。此配置仅保存在本机，对新建或重连的本地终端生效。
+CMD、Git Bash 等已安装的 Shell，并把每个已安装的 WSL 发行版列为单独的选项。
+选择 WSL 发行版后，文件面板同样会跟随终端所在目录（经由发行版的
+`\\wsl.localhost` 共享访问）。请在这里选择发行版，而不是在 PowerShell 里输入
+`wsl`：只有 Motty 自己启动的 Shell 才能上报所在目录。此配置仅保存在本机，对新建或重连的本地终端生效。
 
 | 操作 | macOS | Windows / Linux |
 | --- | --- | --- |
@@ -166,6 +169,21 @@ CMD、Git Bash 等已安装的 Shell。此配置仅保存在本机，对新建�
 
 macOS 包在发布带证书时签名并公证，Windows 包在配置证书时签名；Linux 包不签名。
 目前没有 Homebrew、AUR 和 `.AppImage`。
+
+### Motty 意外退出时
+
+Motty 会在数据目录的 `logs` 文件夹里保存日志，异常退出后还会保存崩溃报告：
+Windows 在 `%APPDATA%\motty\logs`，macOS 在
+`~/Library/Application Support/motty/logs`，Linux 在 `~/.config/motty/logs`
+（便携版在程序旁的 `motty-data\logs`）。反馈问题时请附上 `motty.log` 和最新的
+`crash-*.log`。如果程序根本无法启动，它会用对话框说明原因，并把原因写进日志。
+
+如果程序消失而 `crash.log` 仍是空的，说明进程在 Go 来得及写任何东西之前就被原生错误
+（例如显卡驱动）终止了。Windows 11 22H2 及以上时，Motty 会请求 Windows 错误报告把转储
+保存到 `%LOCALAPPDATA%\Motty\CrashDumps`；事件查看器（Windows 日志 → 应用程序）里的
+"Application Error" 事件会写出出错的模块。要排查常见原因，可在设置环境变量
+`VIVA_SOFTWARE_RENDERING=1`（不用显卡驱动）或 `VIVA_ACCESSIBILITY=0`（不建立 UI Automation
+树）后启动 Motty。转储是程序内存的副本，分享前请先自行确认。
 
 ## 🛠 从源码构建
 
@@ -211,7 +229,9 @@ go run ./cmd/viva package -C ../motty --target linux --arch amd64 --format tar.g
 make run
 ```
 
-该产物带 `dev` 标签，所以原生窗口、应用内标题和托盘都显示 `Motty Dev`。
+该产物带 `dev` 标签，所以原生窗口和托盘显示 `Motty Dev`，Dock 图标右上角带一个
+红色 `DEV` 角标。窗口内的 logo 与正式版用的是同一张图，界面看起来就是发布效果，
+同时在 Dock 上一眼能认出跑的是哪个版本。
 `make dev` 会在本仓库或 `../viva` 的 Go 文件变化时重新构建并重启；监听模式需要
 `fswatch`，单次模式不需要。`tools/dev.sh --once` 与 `make run` 是同一个入口。
 
@@ -233,14 +253,14 @@ macOS 标准入口会在
 会绕过稳定签名入口，仅用于诊断。
 
 共享数据不是测试沙箱。开发版可能升级配置或 AI schema，使较旧的正式版无法读取；
-密码库和云同步操作也会影响同一套日常环境。迁移、删除、修改主密码或重置密钥前应先
+密码库和云同步操作也会影响同一套日常环境。迁移、删除或重置密钥前应先
 备份，并使用显式 `MOTTY_DATA_DIR` 和测试凭据。独立目录只改变应用文件位置，不会
 自动隔离系统钥匙串中的条目。
 
 ## 🔐 安全
 
 - 发凭据之前先验证主机密钥。
-- 保存的密码和口令进 AES-256-GCM 保险库，密钥在系统密钥存储或 Argon2id 主密码下。
+- 保存的密码和口令进 AES-256-GCM 保险库，密钥在系统密钥存储里；系统没有时放在数据目录的密钥文件中，能拷走该目录的人就能读出保险库。
 - AI 供应商 Key 存在保险库；终端上下文默认脱敏，agent 命令经过审批门。
 - MCP 默认关闭、只监听 loopback，并要求 bearer token。
 - 没有统计上报；可选的更新检查会访问 GitHub Releases，默认关闭。

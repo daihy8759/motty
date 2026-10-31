@@ -468,8 +468,8 @@ func (state *State) desktopScroll(session *Session, event ui.ScrollEvent) ui.Eve
 	if view.ended {
 		return ui.EventResult{Handled: true}
 	}
-	view.wheel.X += event.DeltaX
-	view.wheel.Y += event.DeltaY
+	view.wheel.X += event.StepX(desktopWheelStep)
+	view.wheel.Y += event.StepY(desktopWheelStep)
 	notches := func(accumulated *float32) int {
 		whole := int(*accumulated / desktopWheelStep)
 		*accumulated -= float32(whole) * desktopWheelStep

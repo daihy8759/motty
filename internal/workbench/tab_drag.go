@@ -95,7 +95,7 @@ func (state *State) tabDragPointer(event ui.PointerEvent) (ui.EventResult, bool)
 			id := layoutcore.WorkspaceID(item(event.Target))
 			for _, tab := range state.workspaceTabs {
 				if tab.ID == id {
-					*drag = tabDrag{pressed: true, workspace: id, title: tab.Title, panes: tab.PaneCount, start: ui.Point{X: event.X, Y: event.Y}}
+					*drag = tabDrag{pressed: true, workspace: id, title: state.tabLabel(tab), panes: tab.PaneCount, start: ui.Point{X: event.X, Y: event.Y}}
 				}
 			}
 		}

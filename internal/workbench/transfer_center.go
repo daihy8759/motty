@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/vivaui/viva/components"
@@ -46,6 +45,7 @@ const maxTransferHistory = 500
 type transferEntry struct {
 	id                                         int
 	owner                                      *sftpView
+	host                                       *transferHost
 	snapshot                                   sftpclient.TransferSnapshot
 	server, address                            string
 	title, status, amount, speed, clock, paths string
@@ -78,6 +78,17 @@ type transferCenter struct {
 	count         int
 	dragging      bool
 	dragOffset    float32
+
+	host                        *transferHost
+	hosts                       []*transferHost
+	hostOpen                    bool
+	hostBounds                  ui.Rect
+	hostLabel, scopeLabel       string
+	cancelLabel, clearLabel     string
+	retryLabel, conflictLabel   string
+	visibleActive, visibleEnded int
+	retryCount, conflictCount   int
+	batch                       transferBatch
 }
 
 func transferActive(snapshot sftpclient.TransferSnapshot) bool {
@@ -103,7 +114,9 @@ func (state *State) releaseIdleSFTP(session *Session) {
 			return
 		}
 	}
+	saved := view.saveHistory()
 	state.closeSFTP(session)
+	session.fileHistory = saved
 	state.releaseKeptConnection(session)
 }
 
@@ -118,8 +131,11 @@ func (state *State) syncTransfers(view *sftpView) {
 		key := transferKey{view, snapshot.ID}
 		index, exists := center.byTask[key]
 		if !exists {
+			if view.transferHost == nil {
+				view.transferHost = newTransferHost(view.transferServer, view.transferAddress)
+			}
 			center.nextID++
-			center.entries = append(center.entries, transferEntry{id: center.nextID, owner: view, server: view.transferServer, address: view.transferAddress})
+			center.entries = append(center.entries, transferEntry{id: center.nextID, owner: view, host: view.transferHost, server: view.transferServer, address: view.transferAddress})
 			index = len(center.entries) - 1
 			center.byTask[key] = index
 		}
@@ -254,7 +270,7 @@ func (state *State) describeTransfer(entry *transferEntry) {
 	entry.amount = fmt.Sprintf(m.ProgressFmt, formatBytes(snapshot.BytesDone), total)
 	entry.speed = fmt.Sprintf(state.messages.Tools.TransferSpeedFmt, formatBytes(snapshot.BytesPerSecond))
 	entry.paths = snapshot.Source + " → " + snapshot.Destination
-	entry.conflict = entry.owner != nil && snapshot.State == sftpclient.TransferFailed && strings.Contains(snapshot.Error, sftpclient.ErrDestinationExists.Error())
+	entry.conflict = entry.owner != nil && transferSnapshotConflict(snapshot)
 	started := snapshot.StartedAt
 	if started.IsZero() {
 		started = snapshot.QueuedAt
@@ -310,6 +326,7 @@ func (state *State) describeTransferSummary() {
 	if total > 0 {
 		center.fraction = min(0.99, float32(done)/float32(total))
 	}
+	state.describeTransferScope()
 }
 
 func (state *State) removeTransfer(index int) {
@@ -347,6 +364,9 @@ func (state *State) clickTransferCenter(id ui.ID) bool {
 	if !state.transferCenterAvailable() {
 		return false
 	}
+	if state.clickTransferBulk(id) {
+		return true
+	}
 	switch id {
 	case hitTransferCenter:
 		center.open = !center.open
@@ -356,17 +376,20 @@ func (state *State) clickTransferCenter(id ui.ID) bool {
 		return true
 	case hitTransfersDismiss, hitTransfersClose:
 		center.open, center.dragging = false, false
+		center.hostOpen, center.batch = false, transferBatch{}
 		return true
 	case hitTransfersClear:
 		for index := len(center.entries) - 1; index >= 0; index-- {
-			state.removeTransfer(index)
+			if center.shows(&center.entries[index]) {
+				state.removeTransfer(index)
+			}
 		}
 		state.describeTransferSummary()
 		return true
 	case hitTransfersCancelAll:
 		for index := range center.entries {
 			entry := &center.entries[index]
-			if transferActive(entry.snapshot) && entry.owner != nil {
+			if center.shows(entry) && transferActive(entry.snapshot) && entry.owner != nil {
 				entry.owner.worker.CancelTransfer(entry.snapshot.ID)
 			}
 		}
@@ -374,7 +397,8 @@ func (state *State) clickTransferCenter(id ui.ID) bool {
 		return true
 	}
 	if filter, ok := id.In(hitTransfersFilter); ok {
-		center.filter, center.scroll = min(filter, 2), 0
+		center.filter, center.scroll = min(filter, 3), 0
+		state.describeTransferScope()
 		return true
 	}
 	return state.clickTransferTask(id)
@@ -447,5 +471,5 @@ func (state *State) refreshAllTransfers() {
 }
 
 func (center *transferCenter) shows(entry *transferEntry) bool {
-	return !entry.removed && (center.filter == 0 || (center.filter == 1 && transferActive(entry.snapshot)) || (center.filter == 2 && !transferActive(entry.snapshot)))
+	return !entry.removed && (center.host == nil || sameTransferHost(center.host, entry.host)) && transferFilterShows(center.filter, entry.snapshot)
 }

@@ -19,6 +19,7 @@ type stateNotice struct {
 	tooNew       bool
 	updateError  string // why an update did not finish, when that is what this says
 	workspaceErr string // why the development workspace could not be restored
+	crashReport  string // the report the previous run left when it ended abnormally
 	title, body  string
 	// file names what the body is about; found and supported are the formats of a
 	// file that is too new.
@@ -53,6 +54,11 @@ func (state *State) buildStateNotice() {
 	if notice.workspaceErr != "" {
 		notice.title = messages.DevelopmentWorkspaceRestoreTitle
 		notice.body = fmt.Sprintf(messages.DevelopmentWorkspaceRestoreFailedFmt, notice.workspaceErr)
+		return
+	}
+	if notice.crashReport != "" {
+		notice.title = messages.Tools.PreviousCrashTitle
+		notice.body = fmt.Sprintf(messages.Tools.PreviousCrashBodyFmt, notice.crashReport)
 		return
 	}
 	if notice.updateError != "" {
@@ -97,6 +103,17 @@ func (state *State) clickStateNotice(id ui.ID) {
 	}
 	state.closeModal()
 	state.showNextPrompt()
+}
+
+// explainPreviousCrash tells the user, once, that the last run ended abnormally
+// and where it left its report. Another dialog already up goes first; the report
+// stays on disk and in the diagnostics report either way.
+func (state *State) explainPreviousCrash() {
+	if state.options.PreviousCrash == "" || state.modal != modalNone {
+		return
+	}
+	state.stateNotice = stateNotice{crashReport: state.options.PreviousCrash}
+	state.modal = modalStateNotice
 }
 
 // explainFailedUpdate tells the user that the last update did not finish, once.

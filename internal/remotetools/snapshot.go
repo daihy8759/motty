@@ -33,7 +33,14 @@ func snapshotCommand(legacy bool) string {
 // ReadProcessSnapshot never receives a search query: filtering the bounded
 // result is local, so user input cannot become a remote shell command.
 func ReadProcessSnapshot(ctx context.Context, runner Runner, key SortKey) (ProcessSnapshot, error) {
-	output, err := runner.RunCommand(ctx, snapshotCommand(false), maxSnapshotOutput)
+	if runnerSystem(runner) == "windows" {
+		return readWindowsProcesses(ctx, runner, key)
+	}
+	command := snapshotCommand(false)
+	if runnerSystem(runner) == "darwin" {
+		command = strings.Replace(command, "ps -e ", "/bin/ps -A ", 1)
+	}
+	output, err := runner.RunCommand(ctx, command, maxSnapshotOutput)
 	legacy := false
 	if unsupportedPSOptions(output) {
 		legacy = true

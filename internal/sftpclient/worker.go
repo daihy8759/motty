@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -144,7 +145,10 @@ const maxLinkLookups = 200
 
 // Result is the immutable completion of one worker request.
 type Result struct {
-	Data []byte // immutable bounded bytes for independent document windows
+	// ListID echoes the caller's opaque listing token, including deferred links.
+	// Legacy List/Prefetch calls use zero; transfer task identity is independent.
+	ListID uint64
+	Data   []byte // immutable bounded bytes for independent document windows
 	// Background marks the result of Prefetch: a listing the caller asked for in
 	// advance. It is the caller's to cache, not to show as the outcome of an
 	// action, and its failure is not worth reporting.
@@ -180,6 +184,7 @@ type Result struct {
 // goroutine. entries is a clone: the first result may be read by the caller
 // while this mutates the clone.
 type linkJob struct {
+	listID      uint64
 	client      Remote
 	directory   string
 	entries     []Entry
@@ -189,6 +194,7 @@ type linkJob struct {
 }
 
 type request struct {
+	listID      uint64
 	data        []byte
 	id          uint64
 	background  bool // a listing nobody is waiting on: its Result says so
@@ -323,14 +329,22 @@ func NewWorker(open func() (Remote, error), notify func()) *Worker {
 var liveWorkers = leaks.New("sftp workers")
 
 func (worker *Worker) List(remotePath string) bool {
-	return worker.enqueue(request{operation: OperationList, remote: remotePath})
+	return worker.ListWithID(remotePath, 0)
+}
+
+func (worker *Worker) ListWithID(remotePath string, id uint64) bool {
+	return worker.enqueue(request{operation: OperationList, remote: remotePath, listID: id})
 }
 
 // Prefetch lists a directory ahead of need, for a caller that keeps what it
 // learns: it runs in the same order as every other request and its Result is
 // marked Background.
 func (worker *Worker) Prefetch(remotePath string) bool {
-	return worker.enqueue(request{operation: OperationList, remote: remotePath, background: true})
+	return worker.PrefetchWithID(remotePath, 0)
+}
+
+func (worker *Worker) PrefetchWithID(remotePath string, id uint64) bool {
+	return worker.enqueue(request{operation: OperationList, remote: remotePath, background: true, listID: id})
 }
 
 // Download preserves the original single-file API. It still stages and
@@ -363,6 +377,12 @@ func (worker *Worker) QueueUpload(localPath, remotePath string, recursive bool, 
 
 func (worker *Worker) CreateDirectory(remotePath string) bool {
 	return worker.enqueue(request{operation: OperationCreateDirectory, remote: remotePath})
+}
+
+// CreateDirectories creates a matching navigation path, including missing
+// parents. It is queued only after the application confirms that creation.
+func (worker *Worker) CreateDirectories(remotePath string) bool {
+	return worker.enqueue(request{operation: OperationCreateDirectory, remote: remotePath, recursive: true})
 }
 
 func (worker *Worker) Rename(oldPath, newPath string) bool {
@@ -911,6 +931,7 @@ func (worker *Worker) setProgress(id uint64, files int, bytes, resumed int64) {
 
 func (worker *Worker) execute(next request) Result {
 	result := Result{
+		ListID:     next.listID,
 		Background: next.background,
 		Operation:  next.operation, TransferID: next.id, Path: next.remote,
 		LocalPath: next.local, Destination: next.destination, Mode: next.mode,
@@ -929,6 +950,7 @@ func (worker *Worker) execute(next request) Result {
 			if _, ok := client.(remoteLinks); ok {
 				result.LinksPending = true
 				result.links = &linkJob{
+					listID: next.listID,
 					client: client, directory: result.Path, entries: slices.Clone(result.Entries),
 					generation: generation, background: next.background, approximate: result.Approximate,
 				}
@@ -939,7 +961,11 @@ func (worker *Worker) execute(next request) Result {
 	case OperationUpload:
 		result.Files, result.Bytes, result.Resumed, result.Err = worker.upload(client, next, generation)
 	case OperationCreateDirectory:
-		result.Err = createDirectory(client, next.remote)
+		if next.recursive {
+			result.Err = createDirectories(client, next.remote)
+		} else {
+			result.Err = createDirectory(client, next.remote)
+		}
 	case OperationRename:
 		result.Err = rename(client, next.remote, next.destination)
 	case OperationRemoveFile:
@@ -1045,6 +1071,7 @@ func (worker *Worker) resolveLinks(job linkJob) {
 		return
 	}
 	worker.publish(Result{
+		ListID:     job.listID,
 		Background: job.background, Operation: OperationList, Path: job.directory,
 		Entries: job.entries, Approximate: job.approximate, FollowUp: true,
 	})
@@ -2009,10 +2036,14 @@ func remoteRelative(root, target string) (string, error) {
 }
 
 func joinLocalWithin(root, relative string) (string, error) {
+	return joinLocalWithinFor(root, relative, runtime.GOOS == "windows")
+}
+
+func joinLocalWithinFor(root, relative string, windows bool) (string, error) {
 	if filepath.IsAbs(relative) {
 		return "", fmt.Errorf("%w: %s", ErrPathTraversal, relative)
 	}
-	joined := filepath.Join(root, filepath.FromSlash(relative))
+	joined := filepath.Join(root, localRelativePath(relative, windows))
 	relativeToRoot, err := filepath.Rel(filepath.Clean(root), joined)
 	if err != nil || relativeToRoot == ".." || strings.HasPrefix(relativeToRoot, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%w: %s", ErrPathTraversal, relative)
@@ -2040,6 +2071,20 @@ func isUnsupportedSFTP(err error) bool {
 	return errors.As(err, &status) && status.FxCode() == sftp.ErrSSHFxOpUnsupported
 }
 
+const sftpStatusCodeNoSuchPath = 10
+
+// IsPathNotFound reports a missing remote path across the error forms used by
+// SFTP and SCP backends. Some SFTP servers use the v4-v6 NO_SUCH_PATH status
+// even though pkg/sftp only exports the v3 NO_SUCH_FILE constant.
+func IsPathNotFound(err error) bool {
+	if errors.Is(err, os.ErrNotExist) || os.IsNotExist(err) {
+		return true
+	}
+	var status *sftp.StatusError
+	return errors.As(err, &status) &&
+		(status.FxCode() == sftp.ErrSSHFxNoSuchFile || status.Code == sftpStatusCodeNoSuchPath)
+}
+
 func createDirectory(client Remote, remotePath string) error {
 	if remotePath == "" {
 		return fmt.Errorf("sftp: create directory requires a remote path")
@@ -2049,6 +2094,37 @@ func createDirectory(client Remote, remotePath string) error {
 		return fmt.Errorf("sftp: create directory is not supported by the remote")
 	}
 	return creator.Mkdir(remotePath)
+}
+
+func createDirectories(client Remote, remotePath string) error {
+	if remotePath == "" {
+		return errors.New("sftp: create directories requires a remote path")
+	}
+	if creator, ok := client.(interface{ MkdirAll(string) error }); ok {
+		return creator.MkdirAll(remotePath)
+	}
+	// SCP and minimal backends can still create a tree using their existing
+	// directory primitives. Permission and non-directory errors are never
+	// treated as missing paths, and existing entries are not replaced.
+	var missing []string
+	for current := path.Clean(remotePath); ; current = path.Dir(current) {
+		if _, err := client.ReadDir(current); err == nil {
+			break
+		} else {
+			if !IsPathNotFound(err) || path.Dir(current) == current {
+				return err
+			}
+		}
+		missing = append(missing, current)
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		if err := createDirectory(client, missing[i]); err != nil {
+			if _, check := client.ReadDir(missing[i]); check != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func rename(client Remote, oldPath, newPath string) error {

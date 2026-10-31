@@ -46,6 +46,8 @@ func (h *minSizeHost) OpenWindow(config app.Config, _ *ui.Canvas, closed func())
 func (h *minSizeHost) AddStatusItem(app.StatusItemConfig) (app.StatusItemControl, error) {
 	return nil, errors.New("not used")
 }
+func (h *minSizeHost) SetDockBadge(string) {}
+
 func (h *minSizeHost) Quit() {
 	for _, w := range h.windows {
 		w.Close()

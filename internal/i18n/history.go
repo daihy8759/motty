@@ -24,6 +24,7 @@ type HistoryMessages struct {
 	ClearConfirm        string
 	HostNoRecord        string
 
+	StatusClearing        string
 	StatusCleared         string
 	StatusClearFailedFmt  string
 	StatusUnavailableFmt  string

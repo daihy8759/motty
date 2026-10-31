@@ -37,7 +37,7 @@ var toolbarCatalog = [3][]toolbarSpec{
 		{"split-vertical", hitPaneSplitVertical, iconRows2}, {"close-pane", hitPaneClose, iconClose},
 		{"resources", hitRemoteStats, iconActivity}, {"record", hitTerminalRecord, iconRecord},
 		{"export-recording", hitTerminalRecordingExport, iconFilm}, {"export-log", hitConnExport, iconFileDown},
-		{"files", hitSFTPOpen, iconFolderOpen}, {"file-transfer", hitSFTPDetach, iconTransfer},
+		{"files", hitSFTPOpen, iconFolderOpen}, {"file-transfer", hitSFTPDetach, iconSFTPTransfer},
 	},
 	toolbarSFTP: {
 		{"upload-file", hitSFTPUpload, iconUpload}, {"upload-folder", hitSFTPUploadDirectory, iconFolderUp},

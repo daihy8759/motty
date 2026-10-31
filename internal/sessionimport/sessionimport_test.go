@@ -294,6 +294,38 @@ func TestNamesAreMadeSafeToShow(t *testing.T) {
 	}
 }
 
+func TestBastionXshellSessionIgnoresPlaceholderKeysAndAcceptsSSH2(t *testing.T) {
+	const bastion = "[CONNECTION]\r\nHost=127.0.0.1\r\nPort=63871\r\nProtocol=SSH\r\n" +
+		"[CONNECTION:AUTHENTICATION]\r\nUserName=root\r\nPassword=ENCRYPTED\r\nUserKey=fake_rsa\r\n" +
+		"[CONNECTION:SSH]\r\nCipherList=aes128-cbc,aes192-cbc,aes256-cbc\r\n"
+	dir := t.TempDir()
+	result, err := ParseXshell(write(t, dir, "tunnel.xsh", []byte(bastion)))
+	if err != nil || len(result.Entries) != 1 || result.Keys != 0 {
+		t.Fatalf("%+v %v", result, err)
+	}
+	got := result.Entries[0]
+	if got.Host != "127.0.0.1" || got.Port != 63871 || got.User != "root" || got.Protocol != SSH {
+		t.Fatalf("entry = %+v", got)
+	}
+	if !IsLoopbackHost(got.Host) || !IsPlaceholderKey("fake_rsa") || IsPlaceholderKey("mykey") {
+		t.Fatalf("loopback/placeholder helpers: host %v fake %v real %v", IsLoopbackHost(got.Host), IsPlaceholderKey("fake_rsa"), IsPlaceholderKey("mykey"))
+	}
+
+	ssh2 := strings.Replace(bastion, "Protocol=SSH", "Protocol=SSH2", 1)
+	result, err = ParseXshell(write(t, dir, "ssh2.xsh", []byte(ssh2)))
+	if err != nil || len(result.Entries) != 1 || result.Entries[0].Protocol != SSH {
+		t.Fatalf("SSH2 synonym: %+v %v", result, err)
+	}
+	for _, host := range []string{"127.0.0.1", "localhost", "::1", "LocalHost"} {
+		if !IsLoopbackHost(host) {
+			t.Fatalf("%q should be loopback", host)
+		}
+	}
+	if IsLoopbackHost("example.com") || IsLoopbackHost("192.168.1.1") {
+		t.Fatal("remote hosts must not look like loopback")
+	}
+}
+
 func FuzzParsers(f *testing.F) {
 	f.Add([]byte(xshellSession))
 	f.Add([]byte("[Bookmarks]\nA=#109#0%h%22%u%\n"))

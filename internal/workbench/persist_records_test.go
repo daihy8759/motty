@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"motty/internal/configstore"
+	"motty/internal/monitoring"
 )
 
 // Every field of the saved state is either shared between devices or belongs to
@@ -16,10 +18,13 @@ import (
 // other, so each must be named here or in the record tables.
 func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 	ownDevice := map[string]bool{
-		"language": true, "theme": true, "terminal_font_size": true, "terminal_font_face": true, "terminal_font_family": true,
-		"restore_connect": true, "share_connections": true, "update_check": true, "update_skipped": true, "ai_panel_width": true,
+		"monitor_panels": true, "monitor_active": true,
+		"language": true, "theme": true, "terminal_font_size": true, "terminal_font_face": true, "terminal_font_family": true, "terminal_font_fallbacks": true,
+		"restore_connect": true, "share_connections": true, "update_check": true, "close_action": true, "update_skipped": true, "ai_panel_width": true,
 		"workspace": true, "active_session": true, "shortcuts": true, "identity_files": true, "agent_hosts": true, "sessions": true, "deck": true, "sync": true,
 		"host_view": true, "background": true, "snippet_shortcuts": true,
+		"sftp_local_bookmarks": true,
+		"sftp_columns":         true, "sftp_download_directory": true,
 		"toolbars":    true,
 		"local_shell": true, "ssh_agent": true, "ssh_agent_path": true,
 		"window_x": true, "window_y": true, "window_width": true, "window_height": true,
@@ -87,6 +92,44 @@ func TestAStateComesBackFromItsRecordsAsItWas(t *testing.T) {
 	}
 	if jsonOf(t, got) != jsonOf(t, want) {
 		t.Fatalf("the state changed on the way through the store:\n got %s\nwant %s", jsonOf(t, got), jsonOf(t, want))
+	}
+}
+
+func TestFormatNineUpgradePreservesHostsAndMonitoringAndBlocksOlderWriters(t *testing.T) {
+	for _, panels := range []bool{false, true} {
+		t.Run(map[bool]string{false: "upstream", true: "monitoring"}[panels], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.db")
+			want := richState()
+			if panels {
+				want.MonitorPanels = []monitoring.Panel{{ID: "panel", Name: "Production", Hosts: []string{"host_a"}, Interval: 5, Retention: 60}}
+				want.MonitorActive = "panel"
+			}
+			entries, local, err := splitState(want, newConfigBase(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old, err := configstore.Open(path, 9)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = old.Commit(configstore.Change{Put: entries, Local: map[string][]byte{localKey: local}})
+			if err := errors.Join(err, old.Close()); err != nil {
+				t.Fatal(err)
+			}
+			got, report, err := loadState(path)
+			if err != nil || report.outcome != loadOK {
+				t.Fatalf("upgrade: %+v, %v", report, err)
+			}
+			if !reflect.DeepEqual(got.Hosts, want.Hosts) || !reflect.DeepEqual(got.MonitorPanels, want.MonitorPanels) || got.MonitorActive != want.MonitorActive {
+				t.Fatalf("upgrade changed hosts or monitoring: %+v", got)
+			}
+			if err := saveState(path, got); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := configstore.ReadOnly(path, 9); !errors.Is(err, configstore.ErrTooNew) {
+				t.Fatalf("a format-9 build could overwrite the upgraded configuration: %v", err)
+			}
+		})
 	}
 }
 

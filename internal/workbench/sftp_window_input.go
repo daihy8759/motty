@@ -58,7 +58,7 @@ func (w *sftpWindow) dropTarget(x, y float32, fromLocal bool) (local bool, targe
 	local = !fromLocal
 	side := sideIndex(local)
 	row = -1
-	if !w.connected() || w.view.busy || w.pendingLocal != "" || w.view.dialog != sftpDialogNone || w.closeConfirm || w.externalConflict != 0 || w.view.bookmarksOpen || w.ui.menuOpen || w.headerMenuOpen() || !pointInRect(x, y, w.ui.list[side]) {
+	if !w.connected() || w.navigationBusy() || w.bookmark.open || w.view.dialog != sftpDialogNone || w.closeConfirm || w.externalConflict != 0 || w.view.bookmarksOpen || w.ui.menuOpen || w.headerMenuOpen() || !pointInRect(x, y, w.ui.list[side]) {
 		return
 	}
 	folder := w.folder(local)
@@ -87,6 +87,9 @@ func (w *sftpWindow) pointer(event ui.PointerEvent) ui.EventResult {
 	if w.closeConfirm || w.externalConflict != 0 || w.view.dialog != sftpDialogNone {
 		return ui.EventResult{}
 	}
+	if w.bookmark.open {
+		return w.profilePointer(event)
+	}
 	if w.headerMenuOpen() {
 		if w.ui.headerScroll.Drag(event) {
 			return handled
@@ -108,8 +111,10 @@ func (w *sftpWindow) pointer(event ui.PointerEvent) ui.EventResult {
 		return ui.EventResult{}
 	}
 	if w.view.bookmarksOpen {
-		if w.ui.bookmarkScroll.Drag(event) {
-			return handled
+		wasDragging := w.view.places.scroll.Dragging()
+		changed := w.view.places.scroll.Drag(event)
+		if wasDragging || changed || w.view.places.scroll.Dragging() {
+			return ui.EventResult{Handled: true, Repaint: changed}
 		}
 		if event.Kind == ui.PointerDown && event.Target == hitSFTPBookmarkDismiss {
 			w.view.bookmarksOpen = false
@@ -287,6 +292,10 @@ func (w *sftpWindow) click(id ui.ID) {
 		}
 		return
 	}
+	if w.bookmark.open {
+		w.clickBookmarkEditor(id)
+		return
+	}
 	if w.view.dialog != sftpDialogNone {
 		w.owner.clickSFTPDialog(w.view, id)
 		return
@@ -334,21 +343,7 @@ func (w *sftpWindow) click(id ui.ID) {
 		return
 	}
 	if w.view.bookmarksOpen {
-		if index, ok := id.In(hitSFTPBookmarkRemoveList); ok {
-			marks := w.owner.bookmarksFor(&w.session)
-			if index < len(marks) {
-				w.owner.removeBookmark(&w.session, marks[index])
-				w.owner.save()
-			}
-			return
-		}
-		w.view.bookmarksOpen = false
-		if index, ok := id.In(hitSFTPBookmarkItemList); ok {
-			marks := w.owner.bookmarksFor(&w.session)
-			if index < len(marks) {
-				w.navigate(false, marks[index])
-			}
-		}
+		w.clickDirectoryPlace(id)
 		return
 	}
 	for side := range 2 {
@@ -371,11 +366,27 @@ func (w *sftpWindow) click(id ui.ID) {
 		return
 	}
 	if id == hitSFTPBookmarkList {
-		w.view.bookmarksOpen = true
+		w.openDirectoryPlaces(false)
+		return
+	}
+	if id == hitSFTPLocalPlaces {
+		w.openDirectoryPlaces(true)
+		return
+	}
+	if id == hitSFTPLocalStar {
+		w.toggleDirectoryFavorite(true)
+		return
+	}
+	if id == hitSFTPLocationProfiles {
+		w.editBookmark(nil)
 		return
 	}
 	if id == hitSFTPBookmarkToggle {
-		w.owner.toggleBookmark(&w.session, w.view)
+		w.toggleDirectoryFavorite(false)
+		return
+	}
+	if id == hitSFTPBrowseSync {
+		w.toggleBrowseSync()
 		return
 	}
 	if id == hitSFTPNewLink {
@@ -396,7 +407,7 @@ func (w *sftpWindow) click(id ui.ID) {
 			w.navigate(local, parent)
 			return
 		case sftpWindowNewFolder[side]:
-			if local && w.pendingLocal != "" || !local && (w.view.busy || !w.connected()) {
+			if w.browse.pending != nil || local && w.pendingLocal != "" || !local && (w.view.busy || !w.connected()) {
 				return
 			}
 			w.activeLocal, w.view.local = local, local
@@ -414,6 +425,9 @@ func (w *sftpWindow) click(id ui.ID) {
 }
 
 func (w *sftpWindow) refresh(local bool) {
+	if w.browse.pending != nil || w.bookmark.open {
+		return
+	}
 	if local {
 		w.owner.listLocal(w.view, w.view.lfolder.path)
 	} else if !w.view.busy && w.connected() {
@@ -424,6 +438,13 @@ func (w *sftpWindow) refresh(local bool) {
 
 func (w *sftpWindow) textInput(context app.TextInputContext) *app.TextInput {
 	if w.closeConfirm || w.externalConflict != 0 {
+		return nil
+	}
+	if w.bookmark.open {
+		if index, ok := context.ID.In(hitSFTPBookmarkFields); ok && index < len(w.bookmark.fields) {
+			w.input = app.TextInput{Editor: &w.bookmark.fields[index]}
+			return &w.input
+		}
 		return nil
 	}
 	if w.view.dialog != sftpDialogNone {
@@ -478,6 +499,65 @@ func (w *sftpWindow) key(event ui.KeyEvent) ui.EventResult {
 		}
 		return ui.EventResult{}
 	}
+	if w.bookmark.open && !w.closeConfirm {
+		if result, handled := w.profileScopeKey(event); handled {
+			return result
+		}
+		if index, ok := event.Target.In(hitSFTPBookmarkFields); ok && index < len(w.bookmark.fields) {
+			if _, composing := w.bookmark.fields[index].Composition(); composing {
+				return ui.EventResult{}
+			}
+		}
+		if !event.Repeat && event.Modifiers == 0 {
+			switch event.Key {
+			case ui.KeyEscape:
+				w.bookmark.open = false
+				return handled
+			case ui.KeyEnter:
+				if event.Target == hitSFTPBookmarkFields.At(0) || event.Target == hitSFTPBookmarkSave {
+					w.saveBookmark()
+					return handled
+				}
+				if _, input := event.Target.In(hitSFTPBookmarkFields); input || event.Target == hitSFTPProfileOpen {
+					w.openProfileDraft()
+					return handled
+				}
+				if index, row := event.Target.In(hitSFTPProfileItems); row {
+					profiles := w.visibleProfiles()
+					if index < len(profiles) {
+						w.selectProfile(profiles[index])
+						w.openProfileDraft()
+					}
+					return handled
+				}
+			}
+		}
+		if index, row := event.Target.In(hitSFTPProfileItems); row && (event.Key == ui.KeyDown || event.Key == ui.KeyUp || event.Key == ui.KeyHome || event.Key == ui.KeyEnd) {
+			profiles := w.visibleProfiles()
+			next := index
+			switch event.Key {
+			case ui.KeyDown:
+				next++
+			case ui.KeyUp:
+				next--
+			case ui.KeyHome:
+				next = 0
+			case ui.KeyEnd:
+				next = len(profiles) - 1
+			}
+			if len(profiles) > 0 {
+				next = max(0, min(next, len(profiles)-1))
+				w.selectProfile(profiles[next])
+				w.bookmark.offset = max(0, min(w.bookmark.offset, float32(next)*52))
+				if bottom := float32(next+1) * 52; bottom > w.bookmark.offset+w.bookmark.list.Height {
+					w.bookmark.offset = bottom - w.bookmark.list.Height
+				}
+				handled.Focus, handled.FocusVisible = hitSFTPProfileItems.At(next), true
+			}
+			return handled
+		}
+		return ui.EventResult{}
+	}
 	if event.Key == ui.KeyEscape {
 		if w.closeConfirm {
 			w.click(hitSFTPWindowCloseCancel)
@@ -497,6 +577,12 @@ func (w *sftpWindow) key(event ui.KeyEvent) ui.EventResult {
 				if event.Target == id {
 					folder := w.folder(side == 0)
 					if _, composing := folder.pathInput().Composition(); !composing && !event.Repeat {
+						if side == 0 && folder.navigation.id != 0 {
+							w.owner.cancelSFTPLocalNavigation(w.view)
+						}
+						if side == 1 && w.view.pathRequest != "" {
+							w.owner.cancelSFTPNavigation(w.view)
+						}
 						folder.resetPathInput()
 					}
 				}
@@ -518,7 +604,7 @@ func (w *sftpWindow) key(event ui.KeyEvent) ui.EventResult {
 	if w.ui.menuOpen || w.view.bookmarksOpen {
 		scroll := &w.ui.menuScroll
 		if w.view.bookmarksOpen {
-			scroll = &w.ui.bookmarkScroll
+			scroll = &w.view.places.scroll
 		}
 		if next, ok := scroll.Navigate(event.Key, event.Target, true); ok {
 			handled.Focus, handled.FocusVisible = next, true
@@ -528,6 +614,16 @@ func (w *sftpWindow) key(event ui.KeyEvent) ui.EventResult {
 	}
 	if w.closeConfirm || w.externalConflict != 0 || w.view.dialog != sftpDialogNone {
 		return ui.EventResult{}
+	}
+	if delta, ok := sftpHistoryChord(event); ok {
+		isText := false
+		for side := range 2 {
+			isText = isText || event.Target == sftpWindowPath[side] || event.Target == sftpWindowFilter[side]
+		}
+		if local, fileControl := w.targetSide(event.Target); fileControl && !isText {
+			w.owner.navigateSFTPHistory(w.view, local, delta)
+			return handled
+		}
 	}
 	for _, id := range sftpWindowFilter {
 		if event.Target == id {
@@ -631,11 +727,11 @@ func (w *sftpWindow) shortcut(event ui.KeyEvent) ui.EventResult {
 		return ui.EventResult{}
 	}
 	for _, id := range sftpWindowPath {
-		if event.Target == id && strings.ToLower(event.Text) != "l" && strings.ToLower(event.Text) != "w" && strings.ToLower(event.Text) != "f" {
+		if event.Target == id && strings.ToLower(event.Text) != "l" && strings.ToLower(event.Text) != "w" && strings.ToLower(event.Text) != "f" && strings.ToLower(event.Text) != "b" && strings.ToLower(event.Text) != "o" {
 			return ui.EventResult{}
 		}
 	}
-	if w.view.dialog != sftpDialogNone || w.closeConfirm || w.externalConflict != 0 || w.ui.menuOpen || w.view.bookmarksOpen || w.headerMenuOpen() {
+	if w.view.dialog != sftpDialogNone || w.bookmark.open || w.closeConfirm || w.externalConflict != 0 || w.ui.menuOpen || w.view.bookmarksOpen || w.headerMenuOpen() {
 		return ui.EventResult{}
 	}
 	for _, id := range sftpWindowFilter {
@@ -656,6 +752,14 @@ func (w *sftpWindow) shortcut(event ui.KeyEvent) ui.EventResult {
 		w.folder(w.activeLocal).filterOpen = true
 		handled.Focus, handled.FocusVisible = sftpWindowFilter[sideIndex(w.activeLocal)], true
 		return handled
+	case "o":
+		w.editBookmark(nil)
+		return handled
+	case "b":
+		if event.Modifiers&(ui.ModifierAlt|ui.ModifierShift) == 0 && !w.navigationBusy() {
+			w.editBookmark(w.currentBookmark())
+			return handled
+		}
 	case "a":
 		folder := w.folder(w.activeLocal)
 		for index := range folder.rows {
@@ -679,6 +783,18 @@ func (w *sftpWindow) shortcut(event ui.KeyEvent) ui.EventResult {
 }
 
 func (w *sftpWindow) scroll(event ui.ScrollEvent) ui.EventResult {
+	if w.bookmark.open {
+		b := &w.bookmark
+		if b.scopeOpen {
+			return ui.EventResult{Handled: true, Repaint: b.scopeMenu.Wheel(event)}
+		}
+		if pointInRect(event.X, event.Y, b.list) {
+			before := b.offset
+			b.offset = max(0, min(b.area.MaxOffsetY, b.offset+event.DeltaY))
+			return ui.EventResult{Handled: true, Repaint: before != b.offset}
+		}
+		return ui.EventResult{Handled: true}
+	}
 	if w.headerMenuOpen() {
 		return ui.EventResult{Handled: true, Repaint: w.ui.headerScroll.Wheel(event)}
 	}
@@ -686,9 +802,9 @@ func (w *sftpWindow) scroll(event ui.ScrollEvent) ui.EventResult {
 		return ui.EventResult{Handled: true, Repaint: w.ui.menuScroll.Wheel(event)}
 	}
 	if w.view.bookmarksOpen {
-		return ui.EventResult{Handled: true, Repaint: w.ui.bookmarkScroll.Wheel(event)}
+		return ui.EventResult{Handled: true, Repaint: w.view.places.scroll.Wheel(event)}
 	}
-	if w.view.dialog != sftpDialogNone || w.closeConfirm || w.externalConflict != 0 {
+	if w.view.dialog != sftpDialogNone || w.bookmark.open || w.closeConfirm || w.externalConflict != 0 {
 		return ui.EventResult{Handled: true}
 	}
 	for side, bounds := range w.ui.list {

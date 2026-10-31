@@ -209,6 +209,52 @@ func TestDialTimeoutAppliesThroughProxyJump(t *testing.T) {
 	}
 }
 
+func TestPingNotConnected(t *testing.T) {
+	conn := &Conn{}
+	if _, err := conn.Ping(context.Background()); err == nil {
+		t.Fatal("expected error when pinging disconnected conn")
+	}
+}
+
+func TestPingConnected(t *testing.T) {
+	var requestType string
+	var wantReply bool
+	server := startServer(t, func(server *testServer) {
+		server.password = "secret"
+		server.request = func(_ *ssh.ServerConn, request *ssh.Request) {
+			requestType, wantReply = request.Type, request.WantReply
+			_ = request.Reply(true, nil)
+		}
+	})
+	harness := connect(t, server)
+	rtt, err := harness.conn.Ping(context.Background())
+	if err != nil {
+		t.Fatalf("Ping failed: %v", err)
+	}
+	if rtt <= 0 {
+		t.Fatalf("expected positive rtt, got %v", rtt)
+	}
+	if requestType != keepAliveRequest || !wantReply {
+		t.Fatalf("Ping sent %q (want reply %v)", requestType, wantReply)
+	}
+	if nilRTT, err := harness.conn.Ping(nil); err != nil || nilRTT <= 0 {
+		t.Fatalf("Ping(nil) = %v, %v", nilRTT, err)
+	}
+}
+
+func TestPingTimesOutWhenServerDoesNotReply(t *testing.T) {
+	server := startServer(t, func(server *testServer) {
+		server.password = "secret"
+		server.request = func(_ *ssh.ServerConn, _ *ssh.Request) {}
+	})
+	harness := connect(t, server)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := harness.conn.Ping(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Ping error = %v, want deadline exceeded", err)
+	}
+}
+
 func BenchmarkKeepAliveDisabled(b *testing.B) {
 	conn := Conn{}
 	b.ReportAllocs()

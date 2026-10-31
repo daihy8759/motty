@@ -54,17 +54,23 @@ func (state *State) recordTerminalDirectory(sessionID uint32, cwd term.Cwd, repl
 }
 
 func (state *State) navigateSFTPDirectory(view *sftpView, directory string) {
+	state.navigateSFTPDirectoryNavigation(view, directory, sftpNavigationManual, 0)
+}
+
+func (state *State) navigateSFTPDirectoryNavigation(view *sftpView, directory string, kind sftpNavigationKind, index int) {
+	directory = path.Clean(directory)
+	nav := state.beginSFTPNavigation(view, false, directory, kind, index)
 	state.requestTerminalDirectory(view, directory)
 	if view.terminalPath != "" {
 		// A cached listing is optimistic UI, not proof that this directory
 		// still exists. Reverse commands require a fresh successful read.
-		state.listSFTP(view, directory)
+		state.queueSFTPListing(view, directory, nav)
 		if !view.busy {
 			view.terminalPath = ""
 		}
 		return
 	}
-	state.openSFTPDirectory(view, directory)
+	state.openSFTPDirectoryNavigation(view, directory, nav)
 }
 
 func validSyncDirectory(directory string) bool {
@@ -107,7 +113,7 @@ func (state *State) syncTerminalDirectory(view *sftpView) {
 	if view.terminalSyncSkipped {
 		view.terminalSyncSkipped = false
 		if state.sftpTerminalFollow {
-			view.status = state.messages.Tools.FilesTerminalFollowSkipped
+			view.status = state.terminalFollowSkippedText(view)
 		}
 	}
 	if view.terminalPath == "" || path.Clean(view.path) != view.terminalPath {
@@ -124,8 +130,19 @@ func (state *State) syncTerminalDirectory(view *sftpView) {
 	}
 	if !ok || !state.terminalDirectoryReady(session) || session.term.promptVersion != version ||
 		!session.term.send([]byte("builtin cd -- "+shellQuote(directory)+"\r")) {
-		view.status = state.messages.Tools.FilesTerminalFollowSkipped
+		view.status = state.terminalFollowSkippedText(view)
 	}
+}
+
+// terminalFollowSkippedText says why the terminal was left where it was. A shell
+// that reports its prompt but never the start of a command (its DEBUG trap was
+// replaced, say) can never be proven idle, so asking the user to finish a command would send
+// them looking for something that is not there.
+func (state *State) terminalFollowSkippedText(view *sftpView) string {
+	if session, ok := state.sftpSession(view); ok && session.term != nil && session.term.folderIntegrationSeen && !session.term.commandReporting {
+		return state.messages.Tools.FilesTerminalFollowUnsupported
+	}
+	return state.messages.Tools.FilesTerminalFollowSkipped
 }
 
 func (state *State) followTerminalDirectory(session *Session) {

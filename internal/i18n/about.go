@@ -38,6 +38,10 @@ type AboutMessages struct {
 	RepoDescription    string
 	Docs               string
 	DocsDescription    string
-	Join               string
-	Open               string
+	// Viva is the desktop framework Motty is built on: one more place to read
+	// what draws the window.
+	Viva            string
+	VivaDescription string
+	Join            string
+	Open            string
 }

@@ -132,7 +132,7 @@ func TestConnectWithTextThatIsNotATargetSaysSoAndDialsNothing(t *testing.T) {
 	if len(world.configs) != 0 || len(state.sessions) != 0 {
 		t.Fatal("unparseable text was dialed")
 	}
-	if want := `"two words" is not something to connect to. Write it as user@host or user@host:port.`; state.status != want {
+	if want := state.messages.ActionFeedback.InvalidConnection; state.status != want {
 		t.Fatalf("status = %q, want %q", state.status, want)
 	}
 	if state.activeSection != sectionHosts {

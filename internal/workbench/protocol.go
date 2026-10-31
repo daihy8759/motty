@@ -42,6 +42,16 @@ const (
 // isSSH reports whether the host is reached over SSH.
 func (host Host) isSSH() bool { return host.Protocol == protocolSSH }
 
+func (state *State) sshHostCount() int {
+	count := 0
+	for _, host := range state.hosts {
+		if host.isSSH() {
+			count++
+		}
+	}
+	return count
+}
+
 // defaultPort is the port a host of its protocol uses when it names none.
 func (host Host) defaultPort() uint16 {
 	switch host.Protocol {

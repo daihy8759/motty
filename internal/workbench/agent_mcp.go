@@ -57,7 +57,8 @@ type AgentOptions struct {
 	StatePath      string
 	AIDatabasePath string
 	VaultPath      string
-	// Keystore holds the vault's data key; nil is the system's.
+	// Keystore holds the vault's data key; nil is the system's, with a key file
+	// beside the vault where there is none.
 	Keystore vault.Keystore
 	// Idle is how long a connection nobody is using stays open; zero is two
 	// minutes.
@@ -85,7 +86,7 @@ func (options AgentOptions) withDefaults() AgentOptions {
 		options.VaultPath = filepath.Join(filepath.Dir(options.StatePath), "vault.json")
 	}
 	if options.Keystore == nil {
-		options.Keystore = systemKeystore{}
+		options.Keystore = defaultKeystore(options.VaultPath)
 	}
 	if options.Idle <= 0 {
 		options.Idle = agentIdleDefault
@@ -511,7 +512,7 @@ func (b *agentBackend) dial(ctx context.Context, host Host) (*sshconn.Conn, erro
 		}
 		if status.Version != answered {
 			answered = status.Version
-			if err := answerAgentPrompt(conn, status, secrets); err != nil {
+			if err := b.answerAgentPrompt(conn, host, status, secrets); err != nil {
 				conn.Cancel()
 				return nil, fmt.Errorf("%s: %w", host.Label, err)
 			}
@@ -531,15 +532,15 @@ func (b *agentBackend) dial(ctx context.Context, host Host) (*sshconn.Conn, erro
 
 // answerAgentPrompt answers what the connection waits on, from the vault, or
 // returns why it cannot.
-func answerAgentPrompt(conn *sshconn.Conn, status sshconn.Status, secrets *vault.Vault) error {
+func (b *agentBackend) answerAgentPrompt(conn *sshconn.Conn, host Host, status sshconn.Status, secrets *vault.Vault) error {
 	lookup := func(name string) (string, error) {
 		if secrets == nil || secrets.Len() == 0 {
 			return "", nil // nothing saved: do not ask the system's store for a key
 		}
 		value, found, err := secrets.Get(name)
 		switch {
-		case errors.Is(err, vault.ErrLocked):
-			return "", errors.New("the saved passwords are locked by a master password, which an agent cannot enter; unlock them in Motty and use a key, or turn the master password off")
+		case errors.Is(err, vault.ErrNeedsConversion):
+			return "", errors.New("the saved passwords are still locked by the master password of an earlier version, which an agent cannot enter; open Motty and enter it once")
 		case err != nil || !found:
 			return "", nil
 		}
@@ -555,10 +556,10 @@ func answerAgentPrompt(conn *sshconn.Conn, status sshconn.Status, secrets *vault
 		if status.Attempt > 1 {
 			return fmt.Errorf("the saved password for %s was refused; update it in Motty", who)
 		}
-		if !isPlainPassword(status.Questions) {
+		if !isPasswordQuestion(status.Questions) {
 			return fmt.Errorf("%s asks for more than a password (a one-time code?), which an agent cannot answer", who)
 		}
-		password, err := lookup(passwordSecretName(status.Endpoint))
+		password, err := lookup(hostSecretName(b.catalog.secretOwner(host, status.Endpoint, status.EndpointRole), hostPasswordPart))
 		if err != nil {
 			return err
 		}

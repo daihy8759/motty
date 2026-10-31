@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,7 +87,7 @@ func TestImportingSessionsToleratesCancelAndBadFiles(t *testing.T) {
 	answer = errors.New("no picker")
 	state.Click(hitImportSessions)
 	state.Click(hitImportPuTTY)
-	if !strings.Contains(state.status, "no picker") {
+	if state.status != state.messages.ActionFeedback.FilePickerFailed {
 		t.Fatalf("status = %q", state.status)
 	}
 
@@ -94,7 +95,7 @@ func TestImportingSessionsToleratesCancelAndBadFiles(t *testing.T) {
 	paths = []string{filepath.Join(t.TempDir(), "nothing.xsh")}
 	state.Click(hitImportSessions)
 	state.Click(hitImportXshell)
-	if state.modal != modalNone || len(state.hosts) != 0 || !strings.HasPrefix(state.status, "Could not import") {
+	if want := fmt.Sprintf(state.messages.ActionFeedback.ImportSessionsFailedFmt, "Xshell"); state.modal != modalNone || len(state.hosts) != 0 || state.status != want {
 		t.Fatalf("modal %d, hosts %d, status %q", state.modal, len(state.hosts), state.status)
 	}
 

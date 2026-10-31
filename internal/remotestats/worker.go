@@ -2,6 +2,8 @@ package remotestats
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,8 +18,9 @@ const (
 // Result is one completed sample. An error is terminal for the worker so a
 // refused or unsupported command is never retried in the background.
 type Result struct {
-	Sample Sample
-	Err    error
+	Sample  Sample
+	Details *Details
+	Err     error
 }
 
 // Worker owns one goroutine and one remote command only while the user has
@@ -30,6 +33,7 @@ type Worker struct {
 	results chan Result
 	done    chan struct{}
 	close   sync.Once
+	command string
 }
 
 // Start begins sampling immediately. It is intentionally the constructor:
@@ -39,13 +43,31 @@ func Start(runner Runner, notify func()) *Worker {
 }
 
 func start(runner Runner, notify func(), first, next time.Duration) *Worker {
+	return startCommand(runner, notify, first, next, command)
+}
+
+// StartWithInterval changes the remote sampling interval without adding a
+// second timer or SSH stream. The initial quarter-second warmup stays fast.
+func StartWithInterval(runner Runner, notify func(), seconds int) *Worker {
+	if !validInterval(seconds) {
+		seconds = 2
+	}
+	script := strings.TrimSuffix(command, "sleep 1\ndone") + "sleep " + strconv.Itoa(seconds) + "\ndone"
+	return startCommand(runner, notify, firstReadingTimeout, time.Duration(seconds)*time.Second+readingTimeout, script)
+}
+
+func startCommand(runner Runner, notify func(), first, next time.Duration, script string) *Worker {
 	ctx, cancel := context.WithCancel(context.Background())
 	worker := &Worker{
-		runner: runner, notify: notify, ctx: ctx, cancel: cancel,
+		runner: runner, notify: notify, ctx: ctx, cancel: cancel, command: script,
 		results: make(chan Result, 1), done: make(chan struct{}),
 	}
 	go worker.run(first, next)
 	return worker
+}
+
+func validInterval(seconds int) bool {
+	return seconds == 1 || seconds == 2 || seconds == 5 || seconds == 10 || seconds == 30 || seconds == 60
 }
 
 // Results is the completion stream drained by the window thread. It holds only
@@ -71,12 +93,62 @@ func (worker *Worker) run(first, next time.Duration) {
 	defer watchdog.Stop()
 
 	var (
-		previous counters
-		have     bool
-		fault    error
-		pending  []GPU // the GPU lines that came before the counters line they belong to
+		previous             counters
+		have                 bool
+		fault                error
+		pending              []GPU // the GPU lines that came before the counters line they belong to
+		primary              string
+		previousPrimary      string
+		cores, previousCores []coreCounters
+		windowsRead          bool
+		startupLines         int
 	)
-	err := worker.runner.StreamCommand(ctx, command, maxLineBytes, func(line []byte) bool {
+	limit := maxLineBytes
+	if strings.HasPrefix(worker.command, "powershell.exe ") {
+		limit = maxWindowsLineBytes
+	}
+	err := worker.runner.StreamCommand(ctx, worker.command, limit, func(line []byte) bool {
+		if strings.HasPrefix(string(line), "gop-stats-win-v1 ") {
+			result, err := parseWindows(line)
+			if err != nil {
+				fault = err
+				return false
+			}
+			watchdog.Reset(next)
+			worker.publish(result)
+			windowsRead = true
+			return true
+		}
+		if strings.HasPrefix(worker.command, "powershell.exe ") && !strings.HasPrefix(string(line), "gop-stats-unsupported") {
+			// Some Windows SSH shells print a bounded login banner even for
+			// command sessions. Never let it reset the first-reading timeout.
+			if !windowsRead && startupLines < 8 && len(line) < 1024 {
+				startupLines++
+				return true
+			}
+			fault = ErrMalformed
+			return false
+		}
+		if strings.HasPrefix(string(line), "gop-core ") {
+			core, err := parseCore(line)
+			if err != nil || len(cores) >= 256 {
+				fault = ErrMalformed
+				return false
+			}
+			cores = append(cores, core)
+			return true
+		}
+		if strings.HasPrefix(string(line), "gop-net-primary ") {
+			primary = strings.TrimSpace(strings.TrimPrefix(string(line), "gop-net-primary "))
+			if primary == "-" {
+				primary = ""
+			}
+			if len(primary) > 64 || strings.ContainsAny(primary, "\r\n\t") {
+				fault = ErrMalformed
+				return false
+			}
+			return true
+		}
 		if isGPULine(line) {
 			pending = parseGPULine(pending, line)
 			return true
@@ -90,11 +162,21 @@ func (worker *Worker) run(first, next time.Duration) {
 		if have {
 			if reading, ok := sample(previous, current); ok {
 				reading.GPUs = pending
+				reading.Cores = coreUsage(previousCores, cores)
+				reading.NetworkInterface = primary
+				if primary != previousPrimary {
+					reading.ReceiveBytesPerSecond = 0
+					reading.SendBytesPerSecond = 0
+				}
 				worker.publish(Result{Sample: reading})
 			}
 		}
 		previous, have = current, true
+		previousPrimary = primary
+		previousCores = cores
+		cores = nil
 		pending = nil
+		primary = ""
 		return true
 	})
 	if worker.ctx.Err() != nil {

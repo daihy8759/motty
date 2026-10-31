@@ -129,7 +129,10 @@ func mcpHTTPToolCall(t *testing.T, state *State, address, token, name, args stri
 		}
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Authorization", "Bearer "+token)
-		client := http.Client{Timeout: 5 * time.Second}
+		// Each call is its own tool call: a pooled connection from before a
+		// settings change would reach the server this test just restarted and
+		// fail with EOF.
+		client := http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 		response, err := client.Do(request)
 		if err != nil {
 			done <- reply{err: err}

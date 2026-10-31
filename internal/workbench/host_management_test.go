@@ -40,21 +40,20 @@ func TestNewHostPasswordIsSecureAndSavedInTheVault(t *testing.T) {
 	if state.modal != modalNone || len(state.hosts) != 4 {
 		t.Fatalf("new host was not saved: modal=%d hosts=%d error=%q", state.modal, len(state.hosts), state.dialogError)
 	}
-	if value, found, err := state.secrets.vault.Get("password:ops@edge.example.com:22"); err != nil || !found || value != "correct horse" {
+	if value, found, err := state.secrets.vault.Get(hostSecretName(state.hosts[len(state.hosts)-1].CatalogID, hostPasswordPart)); err != nil || !found || value != "correct horse" {
 		t.Fatalf("saved password = %q found=%v err=%v", value, found, err)
 	}
 }
 
-func TestHostPasswordUsesEachProtocolsExistingVaultKey(t *testing.T) {
+func TestHostPasswordIsKeptUnderTheHostForEveryProtocol(t *testing.T) {
 	tests := []struct {
 		name     string
 		protocol hostProtocol
 		user     string
-		secret   string
 	}{
-		{name: "SSH", protocol: protocolSSH, user: "ops", secret: "password:ops@host.example.com:22"},
-		{name: "VNC", protocol: protocolVNC, secret: "password:vnc@host.example.com:5900"},
-		{name: "RDP", protocol: protocolRDP, user: "CORP\\alice", secret: "password:rdp:CORP\\alice@host.example.com:3389"},
+		{name: "SSH", protocol: protocolSSH, user: "ops"},
+		{name: "VNC", protocol: protocolVNC},
+		{name: "RDP", protocol: protocolRDP, user: "CORP\\alice"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -70,8 +69,9 @@ func TestHostPasswordUsesEachProtocolsExistingVaultKey(t *testing.T) {
 			if state.modal != modalNone {
 				t.Fatalf("submit error = %q", state.dialogError)
 			}
-			if value, found, err := state.secrets.vault.Get(test.secret); err != nil || !found || value != "secret" {
-				t.Fatalf("%s = %q found=%v err=%v", test.secret, value, found, err)
+			name := hostSecretName(state.hosts[len(state.hosts)-1].CatalogID, hostPasswordPart)
+			if value, found, err := state.secrets.vault.Get(name); err != nil || !found || value != "secret" {
+				t.Fatalf("%s = %q found=%v err=%v", name, value, found, err)
 			}
 		})
 	}
@@ -89,58 +89,6 @@ func TestTelnetAndSerialHostsDoNotOfferAPassword(t *testing.T) {
 	}
 }
 
-func TestCopyHostCopiesSavedPasswordToTheEditedEndpoint(t *testing.T) {
-	state := newTestState(t, testOptions(t))
-	if err := state.secrets.vault.Set(prodPasswordName, "source secret"); err != nil {
-		t.Fatal(err)
-	}
-	clickHostAction(state, hitCopyHost)
-	state.editor.address = text.Editor{}
-	typeInto(state, hitDialogAddress, "prod-copy.example.com")
-	state.Click(hitDialogSubmit)
-
-	if state.modal != modalNone || len(state.hosts) != 4 {
-		t.Fatalf("copy was not saved: modal=%d hosts=%d error=%q", state.modal, len(state.hosts), state.dialogError)
-	}
-	if value, found, err := state.secrets.vault.Get("password:deploy@prod-copy.example.com:22"); err != nil || !found || value != "source secret" {
-		t.Fatalf("copied password = %q found=%v err=%v", value, found, err)
-	}
-	if value, found, err := state.secrets.vault.Get(prodPasswordName); err != nil || !found || value != "source secret" {
-		t.Fatalf("source password changed = %q found=%v err=%v", value, found, err)
-	}
-}
-
-func TestTypedCopyPasswordOverridesTheSourceAndMissingSourceCreatesNothing(t *testing.T) {
-	t.Run("override", func(t *testing.T) {
-		state := newTestState(t, testOptions(t))
-		if err := state.secrets.vault.Set(prodPasswordName, "source secret"); err != nil {
-			t.Fatal(err)
-		}
-		clickHostAction(state, hitCopyHost)
-		state.editor.address = text.Editor{}
-		typeInto(state, hitDialogAddress, "prod-copy.example.com")
-		typeInto(state, hitDialogPassword, "replacement")
-		state.Click(hitDialogSubmit)
-		if value, found, err := state.secrets.vault.Get("password:deploy@prod-copy.example.com:22"); err != nil || !found || value != "replacement" {
-			t.Fatalf("copied password = %q found=%v err=%v", value, found, err)
-		}
-		if value, found, err := state.secrets.vault.Get(prodPasswordName); err != nil || !found || value != "source secret" {
-			t.Fatalf("typed copy changed source password = %q found=%v err=%v", value, found, err)
-		}
-	})
-
-	t.Run("no source", func(t *testing.T) {
-		state := newTestState(t, testOptions(t))
-		clickHostAction(state, hitCopyHost)
-		state.editor.address = text.Editor{}
-		typeInto(state, hitDialogAddress, "prod-copy.example.com")
-		state.Click(hitDialogSubmit)
-		if value, found, err := state.secrets.vault.Get("password:deploy@prod-copy.example.com:22"); err != nil || found || value != "" {
-			t.Fatalf("empty source created password = %q found=%v err=%v", value, found, err)
-		}
-	})
-}
-
 func TestEditHostKeepsOrReplacesItsSavedPassword(t *testing.T) {
 	state := newTestState(t, testOptions(t))
 	if err := state.secrets.vault.Set(prodPasswordName, "source secret"); err != nil {
@@ -153,65 +101,11 @@ func TestEditHostKeepsOrReplacesItsSavedPassword(t *testing.T) {
 	}
 
 	clickHostAction(state, hitEditHost)
+	state.editor.password = text.Editor{}
 	typeInto(state, hitDialogPassword, "replacement")
 	state.Click(hitDialogSubmit)
 	if value, found, err := state.secrets.vault.Get(prodPasswordName); err != nil || !found || value != "replacement" {
 		t.Fatalf("edited password = %q found=%v err=%v", value, found, err)
-	}
-}
-
-func TestEditHostMovesItsSavedPasswordToAnEditedEndpoint(t *testing.T) {
-	state := newTestState(t, testOptions(t))
-	if err := state.secrets.vault.Set(prodPasswordName, "source secret"); err != nil {
-		t.Fatal(err)
-	}
-	clickHostAction(state, hitEditHost)
-	state.editor.address = text.Editor{}
-	typeInto(state, hitDialogAddress, "moved.example.com")
-	state.Click(hitDialogSubmit)
-
-	if state.modal != modalNone || state.hosts[0].Address != "moved.example.com" {
-		t.Fatalf("edited host was not saved: modal=%d host=%+v error=%q", state.modal, state.hosts[0], state.dialogError)
-	}
-	if value, found, err := state.secrets.vault.Get("password:deploy@moved.example.com:22"); err != nil || !found || value != "source secret" {
-		t.Fatalf("moved password = %q found=%v err=%v", value, found, err)
-	}
-	if value, found, err := state.secrets.vault.Get(prodPasswordName); err != nil || found || value != "" {
-		t.Fatalf("old endpoint kept password = %q found=%v err=%v", value, found, err)
-	}
-
-	clickHostAction(state, hitEditHost)
-	state.editor.address = text.Editor{}
-	typeInto(state, hitDialogAddress, "final.example.com")
-	typeInto(state, hitDialogPassword, "replacement")
-	state.Click(hitDialogSubmit)
-	if value, found, err := state.secrets.vault.Get("password:deploy@final.example.com:22"); err != nil || !found || value != "replacement" {
-		t.Fatalf("typed moved password = %q found=%v err=%v", value, found, err)
-	}
-	if value, found, err := state.secrets.vault.Get("password:deploy@moved.example.com:22"); err != nil || found || value != "" {
-		t.Fatalf("typed move kept previous password = %q found=%v err=%v", value, found, err)
-	}
-}
-
-func TestTypedMovedPasswordDeletesTheOldKeyWhenApplyOpensTheVault(t *testing.T) {
-	state := newTestState(t, testOptions(t))
-	if err := state.secrets.vault.Set(prodPasswordName, "source secret"); err != nil {
-		t.Fatal(err)
-	}
-	state.secrets.vault.Lock() // system-keystore mode: Apply may open it without user input
-	state.openEditHostID(state.hosts[0].ID)
-	state.editor.otpChecked = true // isolate host-password planning from OTP discovery
-	state.editor.address = *text.NewEditor("moved-while-locked.example.com")
-	typeInto(state, hitDialogPassword, "replacement")
-	state.Click(hitDialogSubmit)
-	if state.modal != modalNone || state.dialogError != "" {
-		t.Fatalf("edit modal=%d error=%q", state.modal, state.dialogError)
-	}
-	if value, found, err := state.secrets.vault.Get("password:deploy@moved-while-locked.example.com:22"); err != nil || !found || value != "replacement" {
-		t.Fatalf("moved password = %q found=%v err=%v", value, found, err)
-	}
-	if value, found, err := state.secrets.vault.Get(prodPasswordName); err != nil || found || value != "" {
-		t.Fatalf("old endpoint kept password = %q found=%v err=%v", value, found, err)
 	}
 }
 
@@ -261,13 +155,14 @@ func TestHostPasswordFitsEveryHostDialogInAShortWindow(t *testing.T) {
 func TestHostPasswordSaveErrorsKeepTheDialogOpen(t *testing.T) {
 	t.Run("locked", func(t *testing.T) {
 		state := newTestState(t, testOptions(t))
-		if err := state.secrets.vault.SetMasterPassword("a master password"); err != nil {
+		if err := state.secrets.vault.LegacyForTests("a master password"); err != nil {
 			t.Fatal(err)
 		}
-		state.secrets.vault.Lock()
+		state.secrets.declined = true
+		state.secrets.vault.DropKeyForTests()
 		fillNewHost(state, "Edge", "edge.example.com", "ops", "secret")
 		state.Click(hitDialogSubmit)
-		want := fmt.Sprintf(state.messages.VaultSaveFailedFmt, state.messages.Autofill.ErrorVaultLocked)
+		want := fmt.Sprintf(state.messages.VaultSaveFailedFmt, state.messages.VaultNeedsConversion)
 		if state.modal != modalNewHost || state.dialogError != want || len(state.hosts) != 3 {
 			t.Fatalf("locked submit: modal=%d error=%q hosts=%d", state.modal, state.dialogError, len(state.hosts))
 		}
@@ -286,153 +181,13 @@ func TestHostPasswordSaveErrorsKeepTheDialogOpen(t *testing.T) {
 	})
 }
 
-func copyProdTo(state *State, address string) {
-	clickHostAction(state, hitCopyHost)
-	state.editor.address = text.Editor{}
-	typeInto(state, hitDialogAddress, address)
-	state.Click(hitDialogSubmit)
-}
-
-func TestCopyHostLeavesAVaultThatIsNotOpenAloneAndSaysSo(t *testing.T) {
-	t.Run("no master password", func(t *testing.T) {
-		options := testOptions(t)
-		keys := options.Keystore.(*memKeys)
-		state := newTestState(t, options)
-		if err := state.secrets.vault.Set(prodPasswordName, "source secret"); err != nil {
-			t.Fatal(err)
-		}
-		state.secrets.vault.Lock() // as after a restart: the key waits in the system store
-		loads := keys.loads
-
-		copyProdTo(state, "prod-copy.example.com")
-
-		if state.modal != modalNone || len(state.hosts) != 4 {
-			t.Fatalf("copy was not saved: modal=%d hosts=%d error=%q", state.modal, len(state.hosts), state.dialogError)
-		}
-		if keys.loads != loads {
-			t.Fatal("copying a host asked the system secret store for the vault key")
-		}
-		if !strings.Contains(state.status, state.messages.HostPasswordNotCarried) {
-			t.Fatalf("status = %q, want the note that the password stayed behind", state.status)
-		}
-	})
-
-	t.Run("master password", func(t *testing.T) {
-		state := newTestState(t, testOptions(t))
-		if err := state.secrets.vault.Set(prodPasswordName, "source secret"); err != nil {
-			t.Fatal(err)
-		}
-		if err := state.secrets.vault.SetMasterPassword("a master password"); err != nil {
-			t.Fatal(err)
-		}
-		state.secrets.vault.Lock()
-
-		copyProdTo(state, "prod-copy.example.com")
-
-		if state.modal != modalNone || len(state.hosts) != 4 || state.secrets.vault.Unlocked() {
-			t.Fatalf("locked copy: modal=%d hosts=%d error=%q", state.modal, len(state.hosts), state.dialogError)
-		}
-		if !strings.Contains(state.status, state.messages.HostPasswordNotCarried) {
-			t.Fatalf("status = %q, want the note that the password stayed behind", state.status)
-		}
-	})
-
-	t.Run("empty vault", func(t *testing.T) {
-		options := testOptions(t)
-		keys := options.Keystore.(*memKeys)
-		state := newTestState(t, options)
-		loads := keys.loads
-		copyProdTo(state, "prod-copy.example.com")
-		if state.modal != modalNone || len(state.hosts) != 4 || keys.loads != loads {
-			t.Fatalf("copy with nothing saved: modal=%d hosts=%d loads=%d->%d", state.modal, len(state.hosts), loads, keys.loads)
-		}
-		if strings.Contains(state.status, state.messages.HostPasswordNotCarried) {
-			t.Fatalf("status = %q mentions a password that does not exist", state.status)
-		}
-	})
-}
-
-// Two VNC hosts at one address and port, one reached directly and one through
-// SSH, are different hosts that sign in with the same saved password.
-func addSharedVNCHosts(t *testing.T, state *State) (direct, tunnelled Host) {
-	t.Helper()
-	direct = Host{ID: 90, Label: "Desk", Address: "desk.example.com", Port: 5900, Protocol: protocolVNC}
-	tunnelled = Host{ID: 91, Label: "Desk via SSH", Address: "desk.example.com", User: "ops", Port: 5900, Protocol: protocolVNC, ViaSSH: true}
-	state.hosts = append(state.hosts, direct, tunnelled)
-	state.hostDataChanged()
-	if err := state.secrets.vault.Set(deskPasswordName, "desk secret"); err != nil {
-		t.Fatal(err)
-	}
-	return direct, tunnelled
-}
-
-const deskPasswordName = "password:vnc@desk.example.com:5900"
-
-func TestMovingAHostKeepsThePasswordAnotherHostStillUses(t *testing.T) {
-	state := newTestState(t, testOptions(t))
-	_, tunnelled := addSharedVNCHosts(t, state)
-	state.selectedHostID = tunnelled.ID
-	state.Click(hitEditHost)
-	state.editor.address = text.Editor{}
-	typeInto(state, hitDialogAddress, "desk2.example.com")
-	state.Click(hitDialogSubmit)
-
-	if state.modal != modalNone {
-		t.Fatalf("edit was not saved: %q", state.dialogError)
-	}
-	if value, found, _ := state.secrets.vault.Get(deskPasswordName); !found || value != "desk secret" {
-		t.Fatalf("the host left behind lost its password = %q found=%v", value, found)
-	}
-	if value, found, _ := state.secrets.vault.Get("password:vnc@desk2.example.com:5900"); !found || value != "desk secret" {
-		t.Fatalf("the moved host has no password = %q found=%v", value, found)
-	}
-}
-
-func TestTypedPasswordNeverReplacesTheOneAnotherHostShares(t *testing.T) {
-	state := newTestState(t, testOptions(t))
-	_, tunnelled := addSharedVNCHosts(t, state)
-	state.selectedHostID = tunnelled.ID
-	state.Click(hitCopyHost)
-	state.editor.user = text.Editor{}
-	typeInto(state, hitDialogUser, "ops2") // a new host, but the same VNC password key
-	typeInto(state, hitDialogPassword, "another secret")
-	state.Click(hitDialogSubmit)
-
-	if state.modal != modalNewHost || state.dialogError != state.messages.HostPasswordShared {
-		t.Fatalf("shared password: modal=%d error=%q", state.modal, state.dialogError)
-	}
-	if value, _, _ := state.secrets.vault.Get(deskPasswordName); value != "desk secret" {
-		t.Fatalf("the shared password became %q", value)
-	}
-
-	state.editor.password = text.Editor{}
-	typeInto(state, hitDialogPassword, "desk secret")
-	state.Click(hitDialogSubmit)
-	if state.modal != modalNone {
-		t.Fatalf("the same password should be accepted: %q", state.dialogError)
-	}
-}
-
-func TestEditingASharedPasswordChangesIt(t *testing.T) {
-	state := newTestState(t, testOptions(t))
-	direct, _ := addSharedVNCHosts(t, state)
-	state.selectedHostID = direct.ID
-	state.Click(hitEditHost)
-	typeInto(state, hitDialogPassword, "new desk secret")
-	state.Click(hitDialogSubmit)
-	if value, _, _ := state.secrets.vault.Get(deskPasswordName); state.modal != modalNone || value != "new desk secret" {
-		t.Fatalf("modal=%d error=%q password=%q", state.modal, state.dialogError, value)
-	}
-}
-
-func TestChangingProtocolNeitherCarriesNorLeavesBehindThePassword(t *testing.T) {
+func TestChangingProtocolDoesNotLeaveThePasswordBehind(t *testing.T) {
 	tests := []struct {
 		name     string
 		protocol hostProtocol
 		port     string
-		carried  string
 	}{
-		{name: "VNC", protocol: protocolVNC, port: "5900", carried: "password:vnc@prod.example.com:5900"},
+		{name: "VNC", protocol: protocolVNC, port: "5900"},
 		{name: "Telnet", protocol: protocolTelnet, port: "23"},
 	}
 	for _, test := range tests {
@@ -450,11 +205,6 @@ func TestChangingProtocolNeitherCarriesNorLeavesBehindThePassword(t *testing.T) 
 			}
 			if value, found, _ := state.secrets.vault.Get(prodPasswordName); found {
 				t.Fatalf("the SSH password stayed behind as %q", value)
-			}
-			if test.carried != "" {
-				if value, found, _ := state.secrets.vault.Get(test.carried); found {
-					t.Fatalf("the SSH password was copied to the %s account as %q", test.name, value)
-				}
 			}
 		})
 	}

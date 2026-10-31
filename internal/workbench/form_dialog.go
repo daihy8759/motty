@@ -168,7 +168,7 @@ func (state *State) paintFormDialog(canvas *ui.Canvas, viewport ui.Rect) {
 		content := components.BeginField(canvas, theme, slots[index].Rect()).Paint(field.label, "", "")
 		value := field.editor.String()
 		focused := canvas.Focused() == id
-		components.PaintInput(canvas, theme, content, components.InputSnapshot{
+		state.paintSecretInput(canvas, content, components.InputSnapshot{
 			ID: id, Label: field.label, Value: value, Placeholder: field.placeholder, Secure: field.secure,
 			Focused: focused, PlatformEditing: focused && value != "",
 		})

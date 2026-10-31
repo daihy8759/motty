@@ -57,11 +57,12 @@ const (
 // (it rebuilds the canonical request from what arrived on the wire), so the two
 // agreeing is a check and not an echo.
 type fakeS3 struct {
-	mu          sync.Mutex
-	objects     map[string][]byte
-	conditional bool // supports If-Match; otherwise answers 501 NotImplemented
-	methods     []string
-	badSigs     int
+	mu                   sync.Mutex
+	objects              map[string][]byte
+	conditional          bool // supports If-Match; otherwise answers NotImplemented
+	notImplementedStatus int  // 501 when zero; Aliyun OSS answers 400
+	methods              []string
+	badSigs              int
 }
 
 func (s *fakeS3) etag(key string) string {
@@ -129,6 +130,13 @@ func verify(r *http.Request, body []byte) bool {
 	return hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(fields["Signature"]))
 }
 
+func (fake *fakeS3) unsupportedStatus() int {
+	if fake.notImplementedStatus != 0 {
+		return fake.notImplementedStatus
+	}
+	return 501
+}
+
 func newFakeS3(t *testing.T) (*httptest.Server, *fakeS3) {
 	t.Helper()
 	fake := &fakeS3{objects: map[string][]byte{}, conditional: true}
@@ -156,7 +164,7 @@ func newFakeS3(t *testing.T) (*httptest.Server, *fakeS3) {
 		case http.MethodPut:
 			if r.Header.Get("If-None-Match") == "*" {
 				if !fake.conditional {
-					xmlError(w, 501, "NotImplemented", "A header you provided implies functionality that is not implemented")
+					xmlError(w, fake.unsupportedStatus(), "NotImplemented", "A header you provided implies functionality that is not implemented")
 					return
 				}
 				if exists {
@@ -166,7 +174,7 @@ func newFakeS3(t *testing.T) (*httptest.Server, *fakeS3) {
 			}
 			if match := r.Header.Get("If-Match"); match != "" {
 				if !fake.conditional {
-					xmlError(w, 501, "NotImplemented", "A header you provided implies functionality that is not implemented")
+					xmlError(w, fake.unsupportedStatus(), "NotImplemented", "A header you provided implies functionality that is not implemented")
 					return
 				}
 				if !exists {
@@ -257,8 +265,17 @@ func TestAConditionalUploadNeverReplacesAVersionItHasNotSeen(t *testing.T) {
 }
 
 func TestAServiceWithoutConditionalWritesIsCheckedWithAHeadFirst(t *testing.T) {
+	for _, status := range []int{501, 400} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			checkHeadFallback(t, status)
+		})
+	}
+}
+
+func checkHeadFallback(t *testing.T, status int) {
 	server, fake := newFakeS3(t)
 	fake.conditional = false
+	fake.notImplementedStatus = status
 	client := testClient(t, server, DefaultKey)
 	ctx := context.Background()
 	first, _ := client.Put(ctx, []byte("one"), "")

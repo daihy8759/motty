@@ -232,7 +232,7 @@ func (client *Client) Get(ctx context.Context) (data []byte, tag string, err err
 // The condition is If-Match (or If-None-Match: * to create) on the PUT, which S3
 // has supported since late 2024 and MinIO and R2 support too. A service that does
 // not know the header answers
-// 501 NotImplemented (or ignores it); then the version is read with a HEAD and
+// NotImplemented (501, or 400 from Aliyun OSS) or ignores it; then the version is read with a HEAD and
 // compared before an unconditional PUT. That fallback leaves a window of a
 // round trip in which another computer can slip in; it is the best an old
 // service allows.
@@ -251,6 +251,9 @@ func (client *Client) Put(ctx context.Context, data []byte, previous string) (ta
 		return "", err
 	}
 	defer response.Body.Close()
+	if unsupported(response) {
+		return client.putAfterHead(ctx, data, previous)
+	}
 	switch {
 	case response.StatusCode == http.StatusPreconditionFailed:
 		return "", cloudsync.ErrChanged
@@ -259,13 +262,31 @@ func (client *Client) Put(ctx context.Context, data []byte, previous string) (ta
 			return "", cloudsync.ErrChanged // deleted since it was last read
 		}
 		return "", errors.New("s3: the bucket was not found")
-	case response.StatusCode == http.StatusNotImplemented:
-		return client.putAfterHead(ctx, data, previous)
 	}
 	if _, err := check(response); err != nil {
 		return "", err
 	}
 	return response.Header.Get("ETag"), nil
+}
+
+// unsupported reports whether the service refused the conditional header itself.
+// S3-compatible services say so differently: 501 NotImplemented from MinIO-era
+// and older gateways, 400 NotImplemented from Aliyun OSS (error 0017-00000245),
+// so the error code decides, not the status. The body is left readable.
+func unsupported(response *http.Response) bool {
+	if response.StatusCode == http.StatusNotImplemented {
+		return true
+	}
+	if response.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	data, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
+	response.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(data), response.Body), response.Body}
+	var parsed serviceError
+	return xml.Unmarshal(data, &parsed) == nil && parsed.Code == "NotImplemented"
 }
 
 // putAfterHead is the fallback for a service without conditional writes.

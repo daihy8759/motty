@@ -77,16 +77,24 @@ func (conn *Conn) OpenShell(config ShellConfig) (*Shell, error) {
 		return nil, errors.New("sshconn: not connected")
 	}
 	command := config.Command
-	if command == "" && config.IntegrateShell {
+	// The integration probe opens a command channel of its own before the
+	// shell, and a gateway that refuses a second channel ends the whole
+	// connection, so only an implementation the banner names is probed.
+	if command == "" && config.IntegrateShell && standardImplementation(conn.Status().ServerVersion) {
 		command = conn.shellIntegrationCommand(config.IntegrationToken)
 	}
 	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
-	// Servers usually accept LANG; without a UTF-8 locale the shell would
-	// mangle multibyte input. A refusal is harmless.
-	_ = session.Setenv("LANG", utf8Locale())
+	// A gateway with its own menu may end the connection on an env request it
+	// does not implement, before the shell ever starts, so only a standard
+	// implementation is asked. Servers usually accept LANG; without a UTF-8
+	// locale the shell would mangle multibyte input, which the charset handling
+	// then reports, but staying connected comes first. A refusal is harmless.
+	if standardImplementation(conn.Status().ServerVersion) {
+		_ = session.Setenv("LANG", utf8Locale())
+	}
 	term := config.Term
 	if term == "" {
 		term = "xterm-256color"

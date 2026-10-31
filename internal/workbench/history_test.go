@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/ui"
+	"motty/internal/cmdhistory"
 	"motty/internal/sshconn"
 )
 
@@ -240,5 +242,72 @@ func TestHistoryPickerDeleteForgetsTheSelectedCommand(t *testing.T) {
 		if command == selected.Command {
 			t.Fatalf("%q is still listed", command)
 		}
+	}
+}
+
+// The space between two rows still belongs to the list: a pointer crossing it
+// must stay on a row, or the highlight drops back to the keyboard's choice for
+// the moment it takes to cross.
+func TestHistoryPickerRowsTouchSoCrossingThemKeepsTheHover(t *testing.T) {
+	h := pickerWorld(t)
+	state := h.state
+	state.openHistory(&state.sessions[0])
+	var canvas ui.Canvas
+	driver, err := app.NewDriver(app.Config{Title: "history", Width: 1400, Height: 900, Tree: Tree(), Paint: state.Paint, OnKey: state.Key}, &canvas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	first, ok := hitByID(&canvas, hitHistoryItems.At(0))
+	if !ok {
+		t.Fatal("no first history row")
+	}
+	second, ok := hitByID(&canvas, hitHistoryItems.At(1))
+	if !ok {
+		t.Fatal("no second history row")
+	}
+	x := first.Bounds.X + first.Bounds.Width/2
+	for y := first.Bounds.Y + first.Bounds.Height; y <= second.Bounds.Y; y += 0.25 {
+		id, ok := driver.HitTest(x, y)
+		if _, isRow := id.In(hitHistoryItems); !ok || !isRow {
+			t.Fatalf("pointer at y=%v between rows %v and %v hits %v (ok=%v), want a history row", y, first.Bounds, second.Bounds, id, ok)
+		}
+	}
+}
+
+func TestClearingHistoryReportsCompletionAndDropsDerivedCaches(t *testing.T) {
+	w := newHistoryWorld(t, true)
+	state := w.state
+	state.history.ghost = map[string][]cmdhistory.Entry{"host": {{Command: "git status"}}}
+	state.history.ghost = map[string][]cmdhistory.Entry{"host": {{Command: "git status"}}}
+	clear := &historyClearJob{done: make(chan struct{})}
+	state.history.clear = clear
+	state.adoptHistoryClear()
+	if state.history.clear == nil {
+		t.Fatal("a pending clear was adopted before it finished")
+	}
+	close(clear.done)
+	state.adoptHistoryClear()
+	if state.status != state.messages.History.StatusCleared {
+		t.Fatalf("status %q", state.status)
+	}
+	if state.history.clear != nil {
+		t.Fatal("the clear was not released")
+	}
+	if state.history.ghost != nil {
+		t.Fatal("derived caches survived the clear")
+	}
+
+	// A failed clear reports the error and retires unproven snapshots.
+	state.history.ghost = map[string][]cmdhistory.Entry{"host": {{Command: "git status"}}}
+	failed := &historyClearJob{done: make(chan struct{}), err: io.ErrClosedPipe}
+	state.history.clear = failed
+	close(failed.done)
+	state.adoptHistoryClear()
+	if state.history.clear != nil || state.history.ghost != nil {
+		t.Fatal("a failed clear was treated as success")
+	}
+	if !strings.Contains(state.status, "closed pipe") {
+		t.Fatalf("status %q does not report the failure", state.status)
 	}
 }

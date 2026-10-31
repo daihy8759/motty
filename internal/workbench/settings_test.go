@@ -229,6 +229,10 @@ func TestSettingsChoicesHaveRovingKeyboardFocus(t *testing.T) {
 
 func TestSettingsWorkspacePaintDoesNotAllocateOnceWarm(t *testing.T) {
 	state := newTestState(t, testOptions(t))
+	// Opening Terminal settings normally discovers Windows shells and starts a
+	// WSL listing goroutine. Those system-specific allocations are unrelated to
+	// painting and can land during another category's measurement.
+	state.localShellMenu.loaded = true
 	state.Click(hitSettings)
 	var canvas ui.Canvas
 	size := ui.Size{Width: 1400, Height: 900}

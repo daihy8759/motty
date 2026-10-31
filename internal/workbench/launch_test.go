@@ -416,3 +416,73 @@ func TestAMissingReleaseIsSaidPlainlyNotAsAFailure(t *testing.T) {
 		t.Fatalf("text %q, available %v", state.update.text, state.update.available)
 	}
 }
+
+func TestASecondStartWithNothingToOpenBringsTheWindowForward(t *testing.T) {
+	state, world, raised := launchState(t)
+	state.Launch(nil)
+	state.Wake()
+	if *raised != 1 || len(world.configs) != 0 {
+		t.Fatalf("raised %d times, dialed %d", *raised, len(world.configs))
+	}
+}
+
+func TestAStartAtLoginDoesNotBringTheWindowForward(t *testing.T) {
+	state, _, raised := launchState(t)
+	state.Launch([]string{"--background"})
+	state.Wake()
+	if *raised != 0 {
+		t.Fatalf("the window was raised %d times", *raised)
+	}
+}
+
+func TestThePreviousRunsCrashIsToldOnceAtStart(t *testing.T) {
+	_, options := newWorld(t)
+	options.Invalidate = func() {}
+	options.PreviousCrash = "/data/logs/crash-20261029-061442.log"
+	state := newTestState(t, options)
+	if state.modal != modalStateNotice {
+		t.Fatalf("modal = %d, want the notice", state.modal)
+	}
+	state.buildStateNotice()
+	if !strings.Contains(state.stateNotice.body, "crash-20261029-061442.log") {
+		t.Fatalf("the notice does not name the report: %q", state.stateNotice.body)
+	}
+	if report := state.diagnosticReport(); !strings.Contains(report, "== Previous crash ==") {
+		t.Fatalf("the diagnostics report leaves the crash out:\n%s", report)
+	}
+}
+
+func TestWhatClosingDoesIsChosenInSettingsAndSurvivesARestart(t *testing.T) {
+	options := freshOptions(t)
+	options.StatusArea = func() bool { return true }
+	first := newTestState(t, options)
+	if !first.StaysInTray() {
+		t.Fatal("closing quits by default; it has always stayed in the tray")
+	}
+	openGeneralSettings(first)
+	_, texts := paintedTexts(first)
+	if !contains(texts, first.messages.Tools.GeneralClose) {
+		t.Fatalf("no close row: %q", texts)
+	}
+	first.Click(hitSettingsCloseQuit)
+	if first.StaysInTray() {
+		t.Fatal("choosing Quit still stays in the tray")
+	}
+	second := newTestState(t, options)
+	if second.StaysInTray() {
+		t.Fatal("the choice was forgotten by a restart")
+	}
+	second.Click(hitSettingsCloseTray)
+	if !second.StaysInTray() {
+		t.Fatal("choosing the tray again did not stick")
+	}
+}
+
+func TestWithoutAStatusAreaThereIsNothingToChooseAboutClosing(t *testing.T) {
+	state := newTestState(t, testOptions(t))
+	openGeneralSettings(state)
+	_, texts := paintedTexts(state)
+	if contains(texts, state.messages.Tools.GeneralClose) {
+		t.Fatal("a close row on a desktop with no status area")
+	}
+}

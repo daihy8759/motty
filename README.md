@@ -82,8 +82,9 @@ default.
 Hosts can be grouped, tagged, searched and imported from OpenSSH config, PuTTY,
 Xshell, MobaXterm, WindTerm or Electerm. TOTP/HOTP seeds can be stored in the
 vault and filled automatically. Saved passwords and key passphrases go into an
-AES-256-GCM vault; the vault key lives in the system secret store or behind an
-Argon2id master password.
+AES-256-GCM vault, kept under the host they belong to; the vault key lives in the
+system secret store, or in a key file beside the vault where there is none (and
+in a portable copy).
 
 <p align="center">
   <a href="assets/readme-hosts.webp"><img src="assets/readme-hosts.webp" width="720" alt="Host list with tags and a remote-desktop host" /></a>
@@ -182,8 +183,12 @@ all of them are configurable.
 
 On Windows, choose the local shell from the dropdown in **Settings → Terminal
 → Local shell**, below **Inline suggestions**. Motty detects installed shells
-such as PowerShell, CMD and Git Bash from PATH and common installation folders.
-The choice stays on this computer and applies to new or reconnected local terminals.
+such as PowerShell, CMD and Git Bash from PATH and common installation folders,
+and lists each installed WSL distribution as its own entry. The file panel
+follows a WSL terminal's folder too, through the distribution's `\\wsl.localhost`
+share. Choose the distribution here, rather than typing `wsl` into PowerShell:
+only a shell Motty starts itself can report its folder. The choice stays on this
+computer and applies to new or reconnected local terminals.
 
 | Action | macOS | Windows / Linux |
 | --- | --- | --- |
@@ -207,6 +212,25 @@ Download the package for your platform from the
 macOS builds are signed and notarized when the release has the credentials.
 Windows builds are signed when a certificate is configured. Linux packages are
 not signed. Homebrew, AUR and `.AppImage` are not available yet.
+
+### If Motty closes unexpectedly
+
+Motty keeps a log and, after an abnormal exit, a crash report in the `logs`
+folder of its data directory: `%APPDATA%\motty\logs` on Windows,
+`~/Library/Application Support/motty/logs` on macOS, `~/.config/motty/logs` on
+Linux (`motty-data\logs` beside the program in a portable copy). Attach
+`motty.log` and the newest `crash-*.log` to a bug report. When the program
+cannot start at all, it says why in a message box and writes the reason to the
+log.
+
+If the program disappears and `crash.log` stays empty, the process was ended by
+a native fault (a graphics driver, for instance) before Go could write
+anything. On Windows 11 22H2 or later Motty then asks Windows Error Reporting for
+a dump in `%LOCALAPPDATA%\Motty\CrashDumps`; the Application Error event in
+Event Viewer (Windows Logs → Application) names the faulting module. To tell
+the usual suspects apart, start Motty with `VIVA_SOFTWARE_RENDERING=1` (no
+graphics driver) or `VIVA_ACCESSIBILITY=0` (no UI Automation tree) set. A dump
+is a copy of the program's memory: look before you share it.
 
 ## 🛠 Build from source
 
@@ -254,10 +278,13 @@ Build and launch one development binary with:
 make run
 ```
 
-The binary is built with `-tags dev`, so its window, in-app title and tray say
-`Motty Dev`. Use `make dev` to rebuild and restart when a Go file in this
-repository or `../viva` changes; watch mode needs `fswatch`. One-shot mode does
-not. `tools/dev.sh --once` is the same entry point as `make run`.
+The binary is built with `-tags dev`, so its window and tray say `Motty Dev`
+and its Dock icon carries a red `DEV` badge. The logo and wordmark inside the
+window are the release ones, so the interface itself looks like what ships and
+the running copy is still told apart at a glance. Use `make dev` to rebuild and
+restart when a Go file in this repository or `../viva` changes; watch mode needs
+`fswatch`. One-shot mode does not. `tools/dev.sh --once` is the same entry
+point as `make run`.
 
 The development entry shares the default data directory, hosts, settings, AI
 configuration and vault with the release build. Only the development workspace
@@ -293,7 +320,8 @@ files only; it does not automatically isolate entries in the system Keychain.
 
 - Host-key verification happens before any credential is sent.
 - Saved passwords and passphrases are stored in an AES-256-GCM vault; its key is
-  in the system secret store or wrapped by an Argon2id master password.
+  in the system secret store, or in a key file in the data folder where the system
+  has none: anyone who can copy that folder can read the vault.
 - AI provider keys are in the vault. Terminal context is redacted by default, and
   agent commands pass through the approval gate.
 - The MCP server is off by default, loopback-only and bearer-token protected.

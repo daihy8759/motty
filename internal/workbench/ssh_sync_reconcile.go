@@ -10,7 +10,6 @@ import (
 
 	"motty/internal/i18n"
 	"motty/internal/sshconfig"
-	"motty/internal/vault"
 )
 
 // The sync is made in two passes so that a failure leaves nothing half done. The
@@ -788,7 +787,6 @@ func (r *sshReconciler) applyPull(pull sshHostPull) {
 		r.warn(r.m.WarnEndpointFmt, link.Alias)
 		return
 	}
-	state.carryHostPassword(previous, updated)
 	state.replaceHost(index, previous, updated)
 	link.Base.Address, link.Base.User, link.Base.Port = updated.Address, updated.User, port22(updated.Port)
 	r.out.changedHere++
@@ -972,31 +970,4 @@ func (state *State) setProxyChain(target uint32, chain []uint32) bool {
 	}
 	state.refreshProxies()
 	return true
-}
-
-// carryHostPassword keeps a saved password with a host whose address, user or
-// port changed, as editing the host does, when the vault is open and the new
-// place has no password of its own. A locked vault is never opened for it.
-func (state *State) carryHostPassword(previous, updated Host) {
-	store := state.secrets.vault
-	if store == nil || store.Len() == 0 || !store.Unlocked() {
-		return
-	}
-	from, hadName := state.hostPasswordSecretName(previous)
-	to, hasName := state.hostPasswordSecretName(updated)
-	if !hadName || !hasName || from == to {
-		return
-	}
-	value, found, err := store.Get(from)
-	if err != nil || !found {
-		return
-	}
-	if _, taken, err := store.Get(to); err != nil || taken {
-		return
-	}
-	changes := []vault.Change{{Name: to, Value: value}}
-	if !state.hostPasswordInUse(from, &previous) {
-		changes = append(changes, vault.Change{Name: from, Delete: true})
-	}
-	_ = store.Apply(changes)
 }

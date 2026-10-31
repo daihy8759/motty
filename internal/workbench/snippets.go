@@ -39,6 +39,7 @@ var snippetsHits = tree.Feature("snippets")
 var (
 	hitSnippetAdd         = tree.ID(snippetsHits, "snippet-add")
 	hitSnippetEdit        = tree.ID(snippetsHits, "snippet-edit")
+	hitSnippetSend        = tree.ID(snippetsHits, "snippet-send")
 	hitSnippetRemove      = tree.ID(snippetsHits, "snippet-remove")
 	hitSnippetName        = tree.ID(snippetsHits, "snippet-name")
 	hitSnippetCommand     = tree.ID(snippetsHits, "snippet-command")
@@ -54,6 +55,7 @@ var (
 var (
 	hitSnippetRowList  = tree.Sub(snippetsHits, tree.Name("snippet-row"))  // + snippet index
 	hitSnippetSendList = tree.Sub(snippetsHits, tree.Name("snippet-send")) // the command palette's entries
+	hitSnippetPickList = tree.Sub(snippetsHits, tree.Name("snippet-pick")) // + session ID: the terminals to send to
 )
 
 type snippetsUI struct {
@@ -72,6 +74,8 @@ type snippetsUI struct {
 	selected  int
 	layout    flex.View
 	countText string
+	// sendAt is where the menu of terminals opens from the Send button.
+	sendAt ui.Point
 }
 
 // cleanSnippetText makes one line of what was typed: a snippet is sent as
@@ -235,27 +239,82 @@ func (state *State) deleteSnippet(index int) {
 
 // sendSnippet types a snippet into the active terminal, and into the other panes
 // of its tab while the tab is broadcasting.
-func (state *State) sendSnippet(index int) {
-	m := state.messages.Tools
-	if index < 0 || index >= len(state.snippets.list) {
-		return
-	}
-	entry := state.snippets.list[index]
+func (state *State) sendSnippet(index int) bool {
 	session, ok := state.sessionByIDPointer(state.activeSessionID)
 	if !ok || session.term == nil {
-		state.status = m.StatusSnippetNoTerminal
-		return
+		state.showActionWarning(state.messages.Tools.SnippetsTitle, state.messages.Tools.StatusSnippetNoTerminal)
+		return false
 	}
+	return state.sendSnippetTo(index, session)
+}
+
+// sendSnippetTo types a snippet into session, and into the other panes of its tab
+// while the tab is broadcasting.
+func (state *State) sendSnippetTo(index int, session *Session) bool {
+	m := state.messages.Tools
+	if index < 0 || index >= len(state.snippets.list) {
+		return false
+	}
+	entry := state.snippets.list[index]
 	input := make([]byte, 0, len(entry.Command)+1)
 	input = append(input, entry.Command...)
 	if entry.Run {
 		input = append(input, '\r')
 	}
 	if !state.typed(session, input) {
-		state.status = m.StatusSnippetNotConnected
+		state.showActionWarning(m.SnippetsTitle, m.StatusSnippetNotConnected)
+		return false
+	}
+	state.status = fmt.Sprintf(m.StatusSnippetSentFmt, entry.Name, session.Title)
+	return true
+}
+
+// sendSnippetFromPage sends a snippet picked on the Snippets page. The page has
+// no terminal of its own, so with one terminal open that is the target; with
+// several, the menu of terminals opens at `at` and the user says which. The
+// terminal it went to is shown; when nothing can be sent the page stays, with the
+// reason in a global notice.
+func (state *State) sendSnippetFromPage(index int, at ui.Point) {
+	if index < 0 || index >= len(state.snippets.list) {
 		return
 	}
-	state.status = fmt.Sprintf(m.StatusSnippetSentFmt, entry.Name)
+	var only *Session
+	terminals := 0
+	for i := range state.sessions {
+		if state.sessions[i].term != nil {
+			only = &state.sessions[i]
+			terminals++
+		}
+	}
+	switch {
+	case terminals == 0:
+		state.showActionWarning(state.messages.Tools.SnippetsTitle, state.messages.Tools.StatusSnippetNoTerminal)
+	case terminals == 1:
+		state.sendSnippetPicked(index, only)
+	default:
+		state.snippetMenu = snippetMenu{open: true, pick: true, index: index, at: at}
+	}
+}
+
+// sendSnippetPicked sends to session and shows its terminal.
+func (state *State) sendSnippetPicked(index int, session *Session) {
+	if state.sendSnippetTo(index, session) {
+		state.ActivatePane(session.ID)
+		state.activeSection = sectionTerminal
+	}
+}
+
+// sendSnippetOn is called while painting a snippet row: when this paint is the
+// event pass of a double click on it, the snippet is sent. Consuming the press
+// keeps its release from clicking whatever the terminal put under the pointer.
+func (state *State) sendSnippetOn(canvas *ui.Canvas, id ui.ID, index int) {
+	event, ok := canvas.PointerOn(id)
+	if !ok || event.Kind != ui.PointerDown || event.Button != ui.PointerButtonPrimary || event.ClickCount != 2 || state.modal != modalNone || state.activeSection != sectionSnippets {
+		return
+	}
+	state.snippets.selected = index
+	state.sendSnippetFromPage(index, ui.Point{X: event.X, Y: event.Y})
+	canvas.Consume()
 }
 
 func (state *State) paintSnippetDialog(canvas *ui.Canvas, viewport ui.Rect) {

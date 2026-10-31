@@ -64,6 +64,29 @@ jobs:
         working-directory: motty
         run: go test -tags dev ./cmd/motty ./internal/workbench -count=1
 
+  # The Windows tests build only on Windows, so the Linux jobs above never
+  # compile them. This job keeps the package and its Windows command/parser
+  # tests building; -short skips the real CIM query, which needs a live host.
+  windows-remote-tools:
+    name: Remote tools (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: motty
+      - uses: actions/checkout@v7
+        with:
+          repository: vivaui/viva
+          path: viva
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: motty/go.mod
+          cache-dependency-path: motty/go.sum
+      - name: Test remote tools platform handling
+        working-directory: motty
+        run: go test -short -run 'Test(Windows|Darwin|Docker)' ./internal/remotetools -count=1
+
   # The race detector is the long pole: it runs one package at a time, and it
   # multiplies the memory the tests hold. CI therefore spreads the package list
   # over four jobs (`make race` still runs the whole list for the merge gate),

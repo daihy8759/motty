@@ -239,7 +239,7 @@ func LooksLikeQuestion(question string) bool {
 	lower := strings.ToLower(question)
 	for _, word := range []string{
 		"verification", "one-time", "one time", "otp", "authenticator", "passcode", "token", "2fa", "mfa",
-		"two-factor", "two factor", "code", "验证码", "动态", "口令", "令牌", "校验",
+		"two-factor", "two factor", "code", "验证码", "动态", "动态口令", "一次性口令", "令牌", "校验",
 	} {
 		if strings.Contains(lower, word) {
 			return true

@@ -106,8 +106,62 @@ func passwordServer(t *testing.T, shell func(*fakeShell)) *testServer {
 	})
 }
 
+// A restricted gateway ends the connection when it is asked for a second
+// channel, so neither the system probe nor the shell-integration probe may
+// run on one.
+func TestARestrictedGatewayIsAskedForNoChannelBeyondItsShell(t *testing.T) {
+	for _, banner := range []string{"SSH-2.0-BHostSSH_7.0", "SSH-2.0-SSHD_0.7.6"} {
+		t.Run(banner, func(t *testing.T) {
+			server := startServer(t, func(server *testServer) {
+				server.password = "secret"
+				server.version = banner
+				server.oneChannel = true
+				server.shell = echoShell
+			})
+			h := connect(t, server)
+			w := openShellWith(t, h, ShellConfig{Cols: 80, Rows: 24, IntegrateShell: true, IntegrationToken: "integration"})
+			w.until("the greeting", func(output string) bool { return strings.Contains(output, "welcome\r\n$ ") })
+			if system := h.conn.Status().System; system != SystemUnknown {
+				t.Fatalf("the gateway was probed for its system anyway: %v", system)
+			}
+			if !w.shell.Write([]byte("exit\r")) {
+				t.Fatal("writing to the shell failed")
+			}
+			w.waitDone()
+		})
+	}
+}
+
+// A gateway with a menu of its own may end the connection on an env request it
+// does not implement, before the shell starts. An unrecognized banner must be
+// sent only the pty and shell requests that Xshell and ssh send.
+func TestAGatewayThatRejectsLocaleRequestsStillStartsAShell(t *testing.T) {
+	server := startServer(t, func(server *testServer) {
+		server.password = "secret"
+		server.version = "SSH-2.0-Erlang"
+		server.envFatal = true
+		server.shell = echoShell
+	})
+	h := connect(t, server)
+	w := openShellWith(t, h, ShellConfig{Cols: 80, Rows: 24, IntegrateShell: true, IntegrationToken: "integration"})
+	w.until("the greeting", func(output string) bool { return strings.Contains(output, "welcome\r\n$ ") })
+	_, _, _, env, _ := fakeShellState(server)
+	if locale, ok := env["LANG"]; ok {
+		t.Fatalf("the gateway was sent LANG=%q", locale)
+	}
+	if !w.shell.Write([]byte("exit\r")) {
+		t.Fatal("writing to the shell failed")
+	}
+	w.waitDone()
+}
+
 func TestShellRunsOnAPtyAndCarriesDataBothWays(t *testing.T) {
-	server := passwordServer(t, echoShell)
+	server := startServer(t, func(server *testServer) {
+		server.password = "secret"
+		// A Windows banner keeps the system probe away from this test.
+		server.version = "SSH-2.0-OpenSSH_for_Windows_9.5"
+		server.shell = echoShell
+	})
 	h := connect(t, server)
 	w := openShell(t, h, 80, 24)
 
@@ -152,7 +206,11 @@ func TestShellRunsOnAPtyAndCarriesDataBothWays(t *testing.T) {
 func TestCommandShellUsesItsOwnPTYAndCarriesInteractiveInput(t *testing.T) {
 	const command = "docker exec -it 0f1e2d3c4b5a /bin/sh"
 	seen := make(chan string, 1)
-	server := passwordServer(t, nil)
+	server := startServer(t, func(server *testServer) {
+		server.password = "secret"
+		// A Windows banner keeps the system probe away from this test.
+		server.version = "SSH-2.0-OpenSSH_for_Windows_9.5"
+	})
 	server.command = func(got string, channel ssh.Channel) {
 		seen <- got
 		_, _ = channel.Write([]byte("inside$ "))

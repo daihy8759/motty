@@ -19,6 +19,8 @@ type hostCatalogDocument struct {
 	Groups  []savedHostGroup `json:"groups,omitempty"`
 }
 
+var errHostCatalogTooNew = errors.New("unsupported catalog version")
+
 func (state *State) exportHostCatalog() {
 	hosts := state.exportedHosts()
 	if len(hosts) == 0 {
@@ -34,7 +36,7 @@ func (state *State) exportHostCatalog() {
 		return
 	}
 	if err != nil {
-		state.status = fmt.Sprintf(state.messages.HostCatalogExportFailedFmt, err)
+		state.showActionFailure(state.messages.ExportHosts, err, state.messages.ActionFeedback.FilePickerFailed)
 		return
 	}
 	document := hostCatalogDocument{
@@ -55,7 +57,7 @@ func (state *State) exportHostCatalog() {
 		err = writePrivateAtomic(path, data)
 	}
 	if err != nil {
-		state.status = fmt.Sprintf(state.messages.HostCatalogExportFailedFmt, err)
+		state.showFileSaveFailure(state.messages.ExportHosts, err)
 		return
 	}
 	state.status = fmt.Sprintf(state.messages.HostCatalogExportedFmt, len(document.Hosts), path)
@@ -101,12 +103,16 @@ func (state *State) importHostCatalog() {
 		return
 	}
 	if err != nil {
-		state.status = fmt.Sprintf(state.messages.HostCatalogImportFailedFmt, err)
+		state.showActionFailure(state.messages.HostCatalogPickerTitle, err, state.messages.ActionFeedback.FilePickerFailed)
 		return
 	}
 	document, err := readHostCatalog(paths[0])
 	if err != nil {
-		state.status = fmt.Sprintf(state.messages.HostCatalogImportFailedFmt, err)
+		detail := state.messages.ActionFeedback.ImportHostCatalogFailed
+		if errors.Is(err, errHostCatalogTooNew) {
+			detail = state.messages.ActionFeedback.ImportUpdateRequired
+		}
+		state.showFileReadFailure(state.messages.HostCatalogPickerTitle, err, detail)
 		return
 	}
 	added, duplicates := state.applyHostCatalog(document)
@@ -128,7 +134,10 @@ func readHostCatalog(path string) (hostCatalogDocument, error) {
 	if document.Format != hostCatalogFormat {
 		return hostCatalogDocument{}, fmt.Errorf("unsupported format %q", document.Format)
 	}
-	if document.Version < 1 || document.Version > hostCatalogSchemaVersion {
+	if document.Version > hostCatalogSchemaVersion {
+		return hostCatalogDocument{}, fmt.Errorf("%w %d", errHostCatalogTooNew, document.Version)
+	}
+	if document.Version < 1 {
 		return hostCatalogDocument{}, fmt.Errorf("unsupported catalog version %d", document.Version)
 	}
 	return document, nil

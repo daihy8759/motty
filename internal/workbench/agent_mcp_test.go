@@ -25,7 +25,6 @@ import (
 	"motty/internal/ai/store"
 	"motty/internal/ai/tools"
 	"motty/internal/configstore"
-	"motty/internal/sshconn"
 	"motty/internal/vault"
 )
 
@@ -252,7 +251,6 @@ func newAgentWorld(t *testing.T) *agentWorld {
 		Idle:           time.Minute,
 	}
 	world.trust(server.hostKey)
-	world.savePassword("pw")
 	host := Host{
 		ID: 1, CatalogID: "host_web", Label: "web", Address: "127.0.0.1", Port: server.port, User: "ops",
 		Protocol: protocolSSH, Auth: authPassword,
@@ -261,6 +259,7 @@ func newAgentWorld(t *testing.T) *agentWorld {
 		hosts: []Host{host}, systemUser: "tester", connectionTimeout: 5 * time.Second,
 		agentHosts: map[string]bool{"host_web": true},
 	}
+	world.savePassword("pw")
 	return world
 }
 
@@ -279,8 +278,11 @@ func (world *agentWorld) savePassword(password string) {
 	if err != nil {
 		world.t.Fatal(err)
 	}
-	endpoint := sshconn.Endpoint{Host: "127.0.0.1", Port: world.server.port, User: "ops"}
-	if err := saved.Set(passwordSecretName(endpoint), password); err != nil {
+	host, ok := world.catalog.hostByConnection("127.0.0.1", "ops", world.server.port)
+	if !ok {
+		world.t.Fatal("the agent test has no host for its server")
+	}
+	if err := saved.Set(hostSecretName(host.CatalogID, hostPasswordPart), password); err != nil {
 		world.t.Fatal(err)
 	}
 }
@@ -407,11 +409,11 @@ func TestAgentSaysWhatToDoWhenThePasswordCannotBeUsed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := saved.SetMasterPassword("a long master password"); err != nil {
+		if err := saved.LegacyForTests("a long master password"); err != nil {
 			t.Fatal(err)
 		}
 		_, err = world.backend().Exec(context.Background(), tools.TerminalExecArgs{Command: "echo hello"})
-		if err == nil || !strings.Contains(err.Error(), "locked by a master password") {
+		if err == nil || !strings.Contains(err.Error(), "locked by the master password of an earlier version") {
 			t.Fatalf("got %v", err)
 		}
 	})

@@ -10,12 +10,23 @@ can be changed in settings.
   rows={[
     { action: 'Command palette', mac: 'Command+Shift+P', other: 'Control+Shift+P' },
     { action: 'Find in terminal', mac: 'Command+F', other: 'Control+F' },
+    { action: 'Clear screen', mac: 'Command+K', other: 'Control+K' },
     { action: 'Command history', mac: 'Command+Shift+H', other: 'Control+Shift+H' },
+    { action: 'Command completions', mac: 'Command+Shift+J', other: 'Control+Shift+J' },
     { action: 'File panel', mac: 'Command+Shift+S', other: 'Control+Shift+S' },
     { action: 'New window', mac: 'Command+Shift+N', other: 'Control+Shift+N' },
     { action: 'Open local terminal', mac: 'Command+Shift+T', other: 'Control+Shift+T' },
+    { action: 'Next tab', mac: 'Control+Tab', other: 'Control+Tab' },
+    { action: 'Previous tab', mac: 'Control+Shift+Tab', other: 'Control+Shift+Tab' },
   ]}
 />
+
+Tab switching wraps around at either end and repeats while the keys are held. Besides
+letters and digits, a shortcut can be bound to Tab, Page Up, Page Down, Left or Right.
+On macOS, Command+1 to Command+9 also jump straight to the first through ninth tab.
+
+Clearing the screen also drops the scrollback above it, but the line the cursor
+is on stays, so a command being typed is not lost.
 
 Inside a remote-desktop tab Motty's shortcuts are suspended and keys go to the
 remote. **Ctrl+Alt+G** releases the keyboard.

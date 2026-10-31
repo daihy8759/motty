@@ -1,5 +1,5 @@
 import type { MetadataRoute } from 'next';
-import { changelog } from '@/lib/changelog';
+import { loadReleases } from '@/lib/releases';
 import { docsDates, lastCommitDate } from '@/lib/dates';
 import { docsPath, source } from '@/lib/source';
 import { absolute, hreflang, localePath, locales, type Locale } from '@/lib/seo';
@@ -11,7 +11,7 @@ export const dynamic = 'force-static';
  * languages as `xhtml:link` alternates. The root `/` is absent on purpose: it
  * answers 301 to /zh and a redirect is not a page to index.
  */
-export default function sitemap(): MetadataRoute.Sitemap {
+export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const languages = (path: string, slugs?: string[]): Record<string, string> => {
     const map: Record<string, string> = {};
     for (const lang of locales) {
@@ -24,7 +24,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const entries: MetadataRoute.Sitemap = [];
   // The marketing pages change with a release; a docs page changes with its own
   // commit, which is what `<lastmod>` is supposed to answer.
-  const release = changelog[0].date;
+  const release = (await loadReleases())[0]?.date;
 
   for (const lang of locales as readonly Locale[]) {
     entries.push({

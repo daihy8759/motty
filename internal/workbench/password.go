@@ -31,16 +31,24 @@ func (state *State) preparePassword(session *Session) {
 	state.passwordBoxes = make([]flex.Box, len(questions))
 	state.passwordError = ""
 	state.offerToSave()
-	if passwordQuestionIndex(questions) < 0 {
+	passwordIndex := passwordQuestionIndex(questions)
+	if passwordIndex < 0 {
 		// Nothing here is the account password, so there is nothing worth
 		// saving under the password's name.
 		state.secrets.canSave = false
 	}
-	if session.attempt > 1 {
+	switch {
+	case session.attempt > 1 && passwordIndex >= 0 && otpQuestionIndex(questions) < 0:
+		// Only a round that asks for the password alone can blame it. A round
+		// that still carries a one-time code may have refused either factor.
 		state.passwordError = state.messages.PasswordRetry
-		if state.forgetRefusedSecret(session, passwordSecretName(session.endpoint)) {
+		if state.forgetRefusedSecret(session, state.passwordName(session)) {
 			state.passwordError = state.messages.PasswordSavedRefused
 		}
+	case session.attempt > 1 && passwordIndex >= 0:
+		// A round that only asks for a later factor keeps the dialog quiet: the
+		// server moved on, and the password was not what it refused.
+		state.passwordError = state.messages.PasswordRetryFactor
 	}
 	state.passwordDescription = passwordDialogAddress(state, session)
 	state.prefillPasswordAnswers(session)
@@ -92,16 +100,16 @@ func (state *State) prefillPasswordAnswers(session *Session) {
 		return
 	}
 	vaultFile := state.secrets.vault
-	if vaultFile == nil || vaultFile.Len() == 0 || !vaultFile.Unlocked() {
+	if vaultFile == nil || vaultFile.Len() == 0 || vaultFile.NeedsConversion() {
 		return
 	}
 	if index := passwordQuestionIndex(state.passwordQuestions); index >= 0 {
-		if value, found, err := vaultFile.Get(passwordSecretName(session.endpoint)); err == nil && found {
+		if value, found, err := vaultFile.Get(state.passwordName(session)); err == nil && found {
 			state.passwordFields[index].Insert(value)
 		}
 	}
 	if index := otpQuestionIndex(state.passwordQuestions); index >= 0 && !session.otpSent {
-		value, found, err := vaultFile.Get(otpSecretName(session.endpoint))
+		value, found, err := vaultFile.Get(state.otpSecretName(session))
 		if err != nil || !found {
 			return
 		}
@@ -128,7 +136,7 @@ func (state *State) submitPassword() {
 	}
 	session.conn.SubmitAnswers(answers)
 	if index := passwordQuestionIndex(state.passwordQuestions); index >= 0 && index < len(answers) {
-		state.stageSecret(session, passwordSecretName(session.endpoint), answers[index])
+		state.stageSecret(session, state.passwordName(session), answers[index])
 	}
 	if otpQuestionIndex(state.passwordQuestions) >= 0 {
 		// A refused code is the user's to retype, not one to refill.

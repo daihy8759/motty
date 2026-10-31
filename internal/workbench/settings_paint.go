@@ -241,6 +241,14 @@ func (state *State) paintGeneralSettings(page *settingsPage) {
 			if state.options.StartAtLogin != nil {
 				state.paintLoginSetting(page)
 			}
+			if state.closeActionVisible() {
+				options := state.settingsCloseOptions()
+				selected := hitSettingsCloseTray
+				if state.closeAction == closeQuits {
+					selected = hitSettingsCloseQuit
+				}
+				page.row(messages.Tools.GeneralClose, messages.Tools.GeneralCloseDescription, options[:], selected)
+			}
 			state.paintToolbarSettingsRows(page)
 		})
 		state.paintUpdateSettings(page)
@@ -281,6 +289,16 @@ func (state *State) paintTerminalSettings(page *settingsPage) {
 		selectedClipboard = hitSettingsClipboardAsk
 	}
 	page.groups(func() {
+		page.group(messages.Completion.Group, func() {
+			status, _ := state.completionCatalogStatus()
+			page.actionRow(messages.Completion.CatalogRow, status, false,
+				components.ButtonAction{ID: hitCompletionUpdate, Label: messages.Completion.Check, Variant: components.ButtonOutline})
+			completionOptions := state.settingsCompletionOptions()
+			page.row(messages.History.SuggestRow, messages.History.SuggestDescription, completionOptions[:], state.selectedCompletionOption())
+			page.toggleRow(messages.History.SettingsRow, messages.History.SettingsDescription, state.history.on, hitSettingsHistoryToggle)
+			page.actionRow(messages.History.ClearRow, messages.History.ClearDescription, false,
+				components.ButtonAction{ID: hitSettingsHistoryClear, Label: messages.History.Clear, Variant: components.ButtonOutline})
+		})
 		page.group("", func() {
 			page.row(messages.SettingsTerminalOption, messages.SettingsTerminalOptionDescription, option[:], selectedOption)
 			page.actionRow(messages.SettingsTerminalFontSize, messages.SettingsTerminalFontSizeDescription, false,
@@ -289,18 +307,21 @@ func (state *State) paintTerminalSettings(page *settingsPage) {
 				components.ButtonAction{ID: hitSettingsFontSizeUp, Label: "+", Variant: components.ButtonOutline})
 			page.actionRow(messages.SettingsTerminalFontFamily, state.fontDescription(), false,
 				components.ButtonAction{ID: hitSettingsFontPick, Label: state.messages.Tools.FontChoose, Variant: components.ButtonOutline})
+			page.actionRow(state.messages.Tools.FontFallbackRow, state.fallbackDescription(), false, state.fallbackActions()...)
 			page.row(state.messages.Tools.PaddingRow, "", padding[:], selectedPadding)
 			page.row(state.messages.Tools.GutterRow, state.messages.Tools.GutterDescription, gutter[:], selectedGutter)
 			page.toggleRow(state.messages.Tools.CursorRow, state.messages.Tools.CursorDescription, !state.terminalCursorSteady, hitSettingsCursorToggle)
 			page.row(messages.SettingsTerminalScrollback, messages.SettingsTerminalScrollbackDescription, scrollback[:], selectedScrollback)
 			page.row(messages.SettingsTerminalClipboard, messages.SettingsTerminalClipboardDescription, clipboard[:], selectedClipboard)
+			page.toggleRow(state.messages.Tools.CopyOnSelectRow, state.messages.Tools.CopyOnSelectDescription, state.terminalCopyOnSelect, hitSettingsCopyOnSelect)
+			page.toggleRow(state.messages.Tools.RightClickPasteRow, state.messages.Tools.RightClickPasteDescription, state.terminalRightClickPaste, hitSettingsRightClickPaste)
+			page.toggleRow(state.messages.Tools.LinkPlainClickRow, state.messages.Tools.LinkPlainClickDescription, state.terminalLinkPlainClick, hitSettingsLinkPlainClick)
+			page.toggleRow(state.messages.Tools.BellRow, state.messages.Tools.BellDescription, !state.terminalBellOff, hitSettingsBellToggle)
+			page.toggleRow(state.messages.Tools.TabTitleRow, state.messages.Tools.TabTitleDescription, state.terminalTabTitle, hitSettingsTabTitle)
+			page.toggleRow(state.messages.Tools.LatencyRow, state.messages.Tools.LatencyDescription, state.terminalShowLatency, hitSettingsLatencyToggle)
 			page.toggleRow(state.messages.Tools.PasteImageRow, state.messages.Tools.PasteImageDescription, !state.pasteImageOff, hitSettingsPasteImageToggle)
 			page.toggleRow(state.messages.Tools.NotifyRow, state.messages.Tools.NotifyDescription, !state.notifyOff, hitSettingsNotifyToggle)
-			page.toggleRow(state.messages.History.SettingsRow, state.messages.History.SettingsDescription, state.history.on, hitSettingsHistoryToggle)
-			page.toggleRow(state.messages.History.SuggestRow, state.messages.History.SuggestDescription, !state.history.suggestOff, hitSettingsSuggestToggle)
 			state.paintLocalShellSetting(page)
-			page.actionRow(state.messages.History.ClearRow, state.messages.History.ClearDescription, false,
-				components.ButtonAction{ID: hitSettingsHistoryClear, Label: state.messages.History.Clear, Variant: components.ButtonOutline})
 		})
 		state.paintSchemeSettings(page)
 		state.paintHighlightSettings(page)

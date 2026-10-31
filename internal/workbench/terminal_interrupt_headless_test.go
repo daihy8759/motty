@@ -56,8 +56,8 @@ func TestTerminalInterruptPassesTheCopyShortcut(t *testing.T) {
 			}
 			// Copying selected terminal output must still stay local.
 			state.sessions[0].term.selection.selected = true
-			state.sessions[0].term.selection.anchor = term.Position{}
-			state.sessions[0].term.selection.focus = term.Position{Column: 1}
+			state.sessions[0].term.selection.anchor = state.sessions[0].term.screen.PointAt(term.Position{})
+			state.sessions[0].term.selection.focus = state.sessions[0].term.screen.PointAt(term.Position{Column: 1})
 			shell.input = nil
 			if err := session.Keys("ctrl+c"); err != nil {
 				t.Fatal(err)

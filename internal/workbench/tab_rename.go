@@ -23,7 +23,7 @@ func (state *State) openTabRename(workspace layoutcore.WorkspaceID) {
 		return
 	}
 	state.tabRename = tabRename{workspace: workspace}
-	state.tabRename.editor.Insert(state.workspaceTabs[index].Title)
+	state.tabRename.editor.Insert(state.tabLabel(state.workspaceTabs[index]))
 	state.tabRename.editor.SetSelection(text.Range{End: state.tabRename.editor.RuneCount()})
 	state.dialogError = ""
 	state.modal = modalRenameTab
@@ -43,6 +43,7 @@ func (state *State) clickTabRenameDialog(id ui.ID) {
 		state.modal = modalNone
 		state.dialogError = ""
 		if state.deck.Rename(state.tabRename.workspace, name) == nil {
+			_ = state.deck.SetNamed(state.tabRename.workspace, true)
 			panes := state.deck.Panes(state.tabRename.workspace, nil)
 			if len(panes) == 1 {
 				if session, ok := state.sessionByIDPointer(uint32(panes[0].SessionID)); ok {

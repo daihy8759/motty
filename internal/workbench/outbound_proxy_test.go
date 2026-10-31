@@ -119,10 +119,11 @@ func TestALockedVaultMakesAConnectionThroughTheProxyFailWithTheReason(t *testing
 	world, options := proxyWorld(t)
 	state := newTestState(t, options)
 	configureProxy(t, state, hitProxyKindSOCKS5, "p:1080", "me", "pw", "")
-	if err := state.secrets.vault.SetMasterPassword("a master password"); err != nil {
+	if err := state.secrets.vault.LegacyForTests("a master password"); err != nil {
 		t.Fatal(err)
 	}
-	state.secrets.vault.Lock()
+	state.secrets.declined = true
+	state.secrets.vault.DropKeyForTests()
 	state.Click(hitHosts)
 	openHost(state)
 	proxy := world.configs[len(world.configs)-1].Proxy
@@ -448,7 +449,7 @@ func TestRemovingAHostProxyLoginOpensTheDefaultVault(t *testing.T) {
 	if err := state.secrets.vault.Set(secret, "old-secret"); err != nil {
 		t.Fatal(err)
 	}
-	state.secrets.vault.Lock()
+	state.secrets.vault.DropKeyForTests()
 
 	state.openEditHostID(host.ID)
 	state.Click(hitHostProxyConfigure)
@@ -476,7 +477,7 @@ func TestDeletingAProxyHostOpensTheDefaultVault(t *testing.T) {
 	if err := state.secrets.vault.Set(secret, "old-secret"); err != nil {
 		t.Fatal(err)
 	}
-	state.secrets.vault.Lock()
+	state.secrets.vault.DropKeyForTests()
 	state.hostActionIDs = []uint32{host.ID}
 	state.confirmDeleteHosts()
 	if len(state.hosts) != len(sampleHosts)-1 || state.dialogError != "" {
@@ -646,45 +647,6 @@ func TestANewHostGetsAUniqueCatalogIDBeforeItsProxyPasswordIsSaved(t *testing.T)
 	}
 }
 
-func TestARejectedHostPasswordDoesNotPartiallySaveTheProxyPassword(t *testing.T) {
-	_, options := proxyWorld(t)
-	state := newTestState(t, options)
-	existing := addStreamHost(state, Host{Label: "Existing VNC", Address: "vnc.example.com", Protocol: protocolVNC})
-	passwordName, ok := state.hostPasswordSecretName(existing)
-	if !ok || state.secrets.vault.Set(passwordName, "existing-password") != nil {
-		t.Fatal("could not seed the existing VNC password")
-	}
-
-	state.Click(hitAddHost)
-	state.Click(hitDialogProtocolVNC)
-	typeInto(state, hitDialogLabel, "Conflicting VNC")
-	typeInto(state, hitDialogAddress, "vnc.example.com")
-	typeInto(state, hitDialogPassword, "different-password")
-	state.Click(hitDialogViaSSH) // distinct host endpoint, same VNC password key
-	state.Click(hitHostProxyConfigure)
-	state.Click(hitProxyKindSOCKS5)
-	typeInto(state, hitOutboundProxyAddress, "private.proxy:1080")
-	typeInto(state, hitOutboundProxyUser, "proxy-user")
-	typeInto(state, hitOutboundProxyPassword, "proxy-secret")
-	state.Click(hitOutboundProxySubmit)
-	state.Click(hitDialogSubmit)
-	if state.modal != modalNewHost || state.dialogError != state.messages.HostPasswordShared {
-		t.Fatalf("rejected save modal=%d error=%q", state.modal, state.dialogError)
-	}
-	names, err := state.secrets.vault.Names()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range names {
-		if strings.HasPrefix(name, hostProxyPasswordPrefix) {
-			t.Fatalf("rejected host save left proxy secret %q", name)
-		}
-	}
-	if state.editor.proxyPassword != "proxy-secret" {
-		t.Fatal("rejected host save cleared the proxy password draft")
-	}
-}
-
 func TestCopyingAHostCarriesItsDedicatedProxyPassword(t *testing.T) {
 	_, options := proxyWorld(t)
 	state := newTestState(t, options)
@@ -748,16 +710,17 @@ func TestDeletingAnAuthenticatedProxyHostWaitsForTheLockedVault(t *testing.T) {
 	if err := state.secrets.vault.Set(secretName, "proxy-secret"); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.secrets.vault.SetMasterPassword("a master password"); err != nil {
+	if err := state.secrets.vault.LegacyForTests("a master password"); err != nil {
 		t.Fatal(err)
 	}
-	state.secrets.vault.Lock()
+	state.secrets.declined = true
+	state.secrets.vault.DropKeyForTests()
 	state.hostActionIDs = []uint32{host.ID}
 	state.confirmDeleteHosts()
-	if len(state.hosts) != len(sampleHosts) || state.dialogError != state.messages.Tools.ProxyPasswordLocked {
+	if len(state.hosts) != len(sampleHosts) || state.dialogError != state.messages.VaultNeedsConversion {
 		t.Fatalf("locked delete hosts=%d error=%q", len(state.hosts), state.dialogError)
 	}
-	if err := state.secrets.vault.Unlock("a master password"); err != nil {
+	if err := state.secrets.vault.ConvertLegacy("a master password"); err != nil {
 		t.Fatal(err)
 	}
 	if got, found, err := state.secrets.vault.Get(secretName); err != nil || !found || got != "proxy-secret" {
@@ -774,10 +737,11 @@ func TestRemovingAHostProxyLoginWaitsForTheLockedVault(t *testing.T) {
 	if err := state.secrets.vault.Set(secretName, "old-secret"); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.secrets.vault.SetMasterPassword("a master password"); err != nil {
+	if err := state.secrets.vault.LegacyForTests("a master password"); err != nil {
 		t.Fatal(err)
 	}
-	state.secrets.vault.Lock()
+	state.secrets.declined = true
+	state.secrets.vault.DropKeyForTests()
 
 	state.openEditHostID(host.ID)
 	state.Click(hitHostProxyConfigure)
@@ -790,7 +754,7 @@ func TestRemovingAHostProxyLoginWaitsForTheLockedVault(t *testing.T) {
 	if state.hosts[0].Proxy == nil || state.hosts[0].Proxy.kind != sshconn.ProxySOCKS5 {
 		t.Fatalf("locked removal changed saved proxy to %+v", state.hosts[0].Proxy)
 	}
-	if err := state.secrets.vault.Unlock("a master password"); err != nil {
+	if err := state.secrets.vault.ConvertLegacy("a master password"); err != nil {
 		t.Fatal(err)
 	}
 	if got, found, err := state.secrets.vault.Get(secretName); err != nil || !found || got != "old-secret" {
@@ -810,10 +774,11 @@ func TestSwitchingANewHostToSerialIgnoresItsHiddenProxyDraft(t *testing.T) {
 	typeInto(state, hitOutboundProxyUser, "unused-user")
 	typeInto(state, hitOutboundProxyPassword, "unused-secret")
 	state.Click(hitOutboundProxySubmit)
-	if err := state.secrets.vault.SetMasterPassword("a master password"); err != nil {
+	if err := state.secrets.vault.LegacyForTests("a master password"); err != nil {
 		t.Fatal(err)
 	}
-	state.secrets.vault.Lock()
+	state.secrets.declined = true
+	state.secrets.vault.DropKeyForTests()
 
 	state.Click(hitDialogProtocolSerial)
 	state.Click(hitDialogSubmit)

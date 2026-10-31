@@ -180,12 +180,7 @@ func (state *State) paintUpdateDialog(canvas *ui.Canvas, viewport ui.Rect) {
 // nothing behind the dialog does.
 func (state *State) scrollUpdateNotes(event ui.ScrollEvent) ui.EventResult {
 	notes := &state.update.notes
-	step := event.DeltaY
-	if !event.Precise && step > 0 && step < updateNotesLine {
-		step = updateNotesLine
-	} else if !event.Precise && step < 0 && step > -updateNotesLine {
-		step = -updateNotesLine
-	}
+	step := event.StepY(updateNotesLine)
 	before := notes.scroll
 	notes.scroll = min(max(before+step, 0), notes.max)
 	return ui.EventResult{Handled: true, Repaint: notes.scroll != before}

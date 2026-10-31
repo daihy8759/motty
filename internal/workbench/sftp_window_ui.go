@@ -18,6 +18,7 @@ var (
 	sftpWindowRows               = [2]ui.Scope{tree.Sub(sftpWindowLocal, tree.Name("rows")), tree.Sub(sftpWindowRemote, tree.Name("rows"))}
 	sftpWindowFilter             = [2]ui.ID{tree.ID(sftpWindowLocal, "filter"), tree.ID(sftpWindowRemote, "filter")}
 	sftpWindowFilterClear        = [2]ui.ID{tree.ID(sftpWindowLocal, "filter-clear"), tree.ID(sftpWindowRemote, "filter-clear")}
+	hitSFTPWindowCoverage        = tree.ID(sftpWindowLocal, "coverage")
 	sftpWindowHeaderHidden       = [2]ui.ID{tree.ID(sftpWindowLocal, "header-hidden"), tree.ID(sftpWindowRemote, "header-hidden")}
 	sftpWindowHidden             = [2]ui.ID{tree.ID(sftpWindowLocal, "hidden"), tree.ID(sftpWindowRemote, "hidden")}
 	sftpWindowMore               = [2]ui.ID{tree.ID(sftpWindowLocal, "more"), tree.ID(sftpWindowRemote, "more")}
@@ -49,31 +50,29 @@ var (
 )
 
 type sftpWindowUI struct {
-	frame          flex.View
-	panes          [2]flex.View
-	rows           [2]flex.View
-	size           ui.Size
-	list           [2]ui.Rect
-	offset         [2]float32
-	bars           [2]components.ScrollAreaGeometry
-	barDrag        int // 1: local, 2: remote, 3: queue; zero when idle
-	barGrab        float32
-	fraction       float32
-	split          components.Resizable
-	splitting      bool
-	tooltip        components.HoverTooltip
-	menuOpen       bool
-	menuAt         ui.Point
-	queueBounds    ui.Rect
-	queueOffset    float32
-	queueBar       components.ScrollAreaGeometry
-	sort           [2]sftpWindowSort
-	menuScroll     components.MenuScroll
-	bookmarkScroll components.MenuScroll
-	bookmarkAnchor ui.Rect
-	headerAnchor   [2]ui.Rect
-	headerScroll   components.MenuScroll
-	selection      [2]sftpWindowSelection
+	frame        flex.View
+	panes        [2]flex.View
+	rows         [2]flex.View
+	size         ui.Size
+	list         [2]ui.Rect
+	offset       [2]float32
+	bars         [2]components.ScrollAreaGeometry
+	barDrag      int // 1: local, 2: remote, 3: queue; zero when idle
+	barGrab      float32
+	fraction     float32
+	split        components.Resizable
+	splitting    bool
+	tooltip      components.HoverTooltip
+	menuOpen     bool
+	menuAt       ui.Point
+	queueBounds  ui.Rect
+	queueOffset  float32
+	queueBar     components.ScrollAreaGeometry
+	sort         [2]sftpWindowSort
+	menuScroll   components.MenuScroll
+	headerAnchor [2]ui.Rect
+	headerScroll components.MenuScroll
+	selection    [2]sftpWindowSelection
 }
 
 func sideIndex(local bool) int {
@@ -110,9 +109,26 @@ func (w *sftpWindow) paint(canvas *ui.Canvas, size ui.Size) {
 			status = m.SFTPWindow.Disconnected
 		}
 		if status == "" {
-			status = m.SFTPWindow.DragHint
+			if w.browse.enabled {
+				status = w.browseDescription()
+			} else {
+				status = m.SFTPWindow.DragHint
+			}
 		}
-		f.Text(status).FontSize(theme.Metrics.FontSizeS).Color(theme.MutedForeground).Ellipsis().LineHeight(20)
+		if w.browse.enabled {
+			f.Row().Height(20).Gap(6).Items(flex.Center).Children(func() {
+				f.Icon(lucideIcons[iconSFTPBrowseSync]).Size(14, 14).Color(w.owner.pal.success)
+				f.Text(m.SFTPWindow.BrowseRootLabel).FontSize(theme.Metrics.FontSizeS).Color(theme.Foreground)
+				f.Text(w.browse.roots[0]).FontSize(theme.Metrics.FontSizeS).Color(theme.MutedForeground).Ellipsis().Grow(1)
+				f.Icon(lucideIcons[iconForward]).Size(12, 12).Color(theme.MutedForeground)
+				f.Text(w.browse.roots[1]).FontSize(theme.Metrics.FontSizeS).Color(theme.MutedForeground).Ellipsis().Grow(1)
+				if status != "" && status != w.browseDescription() {
+					f.Text(status).FontSize(theme.Metrics.FontSizeS).Color(theme.MutedForeground).Ellipsis().Grow(1)
+				}
+			})
+		} else {
+			f.Text(status).FontSize(theme.Metrics.FontSizeS).Color(theme.MutedForeground).Ellipsis().LineHeight(20)
+		}
 	})
 	f.End()
 	w.ui.split = components.BeginResizable(canvas, theme, hitSFTPWindowSplit, body.Rect(), w.ui.fraction).LimitsPx(220, 220)
@@ -126,7 +142,7 @@ func (w *sftpWindow) paint(canvas *ui.Canvas, size ui.Size) {
 		w.ui.queueOffset = 0
 	}
 	if w.view.bookmarksOpen {
-		w.paintBookmarks(canvas)
+		w.paintDirectoryPlaces(canvas)
 	}
 	if w.view.dialog != sftpDialogNone {
 		w.owner.paintSFTPDialog(canvas, ui.Rect{Width: size.Width, Height: size.Height}, w.view)
@@ -146,6 +162,9 @@ func (w *sftpWindow) paint(canvas *ui.Canvas, size ui.Size) {
 	if side, ok := w.headerMenu(); ok {
 		w.paintHeaderMenu(canvas, side)
 	}
+	if w.bookmark.open {
+		w.paintBookmarkDialog(canvas, ui.Rect{Width: size.Width, Height: size.Height})
+	}
 	if w.drag.active {
 		w.paintDrag(canvas)
 	}
@@ -154,7 +173,7 @@ func (w *sftpWindow) paint(canvas *ui.Canvas, size ui.Size) {
 }
 
 func (w *sftpWindow) canTransfer(local bool) bool {
-	if !w.connected() || w.view.worker == nil || w.view.busy || w.pendingLocal != "" || w.view.dialog != sftpDialogNone || w.closeConfirm || w.externalConflict != 0 || w.view.path == "" || w.view.lfolder.path == "" {
+	if !w.connected() || w.view.worker == nil || w.navigationBusy() || w.bookmark.open || w.view.dialog != sftpDialogNone || w.closeConfirm || w.externalConflict != 0 || w.view.path == "" || w.view.lfolder.path == "" {
 		return false
 	}
 	return w.selection(local).count > 0
@@ -190,25 +209,51 @@ func (w *sftpWindow) paintPane(canvas *ui.Canvas, bounds ui.Rect, local bool) {
 				icon(sftpWindowHidden[side], iconEye, m.Tools.FilesHideHidden, false)
 				buttons[buttonCount-1].style = iconButtonActive
 			}
+			if local {
+				icon(hitSFTPLocationProfiles, iconSFTPProfiles, m.SFTPWindow.BookmarkTitle, w.browse.pending != nil)
+				hint := m.SFTPWindow.BrowseSync
+				if w.browse.enabled {
+					hint = w.browseDescription()
+				}
+				icon(hitSFTPBrowseSync, iconSFTPBrowseSync, hint, !w.browse.enabled && (w.navigationBusy() || !w.connected()))
+				if w.browse.enabled {
+					buttons[buttonCount-1].style = iconButtonActive
+				}
+			}
 			icon(sftpWindowMore[side], iconEllipsis, m.Tools.FilesMore, false)
 		})
 		f.Row().Height(32).Gap(2).Items(flex.Center).Children(func() {
 			address = f.Slot().Height(32).Grow(1)
-			if !local {
-				icon(hitSFTPBookmarkList, iconChevronDown, m.Tools.Bookmarks, false)
-				star, hint := uint8(iconStar), m.Tools.BookmarkAdd
-				if w.owner.bookmarked(&w.session, folder.path) {
-					star, hint = iconStarSolid, m.Tools.BookmarkRemove
-				}
-				icon(hitSFTPBookmarkToggle, star, hint, w.view.busy || !w.connected())
+			listID, starID, listHint := hitSFTPBookmarkList, hitSFTPBookmarkToggle, m.SFTPWindow.DirectoryFavorites
+			if local {
+				listID, starID, listHint = hitSFTPLocalPlaces, hitSFTPLocalStar, m.SFTPWindow.LocalPlaces
 			}
+			icon(listID, iconChevronDown, listHint, false)
+			star, hint := uint8(iconStar), m.SFTPWindow.FavoriteAdd
+			if w.directoryFavorite(local) {
+				star, hint = iconStarSolid, m.SFTPWindow.FavoriteRemove
+			}
+			icon(starID, star, hint, folder.path == "" || local && w.pendingLocal != "" || !local && (w.view.busy || !w.connected() || w.session.host.CatalogID == ""))
 		})
 		if folder.filterOpen {
 			filter = f.Slot().Height(32).Shrink(0)
 		}
+		if local {
+			w.owner.declareLocalCoverage(f, folder, hitSFTPWindowCoverage)
+		}
 		{
 			f.Row().Height(20).Gap(8).PadX(8).Items(flex.Center).Children(func() {
-				for column, label := range []string{m.SFTPWindow.Name, m.SFTPWindow.Size, m.SFTPWindow.Modified} {
+				for _, entry := range w.owner.sftpColumns.entries {
+					if !entry.Enabled {
+						continue
+					}
+					column, label := int(entry.Key), m.SFTPWindow.Name
+					switch entry.Key {
+					case sftpColumnSize:
+						label = m.SFTPWindow.Size
+					case sftpColumnModified:
+						label = m.SFTPWindow.Modified
+					}
 					if w.ui.sort[side].column == column {
 						if w.ui.sort[side].descending {
 							label += " ↓"
@@ -254,7 +299,7 @@ func (w *sftpWindow) paintPane(canvas *ui.Canvas, bounds ui.Rect, local bool) {
 					return
 				}
 				for _, action := range w.selectionActions(local) {
-					icon(sftpWindowActions[side].At(action.index), action.glyph, action.label, w.view.busy && !local || !local && !w.connected())
+					icon(sftpWindowActions[side].At(action.index), action.glyph, action.label, w.browse.pending != nil || w.view.busy && !local || !local && !w.connected())
 					if sftpWindowActionIDs[action.index] == hitSFTPDelete {
 						buttons[buttonCount-1].style = iconButtonDanger
 					}
@@ -280,7 +325,9 @@ func (w *sftpWindow) paintPane(canvas *ui.Canvas, bounds ui.Rect, local bool) {
 		w.owner.paintSFTPFilterInput(canvas, filter.Rect(), folder, sftpWindowFilter[side], sftpWindowFilterClear[side])
 	}
 	if !local {
-		w.ui.bookmarkAnchor = address.Rect()
+		w.view.places.anchors[1] = address.Rect()
+	} else {
+		w.view.places.anchors[0] = address.Rect()
 	}
 	value := folder.pathInput().String()
 	components.PaintInput(canvas, theme, address.Rect(), components.InputSnapshot{ID: sftpWindowPath[side], Label: m.SFTPWindow.Path, Value: value, Hint: folder.path, Focused: canvas.Focused() == sftpWindowPath[side], PlatformEditing: canvas.Focused() == sftpWindowPath[side]})
@@ -308,6 +355,9 @@ func (w *sftpWindow) paintPane(canvas *ui.Canvas, bounds ui.Rect, local bool) {
 		label := m.SFTPEmpty
 		if folder.filterInputEditor().String() != "" {
 			label = fmt.Sprintf(m.Tools.FilesFilterCountFmt, 0, sftpVisibleRowCount(folder))
+		}
+		if local && folder.coverageEmpty != "" {
+			label = folder.coverageEmpty
 		}
 		if !local && w.view.busy {
 			label = m.SFTPLoading
@@ -338,16 +388,23 @@ func (w *sftpWindow) paintRow(f *flex.Frame, row *sftpRow, id ui.ID, paneWidth f
 		box.Border(1, pal.accent)
 	}
 	box.Children(func() {
-		if row.icon != nil {
-			f.Icon(*row.icon).Color(tint)
-		}
+		declareSFTPRowIcon(f, row, tint)
 		f.Text(row.entry.Name).Color(color).Ellipsis().Grow(1)
-		f.Text(row.cells[2]).FontSize(metrics.FontSizeS).Color(pal.muted).Width(62).TextEnd()
-		date := row.cells[3]
-		if paneWidth < 420 && len(date) >= 16 {
-			date = date[5:10]
+		for _, entry := range w.owner.sftpColumns.entries[1:] {
+			if !entry.Enabled {
+				continue
+			}
+			if entry.Key == sftpColumnSize {
+				f.Text(row.cells[2]).FontSize(metrics.FontSizeS).Color(pal.muted).Width(62).TextEnd()
+			}
+			if entry.Key == sftpColumnModified {
+				date := row.cells[3]
+				if paneWidth < 420 && len(date) >= 16 {
+					date = date[5:10]
+				}
+				f.Text(date).FontSize(metrics.FontSizeS).Color(pal.muted).Width(w.dateWidth(paneWidth))
+			}
 		}
-		f.Text(date).FontSize(metrics.FontSizeS).Color(pal.muted).Width(w.dateWidth(paneWidth))
 	})
 }
 
@@ -420,7 +477,7 @@ func (w *sftpWindow) paintMenu(canvas *ui.Canvas) {
 		}
 		if index := sftpWindowActionIndex(action); index >= 0 {
 			item.ID = sftpWindowMenuActions.At(index)
-			item.Disabled = w.pendingLocal != "" || !w.activeLocal && (!w.connected() || w.view.busy)
+			item.Disabled = w.browse.pending != nil || w.pendingLocal != "" || !w.activeLocal && (!w.connected() || w.view.busy)
 		}
 	}
 	theme := w.owner.contextMenuTheme()
@@ -428,22 +485,6 @@ func (w *sftpWindow) paintMenu(canvas *ui.Canvas) {
 	width = min(width, 480)
 	menu := components.BeginContextMenu(canvas, theme, ui.Rect{X: w.ui.menuAt.X, Y: w.ui.menuAt.Y, Width: width, Height: height}, components.ContextMenuOptions{Layer: popupLayer, Scope: hitSFTPWindowMenuDismiss, DismissID: hitSFTPWindowMenuDismiss, Viewport: ui.Rect{Width: w.ui.size.Width, Height: w.ui.size.Height}, Scroll: &w.ui.menuScroll, RowHeight: contextMenuRow})
 	rows.paint(&menu, nil)
-	menu.End()
-}
-
-func (w *sftpWindow) paintBookmarks(canvas *ui.Canvas) {
-	marks := w.owner.bookmarksFor(&w.session)
-	anchor := w.ui.bookmarkAnchor
-	menu := components.BeginContextMenu(canvas, w.owner.Theme(), ui.Rect{X: anchor.X, Y: anchor.Y + anchor.Height + 4, Width: max(anchor.Width, 220), Height: float32(max(len(marks), 1))*30 + 8}, components.ContextMenuOptions{Layer: popupLayer, Scope: hitSFTPBookmarkDismiss, DismissID: hitSFTPBookmarkDismiss, Viewport: ui.Rect{Width: w.ui.size.Width, Height: w.ui.size.Height}, Scroll: &w.ui.bookmarkScroll, RowHeight: 30})
-	if len(marks) == 0 {
-		menu.AddItem(components.ContextMenuItem{Label: w.owner.messages.Tools.BookmarksEmpty, Disabled: true})
-	}
-	for i, mark := range marks {
-		_, slot := menu.AddItemSlot(components.ContextMenuItem{ID: hitSFTPBookmarkItemList.At(i), Label: mark, Icon: lucideIcons[iconFolderOpen], TrailingWidth: 24})
-		menu.BeginContent()
-		w.owner.paintIconButton(canvas, hitSFTPBookmarkRemoveList.At(i), iconClose, slot, w.owner.messages.Tools.BookmarkRemove, false, iconButtonQuiet, w.owner.pal.surface)
-		menu.EndContent()
-	}
 	menu.End()
 }
 

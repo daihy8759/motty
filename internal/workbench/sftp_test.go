@@ -82,7 +82,7 @@ func (remote *workbenchSFTPRemote) ReadDir(path string) ([]os.FileInfo, error) {
 	}
 	remote.mu.Lock()
 	defer remote.mu.Unlock()
-	return remote.entries[path], nil
+	return append([]os.FileInfo(nil), remote.entries[path]...), nil
 }
 
 // readCount is how many times a folder has been listed.
@@ -486,6 +486,7 @@ func replaceSFTPText(t testing.TB, state *State, value string) {
 func TestSFTPBrowseAndDownload(t *testing.T) {
 	state, session, _, _ := openTestSFTP(t)
 	view := session.files
+	state.sftpDownloadDirectory = "" // exercise the ask-each-time picker path
 	if view.path != "/home/test" || view.rows[0].entry.Name != "docs" || view.rows[1].entry.Name != "notes.txt" {
 		t.Fatalf("initial listing = %q %+v", view.path, view.rows)
 	}
@@ -728,6 +729,7 @@ func TestSFTPUploadUsesOpenFilesAndRefreshesDirectory(t *testing.T) {
 func TestSFTPMultiSelectDownloadsFilesAndDirectories(t *testing.T) {
 	state, session, _, _ := openTestSFTP(t)
 	view := session.files
+	state.sftpDownloadDirectory = "" // exercise the ask-each-time picker path
 	destination := t.TempDir()
 	state.options.OpenDirectory = func(options app.OpenDirectoryOptions) (string, error) {
 		if options.Title != state.messages.SFTPDownloadDirectoryTitle {
@@ -803,6 +805,7 @@ func TestSFTPUploadsMultipleFilesAndDirectory(t *testing.T) {
 func TestSFTPOverwriteRequiresConfirmationThenResumes(t *testing.T) {
 	state, session, _, _ := openTestSFTP(t)
 	view := session.files
+	state.sftpDownloadDirectory = "" // exercise the ask-each-time picker path
 	target := filepath.Join(t.TempDir(), "notes.txt")
 	if err := os.WriteFile(target, []byte("do not replace yet"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1001,6 +1004,7 @@ func TestSFTPWorkerStartsOnlyWhenFilesPageOpens(t *testing.T) {
 
 func TestSFTPSaveCancelDoesNotTransfer(t *testing.T) {
 	state, session, _, _ := openTestSFTP(t)
+	state.sftpDownloadDirectory = "" // exercise the ask-each-time picker path
 	state.options.SaveFile = func(app.SaveFileOptions) (string, error) { return "", app.ErrCanceled }
 	state.Click(hitSFTPEntryList.At(1))
 	state.Click(hitSFTPDownload)
@@ -1130,6 +1134,82 @@ func TestSFTPListScrollsDownWithPositiveDeltaOnlyOverThePanel(t *testing.T) {
 	scroll(panel.X+panel.Width/2, 1000*sftpRowHeight)
 	if want := len(view.rows) - view.visibleRows; view.first != want {
 		t.Fatalf("scrolling far down left the first row at %d, want the last page at %d", view.first, want)
+	}
+
+	// Scrolling far down and painting anchors the list at the bottom. Further
+	// downward wheels must not repaint or jitter the offset.
+	state.Paint(&canvas, size)
+	bottomOffset := view.scrollOffset
+	bottomFirst := view.first
+	if bottomOffset == float32(bottomFirst)*sftpRowHeight {
+		// The jitter lives in the remainder between the pixel offset and the row
+		// grid; a row-aligned fixture could not fail, so it must not pass silently.
+		t.Fatalf("the fixture's bottom offset %f is row aligned", bottomOffset)
+	}
+	for i := 0; i < 10; i++ {
+		res := state.Scroll(ui.ScrollEvent{X: panel.X + panel.Width/2, Y: panel.Y + 100, DeltaY: sftpRowHeight, Viewport: size})
+		if res.Repaint {
+			t.Fatalf("scroll at bottom requested repaint on iteration %d", i)
+		}
+		state.Paint(&canvas, size)
+		if view.scrollOffset != bottomOffset || view.first != bottomFirst {
+			t.Fatalf("scroll at bottom jittered: offset %f -> %f, first %d -> %d", bottomOffset, view.scrollOffset, bottomFirst, view.first)
+		}
+	}
+
+	// Scrolling upward from the bottom must move and repaint smoothly.
+	upRes := state.Scroll(ui.ScrollEvent{X: panel.X + panel.Width/2, Y: panel.Y + 100, DeltaY: -sftpRowHeight, Viewport: size})
+	if !upRes.Repaint {
+		t.Fatal("scrolling upward from bottom did not request repaint")
+	}
+	if view.first >= bottomFirst && view.scrollOffset >= bottomOffset {
+		t.Fatalf("scrolling upward from bottom did not decrease position: offset=%f first=%d", view.scrollOffset, view.first)
+	}
+}
+
+// A drag released inside a row keeps the offset it left, and scrolling up from
+// there returns the list to its top instead of stalling on whole rows.
+func TestSFTPDragReleaseKeepsASubRowOffsetAndWheelUpReturnsToTheTop(t *testing.T) {
+	state, session, _, _ := openTestSFTP(t)
+	view := session.files
+	entries := make([]sftpclient.Entry, 100)
+	for index := range entries {
+		entries[index] = sftpclient.Entry{Name: fmt.Sprintf("file-%03d.txt", index), Mode: 0o644}
+	}
+	view.rows = prepareSFTPRows(view.rows, entries)
+	view.first = 0
+	size := ui.Size{Width: 1400, Height: 900}
+	var canvas ui.Canvas
+	state.Paint(&canvas, size)
+	panel := state.contextRect
+	if panel.Width == 0 {
+		t.Fatal("the paint reported no files panel")
+	}
+	folder := view.active()
+
+	// As a scrollbar drag would leave it: released 17 pixels into the first row,
+	// past the half-row mark that used to round the row up and snap back.
+	view.scrollDrag = true
+	folder.scrollOffset = 17
+	if result, handled := state.sftpListPointer(ui.PointerEvent{Kind: ui.PointerUp, Button: ui.PointerButtonPrimary, Captured: true}); !handled || !result.Repaint {
+		t.Fatal("releasing the scrollbar drag was not handled")
+	}
+	if folder.first != 0 {
+		t.Fatalf("release 17 pixels into the first row put the first row at %d, want 0", folder.first)
+	}
+	state.Paint(&canvas, size)
+	if folder.scrollOffset != 17 {
+		t.Fatalf("release over a partial row snapped the offset to %f, want 17", folder.scrollOffset)
+	}
+
+	// Scrolling up from that offset must show the top, not stall on row 0.
+	up := state.Scroll(ui.ScrollEvent{X: panel.X + panel.Width/2, Y: panel.Y + 100, DeltaY: -sftpRowHeight, Viewport: size})
+	if !up.Repaint {
+		t.Fatal("scrolling up from a sub-row offset did not request repaint")
+	}
+	state.Paint(&canvas, size)
+	if folder.scrollOffset != 0 || folder.first != 0 {
+		t.Fatalf("scrolling up left the list at offset %f, first %d, want 0/0", folder.scrollOffset, folder.first)
 	}
 }
 

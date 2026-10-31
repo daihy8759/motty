@@ -52,11 +52,21 @@ func (conn *localConn) SkipIdentity()              {}
 func (conn *localConn) Cancel()                    {}
 
 func (conn *localConn) OpenShell(config sshconn.ShellConfig) (Shell, error) {
+	return localshell.Start(conn.shellConfig(config, runtime.GOOS))
+}
+
+// shellConfig is how the shell starts on goos, with the folder and prompt
+// reporting the shell supports there.
+func (conn *localConn) shellConfig(config sshconn.ShellConfig, goos string) localshell.Config {
 	shell := localshell.Config{Shell: conn.shell, Args: localshell.ArgsFor(conn.shell), Cols: config.Cols, Rows: config.Rows, Dir: conn.dir, Notify: config.Notify}
-	if config.IntegrateShell && runtime.GOOS == "windows" {
+	if config.IntegrateShell && goos == "windows" {
 		shell.DirectoryToken = config.IntegrationToken
+		if _, wsl := localshell.WSLDistro(conn.shell); wsl {
+			// A distribution's shell reports through a script it runs itself.
+			shell.WSLScript = sshconn.WSLIntegrationScript(config.IntegrationToken, localshell.WSLDirectoryVariable)
+		}
 	}
-	if config.IntegrateShell && runtime.GOOS != "windows" {
+	if config.IntegrateShell && goos != "windows" {
 		program := conn.shell
 		if program == "" {
 			program = os.Getenv("SHELL")
@@ -67,19 +77,38 @@ func (conn *localConn) OpenShell(config sshconn.ShellConfig) (Shell, error) {
 			shell.Shell, shell.Args = "/bin/sh", args
 		}
 	}
-	return localshell.Start(shell)
+	return shell
 }
 
 // A remembered path is process startup data, never text sent to the shell.
 // Deleted/unmounted folders fall back to the normal home-directory startup.
-func localStartupDirectory(directory string) string {
+func localStartupDirectory(directory, shell string) string {
 	if !validLocalDirectory(directory) {
 		return ""
+	}
+	if _, wsl := localshell.WSLDistro(shell); wsl {
+		// Looking at a distribution's files from Windows starts the distribution
+		// if it is stopped, which can take seconds; its own start script already
+		// stays where it is when the folder is gone.
+		return filepath.Clean(directory)
+	}
+	if localshell.IsWSLUNC(directory) {
+		return "" // a distribution's folder is no place for a Windows shell to start
 	}
 	if info, err := os.Stat(directory); err == nil && info.IsDir() {
 		return filepath.Clean(directory)
 	}
 	return ""
+}
+
+// validLocalShell reports whether a saved shell names something Start can run:
+// a WSL distribution, or an absolute program path. What it names may be gone by
+// now; that is reported when the tab starts, not here.
+func validLocalShell(shell string) bool {
+	if _, wsl := localshell.WSLDistro(shell); wsl {
+		return true
+	}
+	return filepath.IsAbs(shell) && len(shell) <= 2048 && strings.IndexFunc(shell, func(r rune) bool { return r < 0x20 || r == 0x7f }) < 0
 }
 
 func validLocalDirectory(directory string) bool {
@@ -134,7 +163,19 @@ func (conn *localConn) StreamCommand(context.Context, string, int, func([]byte) 
 // openLocalTerminal opens a shell on this computer, in the empty pane the user
 // is looking at or else in a new tab, like any other host.
 func (state *State) openLocalTerminal() *Session {
-	host := localHost(state.messages.LocalTerminalTitle)
+	return state.openLocalTerminalWith(localshell.Choice{})
+}
+
+// openLocalTerminalWith opens a local terminal that runs shell, whatever the
+// default shell is. A zero Choice starts the default one, which stays the
+// default for this tab on a reconnect, so changing the setting later moves it.
+func (state *State) openLocalTerminalWith(shell localshell.Choice) *Session {
+	label := state.messages.LocalTerminalTitle
+	if shell.Path != "" {
+		label = shell.Name
+	}
+	host := localHost(label)
+	host.localShell = shell.Path
 	return state.createHostSession(host, host.Address)
 }
 

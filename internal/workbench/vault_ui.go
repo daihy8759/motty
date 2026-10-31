@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vivaui/viva/components"
@@ -20,24 +20,23 @@ import (
 // Saved passwords. The vault package keeps them encrypted; this file is what the
 // workbench does with it: offer to save a password or a key passphrase when the
 // user types one, answer the same question by itself the next time it is asked,
-// and let the user set a master password or forget everything in Settings.
+// and let the user forget everything in Settings. A vault still kept by the master
+// password of an earlier version is opened once, by the dialog below, and is an
+// ordinary one afterwards.
 
 // secretsUI is the state of saving and using secrets.
 type secretsUI struct {
 	vault *vault.Vault
-	// declined is set when the user dismissed the unlock dialog, so the window
-	// does not ask again at every prompt; unlocking from Settings clears it.
+	// declined is set when the user dismissed the dialog that asks for the old
+	// master password, so the window does not ask again at every prompt until the
+	// next start; Settings can ask again.
 	declined bool
 	// canSave is whether the open password or passphrase dialog offers to save,
 	// worked out when it opened, and save whether the box is ticked.
 	canSave, save bool
-	// needsMaster is set with canSave clear when the only thing missing is a
-	// master password: the system has no store to keep the key in.
-	needsMaster bool
 
-	unlock, newPassword, confirmPassword text.Editor
-	dialogError                          string
-	changing                             bool
+	unlock      text.Editor
+	dialogError string
 	// after is what to do once the vault is unlocked from Settings.
 	after func()
 	// actions is where Settings lays out its buttons, so painting them keeps no
@@ -56,8 +55,24 @@ const (
 	secretPassphrase
 )
 
-func passwordSecretName(endpoint sshconn.Endpoint) string {
-	return "password:" + endpoint.User + "@" + endpoint.Host + ":" + strconv.Itoa(int(endpoint.Port))
+// The parts of a host's secrets: hostSecretName(catalogID, part). They are kept
+// under the host, so editing its address or login moves nothing and deleting it
+// deletes them.
+const (
+	hostPasswordPart = "password"
+	hostOTPPart      = "otp"
+)
+
+func hostSecretName(catalogID, part string) string { return "host:" + catalogID + ":" + part }
+
+// passwordName and otpSecretName are the secrets of the host the prompt of a
+// session is about (see hostCatalog.secretOwner).
+func (state *State) passwordName(session *Session) string {
+	return hostSecretName(state.secretOwner(session.host, session.endpoint, session.role), hostPasswordPart)
+}
+
+func (state *State) otpSecretName(session *Session) string {
+	return hostSecretName(state.secretOwner(session.host, session.endpoint, session.role), hostOTPPart)
 }
 
 // aiKeySecretName is where the API key of an AI provider is kept. The provider
@@ -66,18 +81,13 @@ func aiKeySecretName(providerID string) string { return "aikey:" + providerID }
 
 func passphraseSecretName(identity string) string { return "passphrase:" + identity }
 
-// otpSecretName is where the one-time code secret of an account is kept.
-func otpSecretName(endpoint sshconn.Endpoint) string {
-	return "otp:" + endpoint.User + "@" + endpoint.Host + ":" + strconv.Itoa(int(endpoint.Port))
-}
-
 // initSecrets opens the vault next to the state file. A file that cannot be read
 // is set aside, not overwritten: it may hold what a later release can open.
 func (state *State) initSecrets() {
 	path := filepath.Join(filepath.Dir(state.options.StatePath), "vault.json")
 	keys := state.options.Keystore
 	if keys == nil {
-		keys = systemKeystore{}
+		keys = defaultKeystore(path)
 	}
 	opened, err := vault.OpenShared(path, keys)
 	if errors.Is(err, vault.ErrCorrupt) {
@@ -94,10 +104,33 @@ func (state *State) initSecrets() {
 	state.secrets.vault = opened
 }
 
-// isPlainPassword reports the one secret question with no wording: the plain
-// password method.
-func isPlainPassword(questions []sshconn.Question) bool {
-	return len(questions) == 1 && questions[0].Secret && questions[0].Text == ""
+// isPasswordQuestion reports the one secret question that asks for the account
+// password: the plain password method, which has no wording, or a
+// keyboard-interactive prompt such as PAM's "Password: ", which is how most
+// OpenSSH servers take the password. A hidden question that does not read as a
+// password (a PIN, a one-time code) is not answered with the saved password: a
+// wrong guess would be refused and the refusal would forget the saved one.
+func isPasswordQuestion(questions []sshconn.Question) bool {
+	if len(questions) != 1 || !questions[0].Secret {
+		return false
+	}
+	wording := questions[0].Text
+	return wording == "" || !otp.LooksLikeQuestion(wording) && looksLikePasswordPrompt(wording)
+}
+
+// looksLikePasswordPrompt reports whether a server's prompt names the password,
+// in the languages servers commonly answer in.
+func looksLikePasswordPrompt(wording string) bool {
+	lower := strings.ToLower(wording)
+	for _, word := range []string{
+		"password", "passwd", "passwort", "mot de passe", "contraseña", "senha", "пароль",
+		"密码", "密碼", "口令", "パスワード", "비밀번호",
+	} {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	return false
 }
 
 // isOTPQuestion reports a single prompt whose wording asks for a one-time code.
@@ -108,10 +141,10 @@ func isOTPQuestion(questions []sshconn.Question) bool {
 // promptSecret is the secret an open question could be answered with: its name,
 // and what kind. A question that is not a plain password or passphrase, or that
 // is asked again because the first answer was refused, has none.
-func promptSecret(session *Session) (string, secretKind) {
+func (state *State) promptSecret(session *Session) (string, secretKind) {
 	switch {
-	case session.phase == sshconn.PhasePasswordPrompt && session.attempt == 1 && isPlainPassword(session.questions):
-		return passwordSecretName(session.endpoint), secretPassword
+	case session.phase == sshconn.PhasePasswordPrompt && session.attempt == 1 && isPasswordQuestion(session.questions):
+		return state.passwordName(session), secretPassword
 	case session.phase == sshconn.PhaseKeyPassphrasePrompt && session.attempt == 1 && session.identity != "":
 		return passphraseSecretName(session.identity), secretPassphrase
 	}
@@ -123,27 +156,20 @@ type autofillResult uint8
 const (
 	autofillNone autofillResult = iota
 	autofillSent
-	autofillNeedsUnlock
 )
 
-// autofill answers a question from the vault when it has the answer. It tells the
-// caller when the vault has to be unlocked first.
+// autofill answers a question from the vault when it has the answer.
 func (state *State) autofill(session *Session) autofillResult {
 	if session.phase == sshconn.PhasePasswordPrompt && isOTPQuestion(session.questions) {
 		return state.autofillOTP(session)
 	}
-	name, _ := promptSecret(session)
+	name, _ := state.promptSecret(session)
 	vaultFile := state.secrets.vault
 	if name == "" || vaultFile == nil || vaultFile.Len() == 0 {
 		return autofillNone
 	}
 	value, found, err := vaultFile.Get(name)
 	switch {
-	case errors.Is(err, vault.ErrLocked):
-		if state.secrets.declined {
-			return autofillNone
-		}
-		return autofillNeedsUnlock
 	case err != nil || !found:
 		return autofillNone
 	}
@@ -161,11 +187,12 @@ func (state *State) autofill(session *Session) autofillResult {
 // canAutofill reports whether the question a connection is about to ask is one
 // the vault answers with no one's help, as a restore needs to know before it
 // decides to give up on the tab.
-func (state *State) canAutofill(status sshconn.Status) bool {
+func (state *State) canAutofill(session *Session, status sshconn.Status) bool {
+	owner := state.secretOwner(session.host, status.Endpoint, status.EndpointRole)
 	vaultFile := state.secrets.vault
 	if vaultFile != nil && vaultFile.Len() > 0 && status.Phase == sshconn.PhasePasswordPrompt &&
 		isOTPQuestion(status.Questions) {
-		_, found, err := vaultFile.Get(otpSecretName(status.Endpoint))
+		_, found, err := vaultFile.Get(hostSecretName(owner, hostOTPPart))
 		return err == nil && found
 	}
 	if vaultFile == nil || vaultFile.Len() == 0 || status.Attempt > 1 {
@@ -173,8 +200,8 @@ func (state *State) canAutofill(status sshconn.Status) bool {
 	}
 	var name string
 	switch {
-	case status.Phase == sshconn.PhasePasswordPrompt && isPlainPassword(status.Questions):
-		name = passwordSecretName(status.Endpoint)
+	case status.Phase == sshconn.PhasePasswordPrompt && isPasswordQuestion(status.Questions):
+		name = hostSecretName(owner, hostPasswordPart)
 	case status.Phase == sshconn.PhaseKeyPassphrasePrompt && status.IdentityPath != "":
 		name = passphraseSecretName(status.IdentityPath)
 	default:
@@ -198,20 +225,9 @@ func (state *State) forgetRefusedSecret(session *Session, name string) bool {
 // offerToSave works out whether the dialog that is opening can save what is
 // typed into it, and starts with the box clear.
 func (state *State) offerToSave() {
-	state.secrets.save, state.secrets.needsMaster = false, false
+	state.secrets.save = false
 	vaultFile := state.secrets.vault
-	switch {
-	case vaultFile == nil:
-		state.secrets.canSave = false
-	case vaultFile.Unlocked():
-		state.secrets.canSave = true
-	case vaultFile.HasMasterPassword():
-		state.secrets.canSave = false
-	default:
-		err := vaultFile.Prepare()
-		state.secrets.canSave = err == nil
-		state.secrets.needsMaster = errors.Is(err, vault.ErrUnavailable)
-	}
+	state.secrets.canSave = vaultFile != nil && vaultFile.Prepare() == nil
 }
 
 // stageSecret keeps what the user typed, if the box to save it is ticked, until the
@@ -241,8 +257,8 @@ func (state *State) rememberSecret(session *Session) {
 // vaultErrorText says why the vault refused, in the current language.
 func (state *State) vaultErrorText(err error) string {
 	switch {
-	case errors.Is(err, vault.ErrLocked):
-		return state.messages.Autofill.ErrorVaultLocked
+	case errors.Is(err, vault.ErrNeedsConversion):
+		return state.messages.VaultNeedsConversion
 	case errors.Is(err, vault.ErrKeyLost):
 		return state.messages.VaultKeyLost
 	case errors.Is(err, vault.ErrUnavailable):
@@ -253,7 +269,8 @@ func (state *State) vaultErrorText(err error) string {
 	return err.Error()
 }
 
-// openVaultUnlock asks for the master password. after, if set, runs once it has
+// openVaultUnlock asks for the master password of an earlier version, once, to
+// move the saved passwords under the key store. after, if set, runs once it has
 // been typed correctly; otherwise the prompt that was waiting goes on.
 func (state *State) openVaultUnlock(session *Session, after func()) {
 	state.modal = modalVaultUnlock
@@ -270,7 +287,7 @@ func (state *State) clickVaultUnlock(id ui.ID) {
 	case hitVaultUnlockSubmit:
 		state.submitVaultUnlock()
 	case hitVaultUnlockCancel, hitVaultUnlockClose, hitVaultUnlockDismiss:
-		state.secrets.declined = state.secrets.after == nil
+		state.secrets.declined = true
 		state.secrets.after = nil
 		state.closeModal()
 		state.showNextPrompt()
@@ -282,12 +299,13 @@ func (state *State) submitVaultUnlock() {
 		state.closeModal()
 		return
 	}
-	if err := state.secrets.vault.Unlock(state.secrets.unlock.String()); err != nil {
+	if err := state.secrets.vault.ConvertLegacy(state.secrets.unlock.String()); err != nil {
 		state.secrets.dialogError = state.vaultErrorText(err)
 		state.secrets.unlock = text.Editor{}
 		return
 	}
 	state.secrets.declined = false
+	state.migrateSecretsToHosts(false)
 	if state.sync.waitingForVault {
 		state.sync.waitingForVault = false
 		state.scheduleSync()
@@ -308,7 +326,7 @@ func (state *State) paintVaultUnlockDialog(canvas *ui.Canvas, viewport ui.Rect) 
 		DismissID: hitVaultUnlockDismiss, CloseID: hitVaultUnlockClose, InitialFocusID: hitVaultUnlockField,
 		ContentSize: ui.Size{Width: 480}, FitBody: true, BodyHeight: withError(66, state.secrets.dialogError),
 	})
-	layout := dialog.Begin(m.VaultUnlockTitle, "")
+	layout := dialog.Begin(m.VaultUnlockTitle, m.VaultConvertDescription)
 	var field flex.Box
 	f := state.secrets.layout.Begin(canvas, theme, layout.Body)
 	f.Column().Fill().PadSides(2, 4, 0, 4).Gap(12).Children(func() {
@@ -319,100 +337,13 @@ func (state *State) paintVaultUnlockDialog(canvas *ui.Canvas, viewport ui.Rect) 
 	content := components.BeginField(canvas, theme, field.Rect()).Paint(m.VaultUnlockLabel, "", "")
 	value := state.secrets.unlock.String()
 	focused := canvas.Focused() == hitVaultUnlockField
-	components.PaintInput(canvas, theme, content, components.InputSnapshot{
+	state.paintSecretInput(canvas, content, components.InputSnapshot{
 		ID: hitVaultUnlockField, Label: m.VaultUnlockLabel, Value: value, Secure: true,
 		Focused: focused, PlatformEditing: focused && value != "", Invalid: state.secrets.dialogError != "",
 	})
 	dialog.Actions(layout,
 		components.ButtonAction{ID: hitVaultUnlockCancel, Label: m.Cancel, Variant: components.ButtonSecondary},
 		components.ButtonAction{ID: hitVaultUnlockSubmit, Label: m.VaultUnlockButton},
-	)
-	dialog.End()
-}
-
-// openMasterPassword opens the dialog that sets or changes the master password.
-func (state *State) openMasterPassword(changing bool) {
-	state.modal = modalMasterPassword
-	state.secrets.changing = changing
-	state.secrets.newPassword, state.secrets.confirmPassword = text.Editor{}, text.Editor{}
-	state.secrets.dialogError = ""
-}
-
-func (state *State) clickMasterPassword(id ui.ID) {
-	switch id {
-	case hitMasterPasswordSubmit:
-		state.submitMasterPassword()
-	case hitMasterPasswordCancel, hitMasterPasswordClose, hitMasterPasswordDismiss:
-		state.closeModal()
-		state.showNextPrompt()
-	}
-}
-
-func (state *State) submitMasterPassword() {
-	secrets, m := &state.secrets, state.messages
-	password := secrets.newPassword.String()
-	switch {
-	case secrets.vault == nil:
-		state.closeModal()
-		return
-	case len([]rune(password)) < vault.MinMasterPasswordLength:
-		secrets.dialogError = fmt.Sprintf(m.MasterPasswordTooShortFmt, vault.MinMasterPasswordLength)
-		return
-	case password != secrets.confirmPassword.String():
-		secrets.dialogError = m.MasterPasswordMismatch
-		return
-	}
-	if err := secrets.vault.SetMasterPassword(password); err != nil {
-		secrets.dialogError = state.vaultErrorText(err)
-		return
-	}
-	state.closeModal()
-	state.status = m.VaultMasterSet
-	state.showNextPrompt()
-}
-
-func (state *State) paintMasterPasswordDialog(canvas *ui.Canvas, viewport ui.Rect) {
-	m, theme := state.messages, state.Theme()
-	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
-		Layer: dialogLayer, Scope: dialogScope,
-		DismissID: hitMasterPasswordDismiss, CloseID: hitMasterPasswordClose, InitialFocusID: hitMasterPasswordNew,
-		ContentSize: ui.Size{Width: 520}, FitBody: true, BodyHeight: withError(132, state.secrets.dialogError), // two fields
-	})
-	title := m.MasterPasswordTitleSet
-	if state.secrets.changing {
-		title = m.MasterPasswordTitleChange
-	}
-	layout := dialog.Begin(title, m.MasterPasswordDescription)
-	entries := [...]struct {
-		id    ui.ID
-		label string
-		value string
-	}{
-		{hitMasterPasswordNew, m.MasterPasswordNewLabel, state.secrets.newPassword.String()},
-		{hitMasterPasswordConfirm, m.MasterPasswordConfirmLabel, state.secrets.confirmPassword.String()},
-	}
-	var fields [len(entries)]flex.Box
-	f := state.secrets.layout.Begin(canvas, theme, layout.Body)
-	f.Column().Fill().PadSides(2, 4, 0, 4).Gap(6).Children(func() {
-		for index := range fields {
-			fields[index] = f.Slot().Height(62)
-		}
-		if problem := state.secrets.dialogError; problem != "" {
-			f.Text(problem).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(state.pal.danger).LineHeight(18).MarginSides(4, 0, 0, 0)
-		}
-	})
-	f.End()
-	for index, entry := range entries {
-		content := components.BeginField(canvas, theme, fields[index].Rect()).Paint(entry.label, "", "")
-		focused := canvas.Focused() == entry.id
-		components.PaintInput(canvas, theme, content, components.InputSnapshot{
-			ID: entry.id, Label: entry.label, Value: entry.value, Secure: true,
-			Focused: focused, PlatformEditing: focused && entry.value != "", Invalid: state.secrets.dialogError != "",
-		})
-	}
-	dialog.Actions(layout,
-		components.ButtonAction{ID: hitMasterPasswordCancel, Label: m.Cancel, Variant: components.ButtonSecondary},
-		components.ButtonAction{ID: hitMasterPasswordSubmit, Label: m.MasterPasswordSave},
 	)
 	dialog.End()
 }
@@ -470,42 +401,9 @@ func (state *State) clickVaultSettings(id ui.ID) bool {
 		if vaultFile != nil {
 			state.openVaultForget()
 		}
-	case hitSettingsMasterSet:
-		if vaultFile != nil {
-			state.openMasterPassword(false)
-		}
-	case hitSettingsMasterChange:
-		if vaultFile == nil {
-			break
-		}
-		if vaultFile.Unlocked() {
-			state.openMasterPassword(true)
-		} else {
-			state.openVaultUnlock(nil, func() { state.openMasterPassword(true) })
-		}
-	case hitSettingsMasterRemove:
-		if vaultFile == nil {
-			break
-		}
-		remove := func() {
-			if err := vaultFile.RemoveMasterPassword(); err != nil {
-				state.status = fmt.Sprintf(state.messages.VaultSaveFailedFmt, state.vaultErrorText(err))
-				return
-			}
-			state.status = state.messages.VaultMasterRemoved
-		}
-		if vaultFile.Unlocked() {
-			remove()
-		} else {
-			state.openVaultUnlock(nil, remove)
-		}
-	case hitSettingsMasterLock:
-		if vaultFile != nil {
-			vaultFile.Lock()
+	case hitSettingsVaultConvert:
+		if vaultFile != nil && vaultFile.NeedsConversion() {
 			state.secrets.declined = false
-		}
-	case hitSettingsMasterUnlock:
-		if vaultFile != nil && !vaultFile.Unlocked() {
 			state.openVaultUnlock(nil, nil)
 		}
 	default:
@@ -521,37 +419,22 @@ func (state *State) paintSecuritySettings(page *settingsPage) {
 	if vaultFile == nil {
 		return
 	}
-	hasPassword, unlocked, count := vaultFile.HasMasterPassword(), vaultFile.Unlocked(), vaultFile.Len()
+	convert, count := vaultFile.NeedsConversion(), vaultFile.Len()
 	description := m.SettingsVaultEmpty
 	switch {
-	case count > 0 && hasPassword:
+	case count > 0 && convert:
 		description = fmt.Sprintf(m.SettingsVaultDescriptionLockedFmt, count)
 	case count > 0:
 		description = fmt.Sprintf(m.SettingsVaultDescriptionFmt, count)
 	}
-	forget := components.ButtonAction{ID: hitSettingsVaultForget, Label: m.SettingsVaultForgetAll, Variant: components.ButtonOutline}
-
 	actions := state.secrets.actions[:0]
-	switch {
-	case !hasPassword:
-		actions = append(actions, components.ButtonAction{ID: hitSettingsMasterSet, Label: m.SettingsMasterPasswordSet, Variant: components.ButtonOutline})
-	case unlocked:
-		actions = append(actions,
-			components.ButtonAction{ID: hitSettingsMasterLock, Label: m.SettingsMasterPasswordLock, Variant: components.ButtonOutline},
-			components.ButtonAction{ID: hitSettingsMasterChange, Label: m.SettingsMasterPasswordChange, Variant: components.ButtonOutline},
-			components.ButtonAction{ID: hitSettingsMasterRemove, Label: m.SettingsMasterPasswordRemove, Variant: components.ButtonOutline},
-		)
-	default:
-		actions = append(actions,
-			components.ButtonAction{ID: hitSettingsMasterUnlock, Label: m.SettingsMasterPasswordUnlock},
-			components.ButtonAction{ID: hitSettingsMasterChange, Label: m.SettingsMasterPasswordChange, Variant: components.ButtonOutline},
-			components.ButtonAction{ID: hitSettingsMasterRemove, Label: m.SettingsMasterPasswordRemove, Variant: components.ButtonOutline},
-		)
+	if convert {
+		actions = append(actions, components.ButtonAction{ID: hitSettingsVaultConvert, Label: m.SettingsVaultConvert})
 	}
+	actions = append(actions, components.ButtonAction{ID: hitSettingsVaultForget, Label: m.SettingsVaultForgetAll, Variant: components.ButtonOutline})
 	page.groups(func() {
 		page.group(m.SettingsGroupSecurity, func() {
-			page.actionRow(m.SettingsVault, description, count == 0 && !hasPassword, forget)
-			page.actionRow(m.SettingsMasterPassword, m.SettingsMasterPasswordDescription, false, actions...)
+			page.actionRow(m.SettingsVault, description, count == 0, actions...)
 		})
 	})
 }
@@ -625,14 +508,9 @@ func (state *State) autofillOTP(session *Session) autofillResult {
 	if session.otpSent || vaultFile == nil || vaultFile.Len() == 0 {
 		return autofillNone
 	}
-	name := otpSecretName(session.endpoint)
+	name := state.otpSecretName(session)
 	value, found, err := vaultFile.Get(name)
 	switch {
-	case errors.Is(err, vault.ErrLocked):
-		if state.secrets.declined {
-			return autofillNone
-		}
-		return autofillNeedsUnlock
 	case err != nil || !found:
 		return autofillNone
 	}

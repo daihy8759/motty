@@ -72,7 +72,7 @@ func (state *State) paintHostProtocolSwitch(canvas *ui.Canvas, bounds ui.Rect) {
 func (state *State) paintHostEndpointRows(canvas *ui.Canvas, x, y, width, rowHeight float32) {
 	m, tools := state.messages, state.messages.Tools
 	editor := &state.editor
-	var address, picker, second, password, third, authentication, identity flex.Box
+	var address, picker, second, password, third, authentication, identity, passphrase flex.Box
 	f := state.partLayout.Begin(canvas, state.Theme(), ui.Rect{X: x, Y: y, Width: width, Height: float32(state.hostEndpointRows()) * rowHeight})
 	f.Column().Fill().Children(func() {
 		switch editor.protocol {
@@ -116,6 +116,9 @@ func (state *State) paintHostEndpointRows(canvas *ui.Canvas, x, y, width, rowHei
 					password = f.Slot().Grow(1)
 				}
 			})
+			if state.hostAsksKeyPassphrase() {
+				passphrase = f.Slot().Height(rowHeight)
+			}
 		default:
 			f.Row().Height(rowHeight).Gap(8).Children(func() {
 				address = f.Slot().Grow(1)
@@ -162,6 +165,9 @@ func (state *State) paintHostEndpointRows(canvas *ui.Canvas, x, y, width, rowHei
 		state.paintHostAuthenticationChoice(canvas, authentication.Rect())
 		if editor.auth == authPrivateKey {
 			state.paintHostIdentityChoice(canvas, identity.Rect())
+			if state.hostAsksKeyPassphrase() {
+				state.paintSecureDialogField(canvas, hitDialogPassphrase, fieldPassphrase, m.KeyPassphraseLabel, state.hostPassphraseHint(), passphrase.Rect())
+			}
 		} else if editor.auth != authAgent {
 			state.paintSecureDialogField(canvas, hitDialogPassword, fieldPassword, m.FieldPassword, state.hostPasswordHint(), password.Rect())
 		}
@@ -267,10 +273,6 @@ func (state *State) clickHostProtocol(id ui.ID) bool {
 	case state.clickTransferChoice(id):
 	case state.clickHostColor(id):
 	case id == hitDialogOTPRemove:
-		if !editor.otpChecked {
-			state.checkEditedHostOTP()
-			return true
-		}
 		editor.otpRemove = !editor.otpRemove
 	case id == hitDialogOTPScan:
 		state.scanOTPImage()
@@ -324,9 +326,31 @@ func (state *State) hostEndpointRows() int {
 	case protocolTelnet:
 		return 1
 	case protocolSSH:
+		if state.hostAsksKeyPassphrase() {
+			return 3
+		}
 		return 2
 	}
 	return 2
+}
+
+// hostAsksKeyPassphrase reports whether the form takes the passphrase of the
+// key the host is pinned to: only a single, encrypted key has one to take. With
+// every key in play there is no one passphrase to ask for here.
+func (state *State) hostAsksKeyPassphrase() bool {
+	editor := &state.editor
+	if editor.protocol != protocolSSH || editor.auth != authPrivateKey || editor.identity == "" {
+		return false
+	}
+	identity, ok := state.identityForFingerprint(editor.identity)
+	return ok && identity.Encrypted
+}
+
+func (state *State) hostPassphraseHint() string {
+	if state.hostDialogMode == hostDialogEdit {
+		return state.messages.FieldPasswordKeepHint
+	}
+	return state.messages.FieldPasswordHint
 }
 
 // Size the body from its rows; short viewports scroll instead of shrinking them.
@@ -477,7 +501,7 @@ func (state *State) paintAlgorithmRows(canvas *ui.Canvas, x, y, width, rowHeight
 		state.paintDialogField(canvas, hitDialogAlgorithms, fieldAlgorithms, m.AlgoCustomField, m.AlgoCustomPlaceholder, custom.Rect())
 	}
 	var removeRect ui.Rect
-	if editor.otpSaved || !editor.otpChecked {
+	if editor.otpSaved {
 		removeRect = remove.Rect()
 	}
 	state.paintOTPRow(canvas, otp.Rect(), scan.Rect(), paste.Rect(), removeRect)
@@ -497,9 +521,7 @@ func (state *State) paintAlgorithmRows(canvas *ui.Canvas, x, y, width, rowHeight
 func (state *State) paintOTPRow(canvas *ui.Canvas, field, scan, paste, remove ui.Rect) {
 	m, editor := state.messages.Tools, &state.editor
 	placeholder := m.OTPPlaceholder
-	if !editor.otpChecked {
-		placeholder = m.OTPUncheckedPlaceholder
-	} else if editor.otpSaved {
+	if editor.otpSaved {
 		placeholder = m.OTPSavedPlaceholder
 		if editor.otpRemove {
 			placeholder = m.OTPRemovingPlaceholder
@@ -510,11 +532,8 @@ func (state *State) paintOTPRow(canvas *ui.Canvas, field, scan, paste, remove ui
 	state.rememberHostControl(hitDialogOTPScan, scan)
 	components.BeginButton(canvas, state.Theme(), hitDialogOTPPaste, paste).Small().Outline(m.OTPPaste)
 	state.rememberHostControl(hitDialogOTPPaste, paste)
-	if !editor.otpChecked || editor.otpSaved {
-		label := m.OTPCheck
-		if editor.otpChecked {
-			label = m.OTPRemove
-		}
+	if editor.otpSaved {
+		label := m.OTPRemove
 		if editor.otpRemove {
 			label = m.OTPKeep
 		}

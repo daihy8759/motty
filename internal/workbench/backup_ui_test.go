@@ -53,7 +53,7 @@ func exportBackup(t *testing.T, state *State) {
 
 func TestABackupFileCarriesHostsSettingsKeysAndPasswordsToAnotherComputer(t *testing.T) {
 	source, sourceOptions, file := backupTestState(t)
-	if err := source.secrets.vault.Set("password:deploy@prod.example.com:22", "hunter2"); err != nil {
+	if err := source.secrets.vault.Set("aikey:deploy@prod.example.com:22", "hunter2"); err != nil {
 		t.Fatal(err)
 	}
 	const keyLine = "prod.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForTheTest"
@@ -103,7 +103,7 @@ func TestABackupFileCarriesHostsSettingsKeysAndPasswordsToAnotherComputer(t *tes
 	if len(target.hosts) != len(sampleHosts) || target.hosts[0].Label != "Production" || target.terminalScrollback != 10000 {
 		t.Fatalf("restored %d hosts, first %q, scrollback %d", len(target.hosts), target.hosts[0].Label, target.terminalScrollback)
 	}
-	if value, found, err := target.secrets.vault.Get("password:deploy@prod.example.com:22"); err != nil || !found || value != "hunter2" {
+	if value, found, err := target.secrets.vault.Get("aikey:deploy@prod.example.com:22"); err != nil || !found || value != "hunter2" {
 		t.Fatalf("saved password: %q %v %v", value, found, err)
 	}
 	known, _ := os.ReadFile(targetOptions.KnownHostsPath)
@@ -125,7 +125,7 @@ func TestABackupFileCarriesHostsSettingsKeysAndPasswordsToAnotherComputer(t *tes
 
 func TestABackupDoesNotCarryTheLoginsToTheBackupItself(t *testing.T) {
 	state, _, _ := backupTestState(t)
-	for _, name := range []string{webdavPasswordSecret, backupPasswordSecret, "password:a@b:22"} {
+	for _, name := range []string{webdavPasswordSecret, backupPasswordSecret, "aikey:a@b:22"} {
 		if err := state.secrets.vault.Set(name, "value-"+name); err != nil {
 			t.Fatal(err)
 		}
@@ -134,7 +134,7 @@ func TestABackupDoesNotCarryTheLoginsToTheBackupItself(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(document.Secrets) != 1 || document.Secrets[0].Name != "password:a@b:22" || document.Secrets[0].Value == "" || document.Secrets[0].Stamp == "" {
+	if len(document.Secrets) != 1 || document.Secrets[0].Name != "aikey:a@b:22" || document.Secrets[0].Value == "" || document.Secrets[0].Stamp == "" {
 		t.Fatalf("secrets in the backup: %v", document.Secrets)
 	}
 }
@@ -309,7 +309,7 @@ func TestSyncMergesTwoComputersThroughAWebDAVServer(t *testing.T) {
 
 	first.terminalScrollback = 10000
 	first.save()
-	if err := first.secrets.vault.Set("password:deploy@prod.example.com:22", "hunter2"); err != nil {
+	if err := first.secrets.vault.Set("aikey:deploy@prod.example.com:22", "hunter2"); err != nil {
 		t.Fatal(err)
 	}
 	syncAndWait(t, first, hitSyncNow, first.messages.Tools.SyncDone)
@@ -333,7 +333,7 @@ func TestSyncMergesTwoComputersThroughAWebDAVServer(t *testing.T) {
 	if second.terminalScrollback != 10000 {
 		t.Fatalf("the setting did not arrive: %d", second.terminalScrollback)
 	}
-	if value, found, _ := second.secrets.vault.Get("password:deploy@prod.example.com:22"); !found || value != "hunter2" {
+	if value, found, _ := second.secrets.vault.Get("aikey:deploy@prod.example.com:22"); !found || value != "hunter2" {
 		t.Fatalf("the saved password did not arrive: %q %v", value, found)
 	}
 	if second.sync.etag == "" {
@@ -363,7 +363,7 @@ func TestComputersThatChangedDifferentThingsEndUpWithBoth(t *testing.T) {
 	first.hosts = first.hosts[1:]
 	first.hostDataChanged()
 	first.save()
-	if err := first.secrets.vault.Set("password:only@first:22", "one"); err != nil {
+	if err := first.secrets.vault.Set("aikey:only@first:22", "one"); err != nil {
 		t.Fatal(err)
 	}
 	second.hosts = append(second.hosts, Host{ID: second.nextHostID, Label: "Added on second", Address: "second.example.com", User: "me", Port: 22})
@@ -388,7 +388,7 @@ func TestComputersThatChangedDifferentThingsEndUpWithBoth(t *testing.T) {
 		if len(state.snippets.list) != 1 || state.snippets.list[0].Name != "greet" {
 			t.Errorf("%s snippets %+v", name, state.snippets.list)
 		}
-		if value, found, _ := state.secrets.vault.Get("password:only@first:22"); !found || value != "one" {
+		if value, found, _ := state.secrets.vault.Get("aikey:only@first:22"); !found || value != "one" {
 			t.Errorf("%s did not get the password: %q %v", name, value, found)
 		}
 	}
@@ -402,20 +402,20 @@ func TestADeletedPasswordIsDeletedOnTheOtherComputerToo(t *testing.T) {
 	configureSync(t, first, server)
 	configureSync(t, second, server)
 	done := first.messages.Tools.SyncDone
-	if err := first.secrets.vault.Set("password:old@host:22", "secret"); err != nil {
+	if err := first.secrets.vault.Set("aikey:old@host:22", "secret"); err != nil {
 		t.Fatal(err)
 	}
 	syncAndWait(t, first, hitSyncNow, done)
 	syncAndWait(t, second, hitSyncNow, done)
-	if _, found, _ := second.secrets.vault.Get("password:old@host:22"); !found {
+	if _, found, _ := second.secrets.vault.Get("aikey:old@host:22"); !found {
 		t.Fatal("the password did not arrive")
 	}
-	if err := second.secrets.vault.Delete("password:old@host:22"); err != nil {
+	if err := second.secrets.vault.Delete("aikey:old@host:22"); err != nil {
 		t.Fatal(err)
 	}
 	syncAndWait(t, second, hitSyncNow, done)
 	syncAndWait(t, first, hitSyncNow, done)
-	if _, found, _ := first.secrets.vault.Get("password:old@host:22"); found {
+	if _, found, _ := first.secrets.vault.Get("aikey:old@host:22"); found {
 		t.Fatal("the deletion did not reach the first computer")
 	}
 }

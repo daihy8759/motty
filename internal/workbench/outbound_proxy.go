@@ -233,9 +233,7 @@ func (state *State) hostProxyPrecheck() string {
 	switch {
 	case vaultFile == nil:
 		return state.messages.Tools.ProxyErrorNoVault
-	case vaultFile.Unlocked():
-		return ""
-	case vaultFile.HasMasterPassword():
+	case vaultFile.NeedsConversion():
 		return state.messages.Tools.ProxyPasswordLocked
 	case vaultFile.Prepare() != nil:
 		return state.messages.Tools.ProxyErrorNoVault
@@ -264,13 +262,13 @@ func (state *State) hostProxyChanges(host Host, previous, source *Host) (note st
 			return "", nil, state.messages.Tools.ProxyErrorNoVault
 		}
 		changes = append(changes, vault.Change{Name: destination, Value: state.editor.proxyPassword})
-		if previousSecret != "" && previousSecret != destination && vaultFile.Unlocked() {
+		if previousSecret != "" && previousSecret != destination && !vaultFile.NeedsConversion() {
 			changes = append(changes, vault.Change{Name: previousSecret, Delete: true})
 		}
 		return "", changes, ""
 	}
 	if needsPassword && previous == nil && source != nil && sameProxyLogin(proxy, source.Proxy) && vaultFile != nil && vaultFile.Len() > 0 {
-		if !vaultFile.Unlocked() {
+		if vaultFile.NeedsConversion() {
 			return state.messages.Tools.HostProxyPasswordNotCarried, nil, ""
 		}
 		origin := hostProxyPasswordSecret(source.CatalogID, source.Proxy)
@@ -296,7 +294,7 @@ func (state *State) hostProxyChanges(host Host, previous, source *Host) (note st
 	if !needsPassword && hadPassword && vaultFile != nil {
 		// A locked master-password vault must be opened before its secret can be
 		// retired. The default system-keystore vault can be opened by Apply.
-		if !vaultFile.Unlocked() && vaultFile.HasMasterPassword() && vaultFile.Len() > 0 {
+		if vaultFile.NeedsConversion() && vaultFile.Len() > 0 {
 			return "", nil, state.messages.Tools.ProxyPasswordLocked
 		}
 		if previousSecret != "" {
@@ -418,7 +416,7 @@ func (state *State) submitOutboundProxy() {
 			return
 		}
 		if err := state.secrets.vault.Set(proxyPasswordSecret, password); err != nil {
-			if errors.Is(err, vault.ErrLocked) {
+			if errors.Is(err, vault.ErrNeedsConversion) {
 				form.dialogError = m.ProxyPasswordLocked
 			} else {
 				form.dialogError = fmt.Sprintf(state.messages.VaultSaveFailedFmt, state.vaultErrorText(err))
@@ -428,7 +426,7 @@ func (state *State) submitOutboundProxy() {
 	}
 	if (saved.kind == sshconn.ProxyNone || saved.user == "") && state.secrets.vault != nil {
 		// No login any more: the password is not kept.
-		if err := state.secrets.vault.Delete(proxyPasswordSecret); err != nil && !errors.Is(err, vault.ErrLocked) {
+		if err := state.secrets.vault.Delete(proxyPasswordSecret); err != nil && !errors.Is(err, vault.ErrNeedsConversion) {
 			form.dialogError = fmt.Sprintf(state.messages.VaultSaveFailedFmt, state.vaultErrorText(err))
 			return
 		}
@@ -502,7 +500,7 @@ func (state *State) paintOutboundProxyDialog(canvas *ui.Canvas, viewport ui.Rect
 		content := components.BeginField(canvas, theme, slots[index].Rect()).Paint(entry.label, "", "")
 		value := entry.editor.String()
 		focused := canvas.Focused() == entry.id
-		components.PaintInput(canvas, theme, content, components.InputSnapshot{
+		state.paintSecretInput(canvas, content, components.InputSnapshot{
 			ID: entry.id, Label: entry.label, Value: value, Placeholder: entry.placeholder, Secure: entry.secure,
 			Focused: focused, PlatformEditing: focused && value != "", Disabled: disabled && entry.id != hitOutboundProxyBypass,
 		})

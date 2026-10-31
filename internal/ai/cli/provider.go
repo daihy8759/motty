@@ -194,6 +194,14 @@ func (p *provider) RunSession(parent context.Context, req llm.Request, call func
 	if len(c.input) > 3<<20 {
 		return errors.New("cli: input_limit")
 	}
+	if images := conversationImages(req.Messages); len(images) > 0 && p.kind == store.KindClaudeCLI {
+		// Claude Code takes pictures only as content blocks of a stream-json
+		// message; the prompt text becomes the last block of that one message.
+		if c.input, err = claudeImageInput(c.input, images); err != nil {
+			return err
+		}
+		c.args = append(c.args, "--input-format", "stream-json")
+	}
 	return streamProcess(ctx, c, newParser(p.kind), emit)
 }
 func sessionName() string {

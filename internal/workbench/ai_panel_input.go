@@ -57,6 +57,7 @@ func (state *State) aiPrepareBottom(canvas *ui.Canvas, width float32) (boxHeight
 	boxWidth := width + 2*aiPad - 2*aiComposerMargin
 	rows := max(panel.inputLayout.RowCount(canvas, theme, ai.input.String(), boxWidth, false), 2) // two rows to begin with
 	state.aiSyncMentions()
+	state.aiLayoutChips(canvas, width)
 	if len(ai.approvals) > 0 {
 		state.aiLayoutApprovalSummary(canvas, ai.approvals[0], width)
 	}
@@ -99,6 +100,9 @@ func (state *State) declareAIBottom(f *flex.Frame, body *aiBody, boxHeight float
 						body.mentions[index] = f.Slot().Height(aiMentionRow)
 					}
 				})
+			}
+			if panel.chipRows > 0 {
+				state.declareAIChips(f)
 			}
 		})
 		body.box = f.Slot().Height(boxHeight).MarginSides(aiComposerMargin, aiComposerMargin, aiComposerMargin, aiComposerMargin)
@@ -298,7 +302,7 @@ func (state *State) paintAIBottom(canvas *ui.Canvas, body *aiBody) {
 
 	running := ai.run != nil
 	_, hasModel := state.aiModelText()
-	disabled := !running && (strings.TrimSpace(value) == "" || !hasModel)
+	disabled := !running && (!state.aiCanSend() || !hasModel)
 
 	// Inside the box, along its bottom: the model chip, and Send (or Stop while a
 	// request is running) as a round button.
@@ -325,6 +329,7 @@ func (state *State) paintAIBottom(canvas *ui.Canvas, body *aiBody) {
 				}
 			}
 			f.Spacer()
+			state.declareAIAttachButton(f)
 			f.Stack().Size(aiSendSize, aiSendSize).Shrink(0).Children(func() {
 				// The focus ring is two pixels outside the button.
 				if !disabled && canvas.FocusVisible() == hitAISend {

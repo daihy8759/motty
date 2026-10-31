@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/ui"
 	"motty/internal/sftpclient"
 )
@@ -90,6 +91,11 @@ func (state *State) toggleSFTPPane(view *sftpView) {
 	}
 	dir := view.lfolder.path
 	if dir == "" {
+		if session, ok := state.sftpSession(view); ok {
+			dir = session.fileHistory[0].path
+		}
+	}
+	if dir == "" {
 		dir = localStart()
 	}
 	state.listLocal(view, dir)
@@ -100,6 +106,28 @@ func (state *State) toggleSFTPPane(view *sftpView) {
 // on the window thread when it arrives. localSeq drops an answer that a newer
 // listing has overtaken.
 func (state *State) listLocal(view *sftpView, dir string) error {
+	return state.listLocalNavigation(view, dir, sftpNavigationPassive, 0)
+}
+
+func (state *State) listLocalNavigation(view *sftpView, dir string, kind sftpNavigationKind, index int) error {
+	dir = filepath.Clean(dir)
+	nav := state.beginSFTPNavigation(view, true, dir, kind, index)
+	if view.detached != nil {
+		view.detached.pendingLocal = dir
+	}
+	succeeded := false
+	defer func() {
+		if !succeeded && view.lfolder.navigation.id == nav.id {
+			view.lfolder.navigation = sftpNavigation{}
+			if view.detached != nil {
+				view.detached.pendingLocal = ""
+			}
+		}
+	}()
+	// Even a failed newer request retires older background/deferred answers.
+	view.localSeq++
+	seq := view.localSeq
+	state.retireLocalListingStatus(view)
 	folder := &view.lfolder
 	dir = filepath.Clean(dir)
 	file, err := os.Open(dir)
@@ -126,27 +154,22 @@ func (state *State) listLocal(view *sftpView, dir string) error {
 		}
 		return readErr
 	}
-	view.localSeq++
-	seq := view.localSeq
 	if len(first) <= localListingInlineEntries {
+		listing := readLocalListing(dir, file, first, readErr)
 		file.Close()
-		state.applyLocalListing(view, scanLocalListing(dir, first), seq)
+		listing.navigation = nav
+		succeeded = true
+		state.applyLocalListing(view, listing, seq)
 		return nil
 	}
 	view.errorText = ""
 	view.startListingStatus(state.messages.SFTPLoading)
+	view.localListingStatus = true
+	succeeded = true
 	go func() {
 		defer file.Close()
-		items := first
-		for len(items) < maxLocalEntries {
-			want := min(4096, maxLocalEntries-len(items))
-			more, err := file.ReadDir(want)
-			items = append(items, more...)
-			if err != nil || len(more) == 0 {
-				break
-			}
-		}
-		listing := scanLocalListing(dir, items)
+		listing := readLocalListing(dir, file, first, readErr)
+		listing.navigation = nav
 		state.aiPost(func(*State) {
 			if seq != view.localSeq {
 				return
@@ -157,24 +180,66 @@ func (state *State) listLocal(view *sftpView, dir string) error {
 	return nil
 }
 
-// localListing is a local folder scanned away from the window thread.
-type localListing struct {
-	dir     string
-	entries []sftpclient.Entry
-	rows    []sftpRow
+// A superseded local read has no reply left to retire its loading message.
+// Remote listings share the same wording but retain their own ownership.
+func (state *State) retireLocalListingStatus(view *sftpView) {
+	if !view.localListingStatus {
+		return
+	}
+	if view.listingStatus != "" && view.status == view.listingStatus {
+		state.refreshSFTPFilterStatus(view, view.active())
+	}
+	view.listingStatus = ""
+	view.localListingStatus = false
 }
 
-// localListing scans, sorts and prepares one local folder. It touches no State
-// so a goroutine may run it while the window keeps painting.
-func scanLocalListing(dir string, items []os.DirEntry) localListing {
-	entries := make([]sftpclient.Entry, 0, min(len(items), maxLocalEntries))
-	hidden := make([]bool, 0, min(len(items), maxLocalEntries))
-	for _, item := range items {
-		if len(entries) == maxLocalEntries {
+// localListing is a local folder scanned away from the window thread.
+type localListing struct {
+	navigation sftpNavigation
+	dir        string
+	entries    []sftpclient.Entry
+	rows       []sftpRow
+	coverage   localListingCoverage
+}
+
+type localListingCoverage struct {
+	truncated bool
+	skipped   int
+	readError string
+}
+
+func (coverage localListingCoverage) incomplete() bool {
+	return coverage.truncated || coverage.skipped > 0 || coverage.readError != ""
+}
+
+// One lookahead distinguishes a complete, exactly capped directory from one
+// with more entries. Only the first maxLocalEntries raw entries are statted.
+func readLocalListing(dir string, file *os.File, items []os.DirEntry, readErr error) localListing {
+	for len(items) > localListingInlineEntries && len(items) <= maxLocalEntries && readErr == nil {
+		more, err := file.ReadDir(min(4096, maxLocalEntries+1-len(items)))
+		items = append(items, more...)
+		readErr = err
+		if len(more) == 0 {
 			break
 		}
+	}
+	listing := scanLocalListing(dir, items)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		listing.coverage.readError = readErr.Error()
+	}
+	return listing
+}
+
+// scanLocalListing scans, sorts and prepares one local folder. It touches no State
+// so a goroutine may run it while the window keeps painting.
+func scanLocalListing(dir string, items []os.DirEntry) localListing {
+	coverage := localListingCoverage{truncated: len(items) > maxLocalEntries}
+	entries := make([]sftpclient.Entry, 0, min(len(items), maxLocalEntries))
+	hidden := make([]bool, 0, min(len(items), maxLocalEntries))
+	for _, item := range items[:min(len(items), maxLocalEntries)] {
 		info, err := item.Info()
 		if err != nil {
+			coverage.skipped++
 			continue
 		}
 		entry := sftpclient.Entry{Name: item.Name(), Size: info.Size(), Mode: info.Mode(), ModTime: info.ModTime()}
@@ -220,7 +285,8 @@ func scanLocalListing(dir string, items []os.DirEntry) localListing {
 	for index := range rows {
 		rows[index].hidden = sortedHidden[index]
 	}
-	return localListing{dir: dir, entries: sorted, rows: rows}
+	attachAppIconSlots(dir, rows)
+	return localListing{dir: dir, entries: sorted, rows: rows, coverage: coverage}
 }
 
 // applyLocalListing puts a finished local listing on screen. seq must still be
@@ -233,17 +299,27 @@ func (state *State) applyLocalListing(view *sftpView, listing localListing, seq 
 	if view.deferDraggedListing(true, func() { state.applyLocalListing(view, listing, seq) }) {
 		return
 	}
+	if listing.navigation.id != 0 && listing.navigation.id != view.lfolder.navigation.id {
+		return
+	}
 	if view.detached != nil {
 		view.detached.pendingLocal = ""
 	}
 	folder := &view.lfolder
+	place, restore := folder.acceptNavigation(listing.dir, listing.navigation)
 	folder.path = listing.dir
+	previousRows := folder.allRows
 	folder.allRows = listing.rows
+	state.loadAppIcons(view, previousRows, listing.rows)
+	folder.localCoverage = listing.coverage
 	folder.crumbs = prepareLocalCrumbs(folder.crumbs, listing.dir)
 	state.applySFTPFilter(view, folder, true)
+	state.finishSFTPNavigation(view, true, place, restore)
+	state.retireLocalListingStatus(view)
 	view.errorText = ""
 	if view.detached != nil {
 		view.setItemCountStatus(state.messages.SFTPItemsFmt, len(folder.rows))
+		view.detached.browseListingCommitted(true, listing.dir)
 	}
 }
 
@@ -280,19 +356,21 @@ func (state *State) clickSFTPLocal(session *Session, view *sftpView, id ui.ID) b
 		state.listLocal(view, folder.path)
 	case id == hitSFTPUp:
 		if parent := filepath.Dir(folder.path); parent != folder.path {
-			state.listLocal(view, parent)
+			state.navigateLocalDirectory(view, parent)
 		}
 	case id == hitSFTPNewDirectory:
 		state.openSFTPDialog(view, sftpDialogCreateDirectory)
 	case id == hitSFTPOpenEntry:
 		state.openLocalSelected(view)
+	case id == hitSFTPEditExternal:
+		state.openLocalExternal(view)
 	case id == hitSFTPSend && !view.localOnly:
 		state.sendLocalSelection(view)
 	case id == hitSFTPInsertPath && view.localOnly:
 		state.insertLocalPaths(session, view)
 	case id.Scope() == hitSFTPBreadcrumbList:
 		if index := item(id); index < len(folder.crumbs) {
-			state.listLocal(view, folder.crumbs[index].path)
+			state.navigateLocalDirectory(view, folder.crumbs[index].path)
 		}
 	case id.Scope() == hitSFTPEntryList:
 		index := folder.first + item(id)
@@ -318,7 +396,31 @@ func (state *State) openLocalSelected(view *sftpView) {
 		state.openFileWindow(view, filepath.Join(view.lfolder.path, entry.Name), true)
 		return
 	}
-	state.listLocal(view, filepath.Join(view.lfolder.path, entry.Name))
+	state.navigateLocalDirectory(view, filepath.Join(view.lfolder.path, entry.Name))
+}
+
+// Local files already live at their final path. Opening one in the system's
+// application must not download a copy or start remote edit synchronization.
+func (state *State) openLocalExternal(view *sftpView) {
+	count, entry := selectedSFTP(view)
+	if !view.local || count != 1 || entry.IsDir() || view.lfolder.path == "" {
+		return
+	}
+	location := filepath.Join(view.lfolder.path, entry.Name)
+	info, err := os.Lstat(location)
+	if err == nil && !info.Mode().IsRegular() {
+		err = errors.New(state.messages.SFTPWindow.LocalEditNotFile)
+	}
+	if err == nil {
+		err = state.options.OpenPath(location)
+	}
+	if err != nil {
+		if isExecutablePathError(err) {
+			state.fileOpenNotice(view.detached, state.messages.Tools.ExtEditButton, state.messages.Tools.ExtEditRefused, components.ToastError)
+		} else {
+			state.fileOpenPathReason(view.detached, state.messages.Tools.ExtEditButton, state.messages.Tools.ExtEditOpenFailedFmt, location, err.Error(), components.ToastError)
+		}
+	}
 }
 
 // insertLocalPaths types the selected items' paths into the local shell, quoted
@@ -332,7 +434,7 @@ func (state *State) insertLocalPaths(session *Session, view *sftpView) {
 		paths = append(paths, filepath.Join(view.lfolder.path, row.entry.Name))
 	}
 	if len(paths) > 0 {
-		session.term.send([]byte(quotedPaths(paths) + " "))
+		session.term.send([]byte(quotedPaths(paths, session.wslDistro()) + " "))
 	}
 }
 
@@ -354,7 +456,7 @@ func (state *State) downloadHere(view *sftpView) {
 		return
 	}
 	for _, row := range selectedSFTPRows(view) {
-		state.queueSFTPDownload(view, row.entry, filepath.Join(view.lfolder.path, row.entry.Name))
+		state.queueSFTPDownload(view, row.entry, filepath.Join(view.lfolder.path, safeLocalName(row.entry.Name)))
 	}
 }
 
@@ -387,7 +489,7 @@ func scrollFolder(folder *sftpFolder, event ui.ScrollEvent) ui.EventResult {
 	if folder.visibleRows <= 0 || len(folder.rows) <= folder.visibleRows {
 		return ui.EventResult{Handled: true}
 	}
-	folder.wheel += event.DeltaY / sftpRowHeight
+	folder.wheel += event.StepY(sftpRowHeight) / sftpRowHeight
 	lines := int(folder.wheel)
 	if lines == 0 {
 		return ui.EventResult{Handled: true}

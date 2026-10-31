@@ -39,7 +39,9 @@ const (
 // The page is a column: the window bar's room, the pane's bar, then the terminal
 // whose cells paintGrid draws.
 func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *Session) {
+	state.wantLatencyProbe(session, canvas)
 	pal := state.pal
+	showStats := session.stats != nil && (session.ID != state.activeSessionID || !state.monitorShown(state.deck.ActiveWorkspace()))
 	barHeight := state.terminalInfoBarHeight(session.ID)
 	geometry := terminalLayoutWithInfoBar(size, state.cellWidth, state.cellHeight, barHeight, state.padding())
 	inactive := state.paneIsInactive(session.ID)
@@ -57,7 +59,7 @@ func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *
 	tools := toolList[:0]
 	if !inactive && !finding {
 		if session.host.isSSH() && !session.isLocal() {
-			tools = append(tools, barTool{id: hitSFTPDetach, icon: iconTransfer, hint: state.messages.SFTPWindow.Open, disabled: !session.hasServer() || session.phase != sshconn.PhaseConnected || state.options.OpenContentWindow == nil, style: iconButtonQuiet})
+			tools = append(tools, barTool{id: hitSFTPDetach, icon: iconSFTPTransfer, hint: state.messages.SFTPWindow.Open, disabled: !session.hasServer() || session.phase != sshconn.PhaseConnected || state.options.OpenContentWindow == nil, style: iconButtonQuiet})
 		}
 		filesStyle := iconButtonQuiet
 		if context, ok := state.deck.Context(state.deck.ActiveWorkspace()); ok && context.Open {
@@ -103,12 +105,13 @@ func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *
 	showProgress := !session.isLocal() && !session.term.live && !(inSplit && session.quietOK())
 	var light, spinner, statsSlot, progressSlot flex.Box
 	var find findBarSlots
+	var inputNotice flex.Box
 
 	// The bar is a step darker than the window bar above it and a step lighter
 	// than the terminal below, so the three read as separate strips.
 	f := state.terminalPageLayout.Begin(canvas, state.Theme(), ui.Rect{Width: size.Width, Height: size.Height})
 	f.Column().Fill().PadSides(windowBarHeight, 0, 0, 0).Children(func() {
-		f.Stack().Height(barHeight).Shrink(0).Background(barBackground).Children(func() {
+		f.Stack().Height(infoBarHeight).Shrink(0).Background(barBackground).Children(func() {
 			switch {
 			case inactive:
 				spinner = state.declareInactiveBar(f, size.Width, title, status, session)
@@ -128,7 +131,8 @@ func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *
 							f.Text(status).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(pal.muted).LineHeight(22).
 								Width(canvas.TextWidthWeight(status, metrics.FontSizeS, ui.WeightMedium)+2).MarginSides(0, 4, 0, 0)
 						}
-						if session.stats != nil {
+						state.declareLatencyTag(f, canvas, session)
+						if showStats {
 							// The readout drops the metrics that do not fit (see
 							// paintRemoteStatsReadout): it gets the room, and keeps clear of the tools.
 							statsSlot = f.Slot().Grow(1).Height(infoBarHeight).MinWidth(72).MarginSides(0, 12, 0, 0)
@@ -151,6 +155,9 @@ func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *
 			}
 			f.Row().FillWidth().Height(1).Self(flex.End).Background(barBorder)
 		})
+		if barHeight > infoBarHeight {
+			inputNotice = f.Slot().Height(inputNoticeHeight).FillWidth().Shrink(0)
+		}
 		f.Row().Grow(1).Background(state.ground(state.termPal.terminal))
 	})
 	f.End()
@@ -182,7 +189,7 @@ func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *
 			kind, _ := state.sessionLight(session)
 			paintLight(canvas, spot.X+spot.Width/2, spot.Y+spot.Height/2, kind, dot, barBackground)
 		}
-		if session.stats != nil {
+		if showStats {
 			slot := statsSlot.Rect()
 			if len(tools) > 0 && slot.X+slot.Width > tools[len(tools)-1].slot.Rect().X {
 				// A pane too narrow for its tools: the readout is what gives way.
@@ -197,6 +204,10 @@ func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *
 	}
 
 	state.paintGrid(canvas, session, geometry)
+	state.paintCompletionList(canvas, session, geometry)
+	if barHeight > infoBarHeight {
+		state.paintTerminalInputNotice(canvas, session, inputNotice.Rect())
+	}
 }
 
 // paintAIMarking draws the strip that says this line's command was started by
@@ -224,6 +235,7 @@ func (state *State) declareInactiveBar(f *flex.Frame, width float32, title, stat
 	f.Row().Fill().PadX(termPadX).Items(flex.Center).Children(func() {
 		f.Icon(lucideIcons[iconTerminal]).Size(14, 14).Color(pal.faint).MarginSides(0, 7, 0, 0)
 		f.Text(title).FontSize(barTitleSize).Weight(ui.WeightSemibold).Color(pal.muted).LineHeight(22).Ellipsis().Grow(1).MarginSides(0, gap, 0, 0)
+		state.declareLatencyTag(f, canvas, session)
 		if session.busy {
 			spinner = f.Slot().Size(14, 14).MarginSides(0, 9, 0, 0)
 		}
@@ -243,6 +255,7 @@ func (state *State) declareInactiveBar(f *flex.Frame, width float32, title, stat
 // nothing.
 func (state *State) paintGrid(canvas *ui.Canvas, session *Session, geometry terminalGeometry) {
 	state.paintGridWithID(canvas, session, geometry, hitTerminalList.At(int(session.ID)), false)
+	state.paintTerminalScrollbar(canvas, session, geometry)
 }
 
 func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometry terminalGeometry, id ui.ID, sensitive bool) {
@@ -285,6 +298,9 @@ func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometr
 		}
 		canvas.RequestFrameIn(delay)
 	}
+	if t.selection.dragging && t.selection.edge.direction != 0 {
+		canvas.RequestFrameIn(selectionScrollInterval)
+	}
 	canvas.Clip(geometry.area)
 	t.cache.begin()
 	if cap(t.rowIDs) < rows {
@@ -321,7 +337,7 @@ func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometr
 		}
 		entry := t.cache.row(t.presentedRow(row), cols, column, pal, inactive)
 		y := geometry.top + float32(row)*cellHeight
-		if from, to, selected := t.selection.span(row, t.presentedRow(row), cols); selected {
+		if from, to, selected := t.selection.span(t.screen.LineNumber(row), t.presentedRow(row), cols); selected {
 			left := snap(geometry.left + float32(from)*cellWidth)
 			right := snap(geometry.left + float32(to)*cellWidth)
 			canvas.Fill(ui.Rect{X: left, Y: y, Width: right - left, Height: cellHeight}, withAlpha(pal.termFG, 0.25))

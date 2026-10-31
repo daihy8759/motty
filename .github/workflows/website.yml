@@ -9,10 +9,14 @@ on:
     branches: [main]
     paths:
       - "website/**"
+      # The changelog is generated from the release notes (lib/releases.ts), so
+      # a release commit changes the site without touching website/.
+      - "docs/releases/**"
       - ".github/workflows/website.yml"
   pull_request:
     paths:
       - "website/**"
+      - "docs/releases/**"
       - ".github/workflows/website.yml"
   workflow_dispatch:
 

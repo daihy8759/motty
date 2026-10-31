@@ -106,7 +106,7 @@ func TestUnavailableSelectedKeyDoesNotFallBackToAnotherKey(t *testing.T) {
 func TestAgentAuthenticationHidesAndDoesNotSaveAPassword(t *testing.T) {
 	state := newTestState(t, testOptions(t))
 	host := Host{Protocol: protocolSSH, Address: "agent.example.com", User: "me", Port: 22, Auth: authAgent}
-	if _, ok := state.hostPasswordSecretName(host); ok {
+	if _, ok := hostPasswordSecretName(host); ok {
 		t.Fatal("agent-only host has a password vault entry")
 	}
 	state.Click(hitAddHost)

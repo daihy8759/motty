@@ -460,9 +460,8 @@ func TestDesktopPasswordQuestionCanUseTheSavedSecret(t *testing.T) {
 	_, port, _ := net.SplitHostPort(fixture.listener.Addr().String())
 	number, _ := strconv.Atoi(port)
 	host := Host{Label: "Desk", Address: "127.0.0.1", Protocol: protocolVNC, Port: uint16(number)}
-	addStreamHost(state, host)
-	endpoint := sshconn.Endpoint{Host: host.Address, Port: host.Port, User: vncAccount}
-	if err := state.secrets.vault.Set(passwordSecretName(endpoint), "secret"); err != nil {
+	host = addStreamHost(state, host)
+	if err := state.secrets.vault.Set(hostSecretName(host.CatalogID, hostPasswordPart), "secret"); err != nil {
 		t.Fatal(err)
 	}
 	openHost(state)
@@ -483,12 +482,12 @@ func TestDesktopPasswordSaveSurvivesTheConnection(t *testing.T) {
 	state.passwordFields[0].Insert("secret")
 	state.submitPassword()
 	waitUntil(t, state, "the picture", func() bool { return session.desk != nil && session.desk.width == 200 })
-	endpoint := session.endpoint
+	name := state.passwordName(session)
 	waitUntil(t, state, "the saved password", func() bool {
-		_, found, err := state.secrets.vault.Get(passwordSecretName(endpoint))
+		_, found, err := state.secrets.vault.Get(name)
 		return err == nil && found
 	})
-	value, found, err := state.secrets.vault.Get(passwordSecretName(endpoint))
+	value, found, err := state.secrets.vault.Get(name)
 	if err != nil || !found || value != "secret" {
 		t.Fatalf("saved value = %q found=%v err=%v", value, found, err)
 	}

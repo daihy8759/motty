@@ -11,6 +11,7 @@ const forwardHostPageSize = 6
 
 func (state *State) paintForwardsWorkspace(canvas *ui.Canvas, bounds ui.Rect) {
 	pal, messages := state.pal, state.messages
+	canAdd := state.sshHostCount() > 0
 	selected, hasSelection := state.forwardByID(state.selectedForwardID)
 	actionLabel := messages.ForwardStart
 	actionIcon := uint8(iconPlay)
@@ -65,10 +66,10 @@ func (state *State) paintForwardsWorkspace(canvas *ui.Canvas, bounds ui.Rect) {
 
 	state.paintToolbarButton(canvas, hitForwardRemove, remove.Rect().X, remove.Rect().Y, removeWidth, messages.ForwardRemove, removeIcon, false, hasSelection, condensed)
 	state.paintToolbarButton(canvas, hitForwardStartStop, action.Rect().X, action.Rect().Y, actionWidth, actionLabel, realActionIcon, false, hasSelection, condensed)
-	state.paintToolbarButton(canvas, hitForwardAdd, add.Rect().X, add.Rect().Y, addWidth, messages.ForwardAdd, addIcon, true, true, condensed)
+	state.paintToolbarButton(canvas, hitForwardAdd, add.Rect().X, add.Rect().Y, addWidth, messages.ForwardAdd, addIcon, true, canAdd, condensed)
 
 	if len(state.forwards) == 0 {
-		state.paintEmptyPage(canvas, emptyIcon, emptyAdd, iconForward, hitForwardAdd, messages.ForwardAdd, true)
+		state.paintEmptyPage(canvas, emptyIcon, emptyAdd, iconForward, hitForwardAdd, messages.ForwardAdd, canAdd)
 		return
 	}
 	columns := [...]components.TableColumn{{Width: 180}, {Width: 160}, {Width: 170}, {Width: 210}, {Width: 0}}
@@ -88,31 +89,6 @@ func (state *State) paintForwardsWorkspace(canvas *ui.Canvas, bounds ui.Rect) {
 			state.selectForward(forward.ID)
 		}
 	}
-}
-
-// declareEmptyPage declares the centered empty state of a list page (an icon
-// tile, a title, a sentence and an Add button, with the icon's top 40% of the
-// way down the page's body) and returns the boxes the icon and the button are
-// painted into; paintEmptyPage paints them.
-func (state *State) declareEmptyPage(f *flex.Frame, bounds ui.Rect, title, sub, add string) (icon, button flex.Box) {
-	pal := state.pal
-	body := max(0, bounds.Height-142)
-	f.Column().Grow(1).MarginSides(0, 0, 9, 0).PadSides(max(0, body*0.40-48), 0, 0, 0).Items(flex.Center).Children(func() {
-		f.Column().Size(62, 62).Center().Background(pal.surface).Radius(15).Children(func() {
-			icon = f.Slot().Size(24, 24)
-		})
-		f.Text(title).FontSize(17).Weight(ui.WeightSemibold).Color(pal.text).MarginSides(20, 0, 0, 0).TextCenter().Ellipsis()
-		f.Paragraph(sub, 3).FontSize(metrics.FontSizeM).Color(pal.muted).MarginSides(8, 0, 0, 0).Width(max(bounds.Width-44, 0)).TextCenter()
-		button = f.Slot().Size(toolbarButtonWidth(f.Canvas(), add, true), toolbarHeight).MarginSides(20, 0, 0, 0)
-	})
-	return icon, button
-}
-
-// paintEmptyPage paints what declareEmptyPage reserved room for.
-func (state *State) paintEmptyPage(canvas *ui.Canvas, iconBox, buttonBox flex.Box, icon uint8, id ui.ID, label string, enabled bool) {
-	paintIcon(canvas, icon, iconBox.Rect(), state.pal.muted)
-	button := buttonBox.Rect()
-	state.paintToolbarButton(canvas, id, button.X, button.Y, button.Width, label, iconPlus, true, enabled, false)
 }
 
 func (state *State) paintForwardDialog(canvas *ui.Canvas, viewport ui.Rect) {

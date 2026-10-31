@@ -52,6 +52,7 @@ type fileDocument struct {
 	closeAfter                       bool
 	notices                          fileNotices
 	origin                           *sftpWindow
+	view                             *sftpView
 	ui                               fileDocumentUI
 }
 
@@ -108,7 +109,7 @@ func (state *State) openFileWindow(view *sftpView, location string, local bool) 
 		name = filepath.Base(location)
 		source = state.messages.FileWindow.Local
 	}
-	d := &fileDocument{owner: state, cacheKey: key, location: location, name: name, source: source, local: local, status: state.messages.FileWindow.Loading}
+	d := &fileDocument{owner: state, cacheKey: key, location: location, name: name, source: source, local: local, view: view, status: state.messages.FileWindow.Loading}
 	d.origin = view.detached
 	state.fileWindows.documents[key] = d
 	if local {
@@ -353,6 +354,9 @@ func (d *fileDocument) apply(event fileDocumentEvent) {
 	d.status = d.owner.messages.FileWindow.Saved
 	d.problem = ""
 	d.notices.show(d.name, d.status, components.ToastSuccess)
+	if !d.local {
+		d.owner.refreshSFTPAfterRemoteSave(d.view, d.location)
+	}
 	if d.closeAfter {
 		d.closeAllowed()
 	}

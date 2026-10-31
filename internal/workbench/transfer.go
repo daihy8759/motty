@@ -401,13 +401,31 @@ func (state *State) chooseFilesToSend(session *Session) {
 	state.startTransfer(session, zmodem.NewSender(files, zmodem.SendOptions{}))
 }
 
-// downloadsDirectory is the user's Downloads folder, or empty when there is none.
-func downloadsDirectory() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+// defaultDownloadDirectory is the current account's Downloads folder. It need
+// not exist yet: the first download can create it.
+func defaultDownloadDirectory() string {
+	home, _ := os.UserHomeDir()
+	return downloadDirectoryFromPlaces(home, nativeSFTPLocalPlaces())
+}
+
+func downloadDirectoryFromPlaces(home string, places []sftpLocalPlace) string {
+	for _, place := range places {
+		if place.kind == localPlaceDownloads && validSFTPDownloadDirectory(place.path) {
+			return filepath.Clean(place.path)
+		}
+	}
+	if home == "" {
 		return ""
 	}
-	dir := filepath.Join(home, "Downloads")
+	return filepath.Join(home, "Downloads")
+}
+
+// downloadsDirectory is the user's Downloads folder, or empty when there is none.
+func downloadsDirectory() string {
+	dir := defaultDownloadDirectory()
+	if dir == "" {
+		return ""
+	}
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return ""
 	}

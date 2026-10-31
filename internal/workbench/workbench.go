@@ -73,6 +73,7 @@ var (
 	hitDialogAddress           = tree.ID(shellHits, "dialog-address")
 	hitDialogUser              = tree.ID(shellHits, "dialog-user")
 	hitDialogPassword          = tree.ID(shellHits, "dialog-password")
+	hitDialogPassphrase        = tree.ID(shellHits, "dialog-passphrase")
 	hitDialogGroup             = tree.ID(shellHits, "dialog-group")
 	hitDialogPort              = tree.ID(shellHits, "dialog-port")
 	hitDialogTags              = tree.ID(shellHits, "dialog-tags")
@@ -187,6 +188,8 @@ var (
 	hitSettingsAppearanceSystem = tree.ID(settingsHits, "settings-appearance-system")
 	hitSettingsAppearanceDark   = tree.ID(settingsHits, "settings-appearance-dark")
 	hitSettingsAppearanceLight  = tree.ID(settingsHits, "settings-appearance-light")
+	hitSettingsCloseTray        = tree.ID(settingsHits, "settings-close-tray")
+	hitSettingsCloseQuit        = tree.ID(settingsHits, "settings-close-quit")
 	hitSettingsOptionText       = tree.ID(settingsHits, "settings-option-text")
 	hitSettingsOptionMeta       = tree.ID(settingsHits, "settings-option-meta")
 	hitSettingsFontSizeDown     = tree.ID(settingsHits, "settings-font-size-down")
@@ -213,6 +216,11 @@ var (
 	hitSettingsReconnectForever = tree.ID(settingsHits, "settings-reconnect-forever")
 	hitSettingsClipboardBlock   = tree.ID(settingsHits, "settings-clipboard-block")
 	hitSettingsCursorToggle     = tree.ID(settingsHits, "settings-cursor-blink")
+	hitSettingsCopyOnSelect     = tree.ID(settingsHits, "settings-copy-on-select")
+	hitSettingsRightClickPaste  = tree.ID(settingsHits, "settings-right-click-paste")
+	hitSettingsTabTitle         = tree.ID(settingsHits, "settings-tab-title")
+	hitSettingsLatencyToggle    = tree.ID(settingsHits, "settings-latency")
+	hitSettingsLinkPlainClick   = tree.ID(settingsHits, "settings-link-plain-click")
 	hitSettingsClipboardAsk     = tree.ID(settingsHits, "settings-clipboard-ask")
 	hitSettingsClipboardAllow   = tree.ID(settingsHits, "settings-clipboard-allow")
 	hitSettingsRestoreActive    = tree.ID(settingsHits, "settings-restore-active")
@@ -224,11 +232,7 @@ var (
 	hitSettingsRestoreAll       = tree.ID(settingsHits, "settings-restore-all")
 	hitSettingsShareToggle      = tree.ID(settingsHits, "settings-share")
 	hitSettingsVaultForget      = tree.ID(settingsHits, "settings-vault-forget")
-	hitSettingsMasterSet        = tree.ID(settingsHits, "settings-master-set")
-	hitSettingsMasterChange     = tree.ID(settingsHits, "settings-master-change")
-	hitSettingsMasterRemove     = tree.ID(settingsHits, "settings-master-remove")
-	hitSettingsMasterLock       = tree.ID(settingsHits, "settings-master-lock")
-	hitSettingsMasterUnlock     = tree.ID(settingsHits, "settings-master-unlock")
+	hitSettingsVaultConvert     = tree.ID(settingsHits, "settings-vault-convert")
 )
 
 // Jump-host routing: its page and dialog.
@@ -295,6 +299,8 @@ var (
 	hitSFTPEditReload      = tree.ID(sftpHits, "sftp-edit-reload")
 	hitSFTPBreadcrumbList  = tree.Sub(sftpHits, tree.Name("sftp-breadcrumb"))
 	hitSFTPEntryList       = tree.Sub(sftpHits, tree.Name("sftp-entry"))
+	hitSFTPColumnList      = tree.Sub(sftpHits, tree.Name("sftp-column"))
+	hitSFTPListScrollbar   = tree.ID(sftpHits, "sftp-list-scrollbar")
 
 	// hitSFTPDrawerClose is the close button of the drawer a narrow window shows
 	// the panel in. It is a hit of its own, apart from the backdrop that
@@ -307,41 +313,36 @@ var (
 var hitRemoteStats = tree.ID(shellHits, "remote-stats") // The terminal's context menu owns a fixed range too: it is painted by the
 // window, over every pane, for the session that raised it.
 var (
-	hitTerminalMenuDismiss    = tree.ID(terminalMenuHits, "terminal-menu-dismiss")
-	hitTerminalMenuCopy       = tree.ID(terminalMenuHits, "terminal-menu-copy")
-	hitTerminalMenuPaste      = tree.ID(terminalMenuHits, "terminal-menu-paste")
-	hitTerminalMenuSelectAll  = tree.ID(terminalMenuHits, "terminal-menu-select-all")
-	hitTerminalMenuClear      = tree.ID(terminalMenuHits, "terminal-menu-clear")
-	hitTerminalMenuSplitRight = tree.ID(terminalMenuHits, "terminal-menu-split-right")
-	hitTerminalMenuSplitDown  = tree.ID(terminalMenuHits, "terminal-menu-split-down")
-	hitTerminalMenuClosePane  = tree.ID(terminalMenuHits, "terminal-menu-close-pane")
-	hitTerminalMenuFiles      = tree.ID(terminalMenuHits, "terminal-menu-files")
-	hitTerminalMenuStats      = tree.ID(terminalMenuHits, "terminal-menu-stats")
-	hitLocalTerminal          = tree.ID(terminalMenuHits, "local-terminal")
-	hitTerminalMenuReconnect  = tree.ID(terminalMenuHits, "terminal-menu-reconnect")
-	hitTerminalMenuTransfer   = tree.ID(terminalMenuHits, "terminal-menu-transfer")
+	hitTerminalMenuDismiss     = tree.ID(terminalMenuHits, "terminal-menu-dismiss")
+	hitTerminalMenuCopy        = tree.ID(terminalMenuHits, "terminal-menu-copy")
+	hitTerminalMenuPaste       = tree.ID(terminalMenuHits, "terminal-menu-paste")
+	hitTerminalMenuSelectAll   = tree.ID(terminalMenuHits, "terminal-menu-select-all")
+	hitTerminalMenuClearScreen = tree.ID(terminalMenuHits, "terminal-menu-clear-screen")
+	hitTerminalMenuClear       = tree.ID(terminalMenuHits, "terminal-menu-clear")
+	hitTerminalMenuSplitRight  = tree.ID(terminalMenuHits, "terminal-menu-split-right")
+	hitTerminalMenuSplitDown   = tree.ID(terminalMenuHits, "terminal-menu-split-down")
+	hitTerminalMenuClosePane   = tree.ID(terminalMenuHits, "terminal-menu-close-pane")
+	hitTerminalMenuFiles       = tree.ID(terminalMenuHits, "terminal-menu-files")
+	hitTerminalMenuStats       = tree.ID(terminalMenuHits, "terminal-menu-stats")
+	hitLocalTerminal           = tree.ID(terminalMenuHits, "local-terminal")
+	hitTerminalMenuReconnect   = tree.ID(terminalMenuHits, "terminal-menu-reconnect")
+	hitTerminalMenuTransfer    = tree.ID(terminalMenuHits, "terminal-menu-transfer")
 )
 
 // The saved-passwords dialogs, and the boxes that offer to save.
 var (
-	hitVaultUnlockField      = tree.ID(vaultHits, "vault-unlock-field")
-	hitVaultUnlockSubmit     = tree.ID(vaultHits, "vault-unlock-submit")
-	hitVaultUnlockCancel     = tree.ID(vaultHits, "vault-unlock-cancel")
-	hitVaultUnlockClose      = tree.ID(vaultHits, "vault-unlock-close")
-	hitVaultUnlockDismiss    = tree.ID(vaultHits, "vault-unlock-dismiss")
-	hitMasterPasswordNew     = tree.ID(vaultHits, "master-password-new")
-	hitMasterPasswordConfirm = tree.ID(vaultHits, "master-password-confirm")
-	hitMasterPasswordSubmit  = tree.ID(vaultHits, "master-password-submit")
-	hitMasterPasswordCancel  = tree.ID(vaultHits, "master-password-cancel")
-	hitMasterPasswordClose   = tree.ID(vaultHits, "master-password-close")
-	hitMasterPasswordDismiss = tree.ID(vaultHits, "master-password-dismiss")
-	hitVaultForgetConfirm    = tree.ID(vaultHits, "vault-forget-confirm")
-	hitVaultForgetCancel     = tree.ID(vaultHits, "vault-forget-cancel")
-	hitVaultForgetClose      = tree.ID(vaultHits, "vault-forget-close")
-	hitVaultForgetDismiss    = tree.ID(vaultHits, "vault-forget-dismiss")
-	hitPasswordSave          = tree.ID(vaultHits, "password-save")
-	hitPasswordHint          = tree.ID(vaultHits, "password-hint")
-	hitKeyPassphraseSave     = tree.ID(vaultHits, "key-passphrase-save")
+	hitVaultUnlockField   = tree.ID(vaultHits, "vault-unlock-field")
+	hitVaultUnlockSubmit  = tree.ID(vaultHits, "vault-unlock-submit")
+	hitVaultUnlockCancel  = tree.ID(vaultHits, "vault-unlock-cancel")
+	hitVaultUnlockClose   = tree.ID(vaultHits, "vault-unlock-close")
+	hitVaultUnlockDismiss = tree.ID(vaultHits, "vault-unlock-dismiss")
+	hitVaultForgetConfirm = tree.ID(vaultHits, "vault-forget-confirm")
+	hitVaultForgetCancel  = tree.ID(vaultHits, "vault-forget-cancel")
+	hitVaultForgetClose   = tree.ID(vaultHits, "vault-forget-close")
+	hitVaultForgetDismiss = tree.ID(vaultHits, "vault-forget-dismiss")
+	hitPasswordSave       = tree.ID(vaultHits, "password-save")
+	hitPasswordHint       = tree.ID(vaultHits, "password-hint")
+	hitKeyPassphraseSave  = tree.ID(vaultHits, "key-passphrase-save")
 )
 
 var (
@@ -384,17 +385,22 @@ const (
 	// only with the dev tag (see debug.go), but the section keeps its place so
 	// the other sections do not renumber between builds.
 	sectionDebug
+	sectionDashboard
 )
 
 // State owns the complete interactive state of the window.
 // Paint reads it synchronously and never starts work or allocates background
 // resources.
 type State struct {
+	dashboard dashboardState
 	// hostCatalog is the hosts, jump routes, keys, outbound proxy and timeouts a
 	// connection is resolved from; the headless MCP server builds one too.
 	hostCatalog
-	fileWindows   fileWindowManager
-	fileNotices   fileNotices
+	fileWindows       fileWindowManager
+	fileNotices       fileNotices
+	inputConfirmation terminalInputConfirmation
+	// reveal is which password fields show their text rather than bullets.
+	reveal        secretReveal
 	sftpWindows   map[uint32]*sftpWindow
 	remoteWindows []*remoteToolsWindow
 	remoteWindow  *remoteToolsWindow // set only on a native tool window's isolated presenter
@@ -429,6 +435,8 @@ type State struct {
 	tabStrip           tabStrip
 	tabMenu            tabMenu
 	hostMenu           hostMenu
+	localShellPicker   localShellPicker
+	snippetMenu        snippetMenu
 	sftpMenu           sftpMenu
 	popups             popupMenus
 	selectedHostID     uint32
@@ -539,26 +547,54 @@ type State struct {
 	updateAtStart bool
 	updateStarted bool
 	loginOn       bool
+	closeAction   closeAction
 	// The file panel's settings and the folders kept for each host.
-	sftpParallel       int
-	sftpKeepTimesOff   bool
-	sftpFollowOff      bool
-	sftpTerminalFollow bool
-	sftpPathInput      bool
-	sftpPanelAutoOpen  bool
-	sftpPanelSide      layoutcore.ContextSide
-	sftpBookmarks      []sftpBookmark
-	transferLeftover   []byte
-	secrets            secretsUI
-	shareConnections   shareConnectionsPolicy
-	tooltip            components.HoverTooltip
-	selectTypeahead    selectTypeahead
-	restorePending     bool // restored tabs have not yet been connected (see connectRestoredSessions)
-	terminalClipboard  terminalClipboardPolicy
+	sftpParallel           int
+	sftpKeepTimesOff       bool
+	sftpFollowOff          bool
+	sftpTerminalFollow     bool
+	sftpPathInput          bool
+	sftpPanelAutoOpen      bool
+	sftpColumns            sftpColumnPreferences
+	sftpFilesSettings      sftpFilesSettingsCache
+	sftpDownloadDirectory  string
+	monitorRect            ui.Rect
+	monitorMenu            bool
+	monitorMenuRect        ui.Rect
+	monitorResizing        bool
+	monitorResizeGrab      float32
+	monitorResizeWorkspace layoutcore.WorkspaceID
+	monitorResizeSession   uint32
+	monitorMenuSession     uint32
+	sftpPanelSide          layoutcore.ContextSide
+	sftpBookmarks          []sftpBookmark
+	sftpLocalBookmarks     []string
+	transferLeftover       []byte
+	secrets                secretsUI
+	shareConnections       shareConnectionsPolicy
+	tooltip                components.HoverTooltip
+	selectTypeahead        selectTypeahead
+	restorePending         bool // restored tabs have not yet been connected (see connectRestoredSessions)
+	terminalClipboard      terminalClipboardPolicy
 
 	localDirectoryDirty bool
 	// terminalCursorSteady keeps the terminal cursor from blinking.
 	terminalCursorSteady bool
+	// terminalCopyOnSelect copies a selection the moment the mouse finishes it,
+	// and terminalRightClickPaste makes a right click paste instead of opening
+	// the terminal menu.
+	terminalCopyOnSelect, terminalRightClickPaste bool
+	// terminalTabTitle lets a tab show the title its terminal reports instead
+	// of the host's name (see tabLabel).
+	terminalTabTitle bool
+	// terminalShowLatency displays connection RTT latency in the terminal panel,
+	// and latencyProbe names the sessions Paint saw that need a sample; Wake
+	// starts their requests so a repaint never sends network work.
+	terminalShowLatency bool
+	latencyProbe        []uint32
+	// terminalBellOff silences the terminal bell, and terminalLinkPlainClick
+	// opens a link on a click without the modifier key (see terminalLinkOpens).
+	terminalBellOff, terminalLinkPlainClick bool
 
 	// settingsScroll is how far the settings page is scrolled, in pixels, and
 	// settingsContent how tall it was when last painted.
@@ -568,6 +604,7 @@ type State struct {
 	settings         settingsUI
 	toolbars         toolbarPreferences
 	toolbarEditor    toolbarSettingsUI
+	sftpColumnEditor sftpColumnSettingsUI
 
 	// area: settings
 	settingsPage flex.View // the whole settings workspace
@@ -598,6 +635,7 @@ type State struct {
 	pasteImageOff bool
 	fonts         fontsUI
 	proxyForm     outboundProxyForm
+	agentSetting  agentDescriptionCache
 	form          formDialog
 	formSerial    uint32
 	closeAsked    bool
@@ -613,6 +651,7 @@ type State struct {
 	snippets      snippetsUI
 	history       historyUI
 	historyLayout flex.View
+	completion    completionUI
 	// broadcast is the tab whose panes type together, or zero.
 	broadcast layoutcore.WorkspaceID
 
@@ -629,6 +668,7 @@ type State struct {
 
 	// area: files panel and transfers
 	filesList   flex.View
+	filesHeader flex.View
 	filesPopup  flex.View
 	statsLayout flex.View // the monitor's readout in the terminal's info bar
 	// filesRowIcons and filesRowBoxes are scratch for the visible rows of the list.
@@ -638,11 +678,9 @@ type State struct {
 	// area: keychain, palette, import and the rest
 	railLayout            flex.View
 	keysLayout            flex.View
-	keysEmptyLayout       flex.View
 	paletteLayout         flex.View
 	importLayout          flex.View
 	knownHostsTableLayout flex.View
-	knownHostsEmptyLayout flex.View
 	hostToggleLayout      flex.View
 	hostGridLayout        flex.View
 	hostGridItems         []hostGridItem
@@ -693,6 +731,7 @@ func (state *State) Close() {
 		return
 	}
 	state.closed = true
+	state.closeDashboard()
 	state.flushLocalDirectories()
 	state.closeRemoteToolsWindows()
 	state.closeFileWindows()
@@ -701,6 +740,11 @@ func (state *State) Close() {
 		state.update.install.cancel()
 		state.update.install.cancel = nil
 	}
+	if state.completion.cancelUpdate != nil {
+		state.completion.cancelUpdate()
+		state.completion.cancelUpdate = nil
+	}
+	state.closeCompletionWorkers()
 	state.stopUpdateCheck()
 	if state.options.Group != nil {
 		state.options.Group.leave(state)
@@ -741,29 +785,31 @@ func (state *State) Close() {
 func New(options Options) *State {
 	messages := i18n.For(i18n.English)
 	state := &State{
-		options:            options.withDefaults(),
-		nextSessionID:      1,
-		nextHostID:         1,
-		nextIdentityID:     1,
-		nextForwardID:      1,
-		forwardStarts:      make(chan forwardStartResult, 16),
-		nextProxyID:        1,
-		activeSection:      sectionHosts,
-		language:           i18n.English,
-		messages:           messages,
-		status:             messages.StatusReadyIdle,
-		viewport:           ui.Size{Width: 1400, Height: 900},
-		terminalFontSize:   termFontSize,
-		terminalScrollback: scrollbackLines,
-		hostCatalog:        hostCatalog{systemUser: systemLogin(), connectionTimeout: 10 * time.Second},
-		sftpParallel:       DefaultSFTPParallel,
-		terminalClipboard:  defaultTerminalClipboard,
-		shortcuts:          defaultShortcuts(),
-		terminalSchemes:    [2]string{defaultSchemeID, defaultSchemeID},
-		syncDelay:          syncDelayDefault,
-		syncRetryBase:      syncRetryBaseDefault,
-		update:             updateState{firstDelay: updateFirstDelayDefault, every: updateIntervalDefault},
-		winChrome:          windowChrome{remember: options.RememberWindowFrame},
+		options:               options.withDefaults(),
+		nextSessionID:         1,
+		nextHostID:            1,
+		nextIdentityID:        1,
+		nextForwardID:         1,
+		forwardStarts:         make(chan forwardStartResult, 16),
+		nextProxyID:           1,
+		activeSection:         sectionHosts,
+		language:              i18n.English,
+		messages:              messages,
+		status:                messages.StatusReadyIdle,
+		viewport:              ui.Size{Width: 1400, Height: 900},
+		terminalFontSize:      termFontSize,
+		terminalScrollback:    scrollbackLines,
+		hostCatalog:           hostCatalog{systemUser: systemLogin(), connectionTimeout: 10 * time.Second},
+		sftpParallel:          DefaultSFTPParallel,
+		sftpColumns:           defaultSFTPColumnPreferences(),
+		sftpDownloadDirectory: defaultDownloadDirectory(),
+		terminalClipboard:     defaultTerminalClipboard,
+		shortcuts:             defaultShortcuts(),
+		terminalSchemes:       [2]string{defaultSchemeID, defaultSchemeID},
+		syncDelay:             syncDelayDefault,
+		syncRetryBase:         syncRetryBaseDefault,
+		update:                updateState{firstDelay: updateFirstDelayDefault, every: updateIntervalDefault},
+		winChrome:             windowChrome{remember: options.RememberWindowFrame},
 	}
 	state.cellWidth, state.cellHeight = (&ui.Canvas{}).MonoCellSize(state.terminalFontSize, state.terminalFontFace)
 	// An icon-only button names itself to the keyboard as well as the pointer.
@@ -793,6 +839,7 @@ func New(options Options) *State {
 		saved.Sessions, saved.Deck, saved.ActiveSession, saved.Workspace = nil, nil, 0, ""
 	}
 	state.restore(saved)
+	state.migrateSecretsToHosts(false)
 	if report.outcome == loadOK && err == nil {
 		backupState(state.options.StatePath, saved)
 	}
@@ -812,6 +859,7 @@ func New(options Options) *State {
 	state.stateFileOutcome = report.describe()
 	state.explainStateFile(report)
 	state.explainFailedUpdate()
+	state.explainPreviousCrash()
 	state.syncVisible()
 	state.refreshHostGroups()
 	state.refreshHostSelection()
@@ -919,6 +967,9 @@ func (state *State) Messages() i18n.Messages {
 // not an open dialog's field. The runtime reports which hit holds keyboard
 // focus; this maps it to the text it edits.
 func (state *State) EditorFor(hit ui.ID) *text.Editor {
+	if editor := state.dashboardEditorFor(hit); editor != nil {
+		return editor
+	}
 	if _, local, ok := state.decodePaneHit(hit); ok {
 		hit = local
 	}
@@ -1028,13 +1079,6 @@ func (state *State) EditorFor(hit ui.ID) *text.Editor {
 		case hitSnippetCommand:
 			return &state.snippets.command
 		}
-	case modalMasterPassword:
-		switch hit {
-		case hitMasterPasswordNew:
-			return &state.secrets.newPassword
-		case hitMasterPasswordConfirm:
-			return &state.secrets.confirmPassword
-		}
 	case modalCommandPalette:
 		if hit == hitCommandPaletteSearch {
 			return &state.commandPalette.search
@@ -1070,11 +1114,20 @@ func (state *State) WindowControlsStyle() app.WindowControlsStyle {
 
 // Click applies one stable hit action.
 func (state *State) Click(id ui.ID) {
+	if state.clickDashboard(id) {
+		return
+	}
 	if state.fileNotices.click(id) {
+		return
+	}
+	if state.clickSecretReveal(id) {
 		return
 	}
 	defer state.runLaunches()
 	defer state.sshSyncCheck()
+	if state.clickCompletion(id) {
+		return
+	}
 	if session, local, ok := state.decodePaneHit(id); ok {
 		if state.activeSessionID != session.ID && state.ActivatePane(session.ID) {
 			state.save()
@@ -1090,6 +1143,9 @@ func (state *State) Click(id ui.ID) {
 	}
 	if state.knownHosts.action != knownHostsActionNone {
 		state.clickKnownHostsDialog(id)
+		return
+	}
+	if state.clickTerminalInput(id) {
 		return
 	}
 	switch state.modal {
@@ -1132,9 +1188,6 @@ func (state *State) Click(id ui.ID) {
 	case modalVaultUnlock:
 		state.clickVaultUnlock(id)
 		return
-	case modalMasterPassword:
-		state.clickMasterPassword(id)
-		return
 	case modalHighlightRule:
 		state.clickHighlightDialog(id)
 		return
@@ -1164,6 +1217,9 @@ func (state *State) Click(id ui.ID) {
 		return
 	case modalToolbarSettings:
 		state.clickToolbarSettings(id)
+		return
+	case modalSFTPColumns:
+		state.clickSFTPColumnSettings(id)
 		return
 	case modalVaultForget:
 		state.clickVaultForget(id)
@@ -1199,13 +1255,16 @@ func (state *State) Click(id ui.ID) {
 		state.clickShortcutCapture(id)
 		return
 	}
-	if state.clickTerminalMenu(id) || state.clickTabMenu(id) || state.clickHostMenu(id) || state.clickSFTPMenu(id) {
+	if state.clickTerminalMenu(id) || state.clickTabMenu(id) || state.clickHostMenu(id) || state.clickLocalShellPicker(id) || state.clickSnippetMenu(id) || state.clickSFTPMenu(id) {
 		return
 	}
 	if state.clickTerminalFind(id) {
 		return
 	}
 	if state.clickRemoteStats(id) {
+		return
+	}
+	if state.clickMonitor(id) {
 		return
 	}
 	if state.clickDesktop(id) {
@@ -1297,8 +1356,8 @@ func (state *State) Click(id ui.ID) {
 		state.openHistoryActive()
 	case id == hitSettingsHistoryToggle:
 		state.toggleHistory()
-	case id == hitSettingsSuggestToggle:
-		state.toggleSuggestions()
+	case id == hitCompletionUpdate:
+		state.updateCompletions()
 	case id == hitSettingsHistoryClear:
 		state.askClearHistory()
 	case id == hitPanePrevious:
@@ -1370,7 +1429,7 @@ func (state *State) openNewWindow() {
 		return
 	}
 	if err := state.options.NewWindow(); err != nil {
-		state.status = fmt.Sprintf(state.messages.StatusNewWindowFailedFmt, err)
+		state.showActionFailure(state.messages.NewWindow, err, state.messages.ActionFeedback.NewWindowFailed)
 	}
 }
 
@@ -1539,7 +1598,7 @@ func (state *State) clickHostDialog(id ui.ID) {
 	}
 	switch id {
 	case hitDialogDismiss, hitDialogClose, hitDialogCancel:
-		state.editor.password = text.Editor{}
+		state.editor.password, state.editor.passphrase = text.Editor{}, text.Editor{}
 		state.modal = modalNone
 		state.dialogError = ""
 		state.status = state.messages.StatusEditCanceled
@@ -1615,7 +1674,7 @@ func (state *State) typedQuery() string {
 
 // connectTyped connects to what the search box holds: a saved host named
 // exactly by its label or address, or else a target written as
-// [user@]host[:port]. Text that is neither says so in the status line and
+// [user@]host[:port]. Text that is neither shows a warning and
 // connects nowhere.
 func (state *State) connectTyped() {
 	query := state.typedQuery()
@@ -1641,7 +1700,7 @@ func (state *State) connectTyped() {
 	}
 	parsed, err := parseConnection(query)
 	if err != nil {
-		state.status = fmt.Sprintf(state.messages.ErrBadTargetFmt, query)
+		state.showActionWarning(state.messages.Connect, state.messages.ActionFeedback.InvalidConnection)
 		return
 	}
 	state.connectParsed(parsed)
@@ -1677,7 +1736,13 @@ func (state *State) hostForRow(id ui.ID) (Host, bool) {
 // double click on a host row connects to it.
 func (state *State) Pointer(event ui.PointerEvent) (outcome ui.EventResult) {
 	defer state.afterEvent(&outcome)
+	if result, handled := state.dashboardPointer(event); handled {
+		return result
+	}
 	if result := state.toolbarSettingsPointer(event); result.Handled {
+		return result
+	}
+	if result := state.sftpColumnSettingsPointer(event); result.Handled {
 		return result
 	}
 	if result, handled := state.transferCenterPointer(event); handled {
@@ -1707,13 +1772,25 @@ func (state *State) Pointer(event ui.PointerEvent) (outcome ui.EventResult) {
 	if result, handled := state.hostMenuPointer(event); handled {
 		return result
 	}
+	if result, handled := state.localShellPickerPointer(event); handled {
+		return result
+	}
+	if result, handled := state.snippetMenuPointer(event); handled {
+		return result
+	}
 	if result, handled := state.sftpMenuDismissPointer(event); handled {
+		return result
+	}
+	if result, handled := state.sftpPlacesPointer(event); handled {
 		return result
 	}
 	if result, handled := state.aiPointer(event); handled {
 		return result
 	}
 	if result, handled := state.contextDividerPointer(event); handled {
+		return result
+	}
+	if result, handled := state.monitorPointer(event); handled {
 		return result
 	}
 	if result, handled := state.paneDividerPointer(event); handled {
@@ -1764,7 +1841,7 @@ func (state *State) Pointer(event ui.PointerEvent) (outcome ui.EventResult) {
 		}
 		return result
 	}
-	if session := state.terminalSession(event.Target); session != nil {
+	if session := state.terminalOrBarSession(event.Target); session != nil {
 		_, origin, viewport, embedded := state.paneEventGeometry(session.ID, event.Viewport)
 		if embedded {
 			event.X -= origin.X
@@ -1807,6 +1884,9 @@ func (state *State) pointer(event ui.PointerEvent) ui.EventResult {
 	if result, handled := state.terminalFindPointer(event); handled {
 		return result
 	}
+	if result, handled := state.terminalScrollbarPointer(event); handled {
+		return result
+	}
 	if session := state.terminalSession(event.Target); session != nil && state.modal == modalNone && state.activeSection == sectionTerminal {
 		if session.desk != nil {
 			return state.desktopPointer(session, event)
@@ -1817,6 +1897,9 @@ func (state *State) pointer(event ui.PointerEvent) ui.EventResult {
 		return result
 	}
 	if result, handled := state.sftpPathPointer(event); handled {
+		return result
+	}
+	if result, handled := state.sftpListPointer(event); handled {
 		return result
 	}
 	if result, handled := state.sftpRowPointer(event); handled {
@@ -1839,7 +1922,7 @@ func isHostTagsTarget(id ui.ID) bool {
 // isDialogField reports whether a hit is one of the New Host dialog's text fields.
 func isDialogField(id ui.ID) bool {
 	switch id {
-	case hitDialogLabel, hitDialogAddress, hitDialogUser, hitDialogPassword, hitDialogGroup, hitDialogPort, hitDialogTags:
+	case hitDialogLabel, hitDialogAddress, hitDialogUser, hitDialogPassword, hitDialogPassphrase, hitDialogGroup, hitDialogPort, hitDialogTags:
 		return true
 	}
 	return false
@@ -1856,6 +1939,8 @@ func fieldForDialogHit(id ui.ID) hostField {
 		return fieldUser
 	case hitDialogPassword:
 		return fieldPassword
+	case hitDialogPassphrase:
+		return fieldPassphrase
 	case hitDialogGroup:
 		return fieldGroup
 	case hitDialogTags:
@@ -1868,6 +1953,9 @@ func fieldForDialogHit(id ui.ID) hostField {
 // Key provides roving keyboard focus for terminal tabs.
 func (state *State) Key(event ui.KeyEvent) (outcome ui.EventResult) {
 	defer state.afterEvent(&outcome)
+	if result, handled := state.namedShortcut(event); handled {
+		return result
+	}
 	if state.tabDrag.active && event.Key == ui.KeyEscape {
 		state.tabDrag = tabDrag{}
 		return ui.EventResult{Handled: true, Repaint: true}
@@ -1877,6 +1965,10 @@ func (state *State) Key(event ui.KeyEvent) (outcome ui.EventResult) {
 		state.ActivatePane(session.ID)
 		mount, _ = tree.MountOf(event.Target.Scope())
 		event.Target = local
+	} else if event.Target.IsZero() && state.popups.owner == hitSFTPHeaderMenuDismiss {
+		// Opening an embedded menu can temporarily leave its focus trap empty.
+		// Its first keyboard-selected row still belongs to the file panel.
+		mount = contextMount
 	}
 	result := state.key(event)
 	result.Focus = tree.MountID(mount, result.Focus)
@@ -1884,13 +1976,28 @@ func (state *State) Key(event ui.KeyEvent) (outcome ui.EventResult) {
 }
 
 func (state *State) key(event ui.KeyEvent) ui.EventResult {
+	if result, handled := state.terminalInputKey(event); handled {
+		return result
+	}
+	if result, handled := state.completionKey(event); handled {
+		return result
+	}
+	if result := state.dashboardKey(event); result.Handled {
+		return result
+	}
 	if result := state.remoteSearchKey(event); result.Handled {
+		return result
+	}
+	if result, handled := state.monitorKey(event); handled {
 		return result
 	}
 	if result, handled := state.hostGroupPickerKey(event); handled {
 		return result
 	}
 	if result := state.toolbarSettingsKey(event); result.Handled {
+		return result
+	}
+	if result := state.sftpColumnSettingsKey(event); result.Handled {
 		return result
 	}
 	if result := state.remoteRefreshKey(event); result.Handled {
@@ -2038,10 +2145,6 @@ func (state *State) key(event ui.KeyEvent) ui.EventResult {
 	}
 	if state.modal == modalSnippet && event.Key == ui.KeyEnter && (event.Target == hitSnippetName || event.Target == hitSnippetCommand) && !event.Repeat {
 		state.submitSnippet()
-		return ui.EventResult{Handled: true, Repaint: true}
-	}
-	if state.modal == modalMasterPassword && event.Key == ui.KeyEnter && (event.Target == hitMasterPasswordNew || event.Target == hitMasterPasswordConfirm) && !event.Repeat {
-		state.submitMasterPassword()
 		return ui.EventResult{Handled: true, Repaint: true}
 	}
 	if state.modal == modalKeyPassphrase && event.Key == ui.KeyEnter && event.Target == hitKeyPassphraseField && !event.Repeat {

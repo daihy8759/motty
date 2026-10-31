@@ -17,7 +17,7 @@ func (w *sftpWindow) paintConnecting(canvas *ui.Canvas, size ui.Size) {
 	failed := s.failed() || s.phase == sshconn.PhaseClosed
 	waiting := isPromptPhase(s.phase)
 	title, detail := fmt.Sprintf(m.SFTPWindow.ConnectingFmt, s.Title), s.Address
-	icon, tint := uint8(iconTransfer), pal.accent
+	icon, tint := uint8(iconSFTPTransfer), pal.accent
 	if waiting {
 		detail = m.SFTPWindow.AuthenticationHint
 	}

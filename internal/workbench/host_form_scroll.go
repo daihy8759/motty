@@ -69,14 +69,7 @@ func (state *State) scrollHostForm(event ui.ScrollEvent) ui.EventResult {
 		return ui.EventResult{Handled: true}
 	}
 	old := f.offset
-	step := event.DeltaY
-	if !event.Precise && step != 0 {
-		if step > 0 {
-			step = max(step, 32)
-		} else {
-			step = min(step, -32)
-		}
-	}
+	step := event.StepY(32)
 	f.offset = max(0, min(f.geometry.MaxOffsetY, f.offset+step))
 	return ui.EventResult{Handled: true, Repaint: f.offset != old}
 }

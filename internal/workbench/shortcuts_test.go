@@ -1,9 +1,11 @@
 package workbench
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/vivaui/viva/ui"
+	"motty/internal/term"
 )
 
 func TestShortcutCaptureRejectsConflictsAndPersistsTypedBinding(t *testing.T) {
@@ -85,6 +87,83 @@ func TestShortcutFilesPathLeavesTerminalCtrlLAloneWithoutAVisibleFilePanel(t *te
 	}
 	if result := state.Shortcut(event); result.Handled || session.files.sftpFolder.pathEditing {
 		t.Fatalf("Ctrl/Cmd+L with hidden Files result=%+v editing=%v", result, session.files.sftpFolder.pathEditing)
+	}
+}
+
+func TestClearScreenShortcutEmptiesTheWindowAndKeepsThePromptLine(t *testing.T) {
+	state, _, _, shell := liveSession(t)
+	session, _ := state.sessionByIDPointer(state.activeSessionID)
+	shell.say(strings.Repeat("old output\r\n", 200))
+	shell.say("prompt$ ")
+	state.Wake()
+	screen := session.term.screen
+	if screen.Scrollback() == 0 {
+		t.Fatal("the test needs history to clear")
+	}
+	cols, rows := screen.Size()
+	session.term.selection.selectRange(screen.PointAt(term.Position{}), screen.PointAt(term.Position{Row: rows - 1, Column: cols - 1}))
+
+	shortcut := state.shortcuts.chords[shortcutClearScreen]
+	want := shortcutChord{Modifiers: defaultShortcutModifier(), Key: 'k'}
+	if shortcut != want {
+		t.Fatalf("default clear screen shortcut = %+v, want %+v", shortcut, want)
+	}
+	result := state.Shortcut(ui.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: shortcut.Modifiers, Text: string(shortcut.Key)})
+	if !result.Handled {
+		t.Fatalf("the clear screen chord was not handled: %+v", result)
+	}
+	if screen.Scrollback() != 0 {
+		t.Fatalf("scrollback = %d after the clear", screen.Scrollback())
+	}
+	if got := screen.RowText(0); !strings.Contains(got, "prompt$") {
+		t.Fatalf("first row = %q, want the prompt line", got)
+	}
+	for row := 1; row < rows; row++ {
+		if got := screen.RowText(row); got != "" {
+			t.Fatalf("row %d = %q, want it cleared", row, got)
+		}
+	}
+	if cursor := screen.Cursor(); cursor.Y != 0 {
+		t.Fatalf("cursor = %+v, want it on the first row", cursor)
+	}
+	if session.term.selection.selected {
+		t.Fatal("the selection outlived the rows it was pointing at")
+	}
+}
+
+func TestTheClearScreenShortcutIsCustomisableAndPersists(t *testing.T) {
+	options := freshOptions(t)
+	state := newTestState(t, options)
+	custom := shortcutChord{Modifiers: defaultShortcutModifier() | ui.ModifierShift, Key: 'k'}
+	if conflict, ok := state.shortcuts.bind(shortcutClearScreen, custom); !ok || conflict != shortcutNone {
+		t.Fatalf("bind custom clear screen shortcut conflict=%v ok=%v", conflict, ok)
+	}
+	state.save()
+	restored := newTestState(t, options)
+	if restored.shortcuts.chords[shortcutClearScreen] != custom {
+		t.Fatalf("restored clear screen shortcut = %+v, want %+v", restored.shortcuts.chords[shortcutClearScreen], custom)
+	}
+	if action := restored.shortcuts.actionFor(custom); action != shortcutClearScreen {
+		t.Fatalf("the custom chord belongs to %v, want clear screen", action)
+	}
+}
+
+func TestASavedShortcutOutranksADefaultAddedByALaterBuild(t *testing.T) {
+	primary := defaultShortcutModifier()
+	restored := restoreShortcuts([]savedShortcut{{Action: "copy", Key: "k", Modifiers: uint8(primary)}})
+	if got, want := restored.chords[shortcutCopy], (shortcutChord{Modifiers: primary, Key: 'k'}); got != want {
+		t.Fatalf("saved copy shortcut = %+v, want %+v", got, want)
+	}
+	// Clear screen's default would take that chord; the saved binding keeps it,
+	// and the new action reads "—" until the user gives it one.
+	if restored.chords[shortcutClearScreen].valid() {
+		t.Fatalf("clear screen took the saved chord: %+v", restored.chords[shortcutClearScreen])
+	}
+	if action := restored.actionFor(shortcutChord{Modifiers: primary, Key: 'k'}); action != shortcutCopy {
+		t.Fatalf("primary+K belongs to %v, want copy", action)
+	}
+	if got, want := restored.chords[shortcutNewTab], (shortcutChord{Modifiers: primary, Key: 't'}); got != want {
+		t.Fatalf("an action the file did not mention = %+v, want its default %+v", got, want)
 	}
 }
 

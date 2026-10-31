@@ -25,6 +25,7 @@ const (
 // as one preformatted piece per metric so that painting it, each in its own
 // color, formats and allocates nothing.
 type remoteStatsView struct {
+	panel  monitorView
 	worker *remotestats.Worker
 	state  remoteStatsState
 	text   string   // the whole reading as one line, for accessibility and tests
@@ -55,11 +56,14 @@ func (state *State) clickRemoteStats(id ui.ID) bool {
 	}
 	if session.stats == nil || session.stats.worker == nil && session.stats.state >= remoteStatsUnsupported {
 		state.stopRemoteStats(session)
-		session.stats = &remoteStatsView{state: remoteStatsMeasuring}
-		session.stats.worker = remotestats.Start(session.conn, state.notifyFor(session))
+		state.showMonitor()
 		return true
 	}
-	state.stopRemoteStats(session)
+	if state.monitorShown(state.deck.ActiveWorkspace()) {
+		state.closeMonitor()
+	} else {
+		state.showMonitor()
+	}
 	return true
 }
 
@@ -70,12 +74,38 @@ func (state *State) stopRemoteStats(session *Session) {
 	if session.stats.worker != nil {
 		session.stats.worker.Close()
 	}
+	if session.stats.panel.worker != nil {
+		session.stats.panel.worker.Close()
+	}
 	session.stats = nil
 }
 
 func (state *State) pumpRemoteStats(session *Session) {
 	view := session.stats
-	if view == nil || view.worker == nil {
+	if view == nil {
+		return
+	}
+	if view.panel.worker != nil {
+		for reading := true; reading; {
+			select {
+			case result, ok := <-view.panel.worker.Results():
+				if !ok {
+					view.panel.worker = nil
+					reading = false
+					break
+				}
+				view.panel.detailsFailed = result.Err != nil
+				if result.Err == nil {
+					view.panel.data = result.Details
+					view.panel.haveDetails = true
+				}
+				state.formatMonitor(view)
+			default:
+				reading = false
+			}
+		}
+	}
+	if view.worker == nil {
 		return
 	}
 	for {
@@ -83,6 +113,10 @@ func (state *State) pumpRemoteStats(session *Session) {
 		case result, ok := <-view.worker.Results():
 			if !ok {
 				view.worker = nil
+				if view.panel.worker != nil {
+					view.panel.worker.Close()
+					view.panel.worker = nil
+				}
 				return
 			}
 			if result.Err != nil {
@@ -94,11 +128,20 @@ func (state *State) pumpRemoteStats(session *Session) {
 				view.text = ""
 				view.worker.Close()
 				view.worker = nil
+				if view.panel.worker != nil {
+					view.panel.worker.Close()
+					view.panel.worker = nil
+				}
 				return
 			}
 			view.state = remoteStatsReady
+			if result.Details != nil {
+				view.panel.data = *result.Details
+				view.panel.haveDetails = true
+			}
 			view.text = formatRemoteStats(result.Sample)
 			view.parts = remoteStatsParts(result.Sample)
+			state.sampleMonitor(view, result.Sample)
 		default:
 			return
 		}
@@ -142,9 +185,15 @@ func (state *State) remoteStatsToggle(session *Session) (hint string, style icon
 func remoteStatsParts(sample remotestats.Sample) []string {
 	parts := make([]string, statsMetricCount, int(statsMetricCount)+len(sample.GPUs))
 	parts[statsCPU] = fmt.Sprintf("CPU %.0f%%", sample.CPUPercent)
+	if sample.CPUUnavailable {
+		parts[statsCPU] = "CPU —"
+	}
 	parts[statsMemory] = "RAM " + formatMemory(sample.MemoryUsedBytes, sample.MemoryTotalBytes)
 	parts[statsDown] = "↓" + formatRate(sample.ReceiveBytesPerSecond)
 	parts[statsUp] = "↑" + formatRate(sample.SendBytesPerSecond)
+	if sample.NetworkUnavailable {
+		parts[statsDown], parts[statsUp] = "↓—", "↑—"
+	}
 	for index := range sample.GPUs {
 		parts = append(parts, formatGPU(&sample.GPUs[index], len(sample.GPUs) > 1))
 	}
@@ -155,6 +204,15 @@ func formatRemoteStats(sample remotestats.Sample) string {
 	text := fmt.Sprintf("CPU %.0f%%  RAM %s  ↓%s ↑%s", sample.CPUPercent,
 		formatMemory(sample.MemoryUsedBytes, sample.MemoryTotalBytes),
 		formatRate(sample.ReceiveBytesPerSecond), formatRate(sample.SendBytesPerSecond))
+	if sample.CPUUnavailable || sample.NetworkUnavailable {
+		text = ""
+		for i, p := range remoteStatsParts(sample)[:statsMetricCount] {
+			if i > 0 {
+				text += "  "
+			}
+			text += p
+		}
+	}
 	for index := range sample.GPUs {
 		text += "  " + formatGPU(&sample.GPUs[index], len(sample.GPUs) > 1)
 	}

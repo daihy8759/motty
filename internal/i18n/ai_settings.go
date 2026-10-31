@@ -22,40 +22,50 @@ type AISettingsMessages struct {
 	ProviderKindClaude string
 	ProviderAuthAPIKey string
 	ProviderAuthBearer string
+	// ProviderFormatResponses is shown in the provider row of an OpenAI-compatible
+	// provider that uses the Responses API. Chat Completions, the default, is not
+	// named there.
+	ProviderFormatResponses string
 
 	// The provider dialog.
-	FormAddTitle       string
-	FormEditTitle      string
-	FormDescription    string
-	FormName           string
-	FormNamePH         string
-	FormKind           string
-	FormAuth           string
-	FormAuthAPIKey     string
-	FormAuthBearer     string
-	FormPreset         string
-	FormPresetCustom   string
-	FormBaseURL        string
-	FormBaseURLOpenAI  string // placeholder: the official default
-	FormBaseURLClaude  string
-	FormKey            string
-	FormKeyPH          string
-	FormKeySaved       string
-	FormSave           string
-	FormAdd            string
-	ErrFormName        string
-	ErrFormBaseURL     string
-	ErrFormKey         string
-	ErrFormSaveFmt     string
-	ErrModelName       string
-	CLIPath            string
-	CLIPathDefault     string
-	CLIPathDetected    string
-	CLIPathNotFound    string
-	CLIFormDescription string
-	CLIDefaultModel    string
-	CLIModelsNote      string
-	CLIModelsCheck     string
+	FormAddTitle        string
+	FormEditTitle       string
+	FormDescription     string
+	FormName            string
+	FormNamePH          string
+	FormKind            string
+	FormAuth            string
+	FormAuthAPIKey      string
+	FormAuthBearer      string
+	FormFormat          string
+	FormFormatChat      string
+	FormFormatResponses string
+	// The route each protocol is sent to, shown under the choice.
+	FormFormatChatRoute      string
+	FormFormatResponsesRoute string
+	FormPreset               string
+	FormPresetCustom         string
+	FormBaseURL              string
+	FormBaseURLOpenAI        string // placeholder: the official default
+	FormBaseURLClaude        string
+	FormKey                  string
+	FormKeyPH                string
+	FormKeySaved             string
+	FormSave                 string
+	FormAdd                  string
+	ErrFormName              string
+	ErrFormBaseURL           string
+	ErrFormKey               string
+	ErrFormSaveFmt           string
+	ErrModelName             string
+	CLIPath                  string
+	CLIPathDefault           string
+	CLIPathDetected          string
+	CLIPathNotFound          string
+	CLIFormDescription       string
+	CLIDefaultModel          string
+	CLIModelsNote            string
+	CLIModelsCheck           string
 
 	CLIAuthTitle      string
 	CLIAuthLogin      string

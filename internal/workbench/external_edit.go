@@ -8,11 +8,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/vivaui/viva/app"
+	"github.com/vivaui/viva/components"
 	"motty/internal/sftpclient"
 )
 
@@ -78,27 +78,11 @@ type externalEdits struct {
 	stop     chan struct{}
 }
 
-// safeLocalName keeps what a remote name may be as a local file name: the
-// base name, without characters a file system or a shell treats specially.
+// safeLocalName keeps what a remote name may be as a local file name; see
+// sftpclient.SafeLocalName, which the transfer worker also uses for the
+// children of a downloaded folder.
 func safeLocalName(remote string) string {
-	name := path.Base(remote)
-	var out strings.Builder
-	for _, r := range name {
-		switch {
-		case r < 0x20 || r == 0x7f, strings.ContainsRune(`<>:"/\|?*`, r):
-			out.WriteByte('_')
-		default:
-			out.WriteRune(r)
-		}
-	}
-	clean := strings.Trim(out.String(), ". ")
-	if clean == "" {
-		return "file"
-	}
-	if len(clean) > 120 {
-		clean = clean[:120]
-	}
-	return strings.ToValidUTF8(clean, "_")
+	return sftpclient.SafeLocalName(remote)
 }
 
 func (state *State) editByID(id uint32) *externalEdit {
@@ -185,6 +169,8 @@ func (state *State) externalEditResult(session *Session, view *sftpView, result 
 			}
 			view.status = fmt.Sprintf(m.ExtEditSentFmt, edit.name)
 			view.errorText = ""
+			state.fileOpenNotice(view.detached, edit.name, view.status, components.ToastSuccess)
+			state.refreshSFTPAfterRemoteSave(view, result.Path)
 		case errors.Is(result.Err, sftpclient.ErrRemoteChanged):
 			edit.conflicted, edit.dirty = true, false
 		default:

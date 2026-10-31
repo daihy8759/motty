@@ -41,7 +41,16 @@ func TestNewSymbolicLinkIsCreatedListedAndOpensLikeAFolder(t *testing.T) {
 	typeLinkField(t, state, hitSFTPDialogField, "shortcut")
 	state.Click(hitSFTPDialogSubmit)
 	waitSFTP(t, state, session, func(view *sftpView) bool {
-		return !view.busy && view.dialog == sftpDialogNone && len(view.rows) == 3
+		if view.busy || view.dialog != sftpDialogNone || len(view.rows) != 3 {
+			return false
+		}
+		// Link metadata arrives in a follow-up after the initial directory rows.
+		for _, row := range view.rows {
+			if row.entry.Name == "shortcut" {
+				return row.entry.IsLink() && row.entry.IsDir() && row.entry.LinkTarget == "docs"
+			}
+		}
+		return false
 	})
 	remote.mu.Lock()
 	target := remote.links["/home/test/shortcut"]
@@ -62,6 +71,7 @@ func TestNewSymbolicLinkIsCreatedListedAndOpensLikeAFolder(t *testing.T) {
 func TestConflictDialogCanSkipWhatExists(t *testing.T) {
 	state, session, _, _ := openTestSFTP(t)
 	view := session.files
+	state.sftpDownloadDirectory = "" // exercise the ask-each-time picker path
 	target := filepath.Join(t.TempDir(), "notes.txt")
 	os.WriteFile(target, []byte("mine"), 0o600)
 	state.options.SaveFile = func(app.SaveFileOptions) (string, error) { return target, nil }
@@ -91,7 +101,7 @@ func TestBookmarksAreKeptPerHostSurviveARestartAndOpenTheirFolder(t *testing.T) 
 	state.Click(hitSFTPOpenEntry)
 	waitSFTP(t, state, session, func(view *sftpView) bool { return !view.busy && view.path == "/home/test/docs" })
 	state.Click(hitSFTPBookmarkToggle)
-	if marks := state.bookmarksFor(session); len(marks) != 1 || marks[0] != "/home/test/docs" {
+	if marks := (sftpPlaceBrowser{owner: state, session: session, view: view}).directoryFavorites(); len(marks) != 1 || marks[0].path != "/home/test/docs" {
 		t.Fatalf("bookmarks = %v", marks)
 	}
 	// The star shows it.
@@ -141,7 +151,7 @@ func TestBookmarksAreKeptPerHostSurviveARestartAndOpenTheirFolder(t *testing.T) 
 
 	// The star again removes it.
 	state.Click(hitSFTPBookmarkToggle)
-	if marks := state.bookmarksFor(session); len(marks) != 0 {
+	if marks := (sftpPlaceBrowser{owner: state, session: session, view: view}).directoryFavorites(); len(marks) != 0 {
 		t.Fatalf("bookmarks after removing = %v", marks)
 	}
 }
@@ -193,31 +203,77 @@ func TestFilesSettingsApplyToTheWorkerAndAreSaved(t *testing.T) {
 	state.selectSettingsCategory(settingsFiles)
 	var canvas ui.Canvas
 	state.Paint(&canvas, ui.Size{Width: 1400, Height: 900})
-	for _, id := range []ui.ID{hitSettingsParallel1, hitSettingsParallel4, hitSettingsKeepTimesToggle, hitSettingsFollowToggle, hitSettingsFollowSetup} {
+	for _, id := range []ui.ID{
+		hitSettingsParallel1, hitSettingsParallel4, hitSettingsKeepTimesToggle, hitSettingsFollowToggle, hitSettingsFollowSetup,
+		hitSettingsConfigureColumns, hitSettingsDownloadDirectory, hitSettingsDownloadAsk,
+	} {
 		if _, ok := hitByID(&canvas, id); !ok {
 			t.Errorf("settings control %d is not painted", id)
 		}
 	}
 	var copied string
 	state.options.SetClipboardText = func(value string) error { copied = value; return nil }
+	downloadDirectory := t.TempDir()
+	state.options.OpenDirectory = func(options app.OpenDirectoryOptions) (string, error) {
+		if options.Title != state.messages.Tools.FilesDownloadChoose {
+			t.Fatalf("download chooser title = %q", options.Title)
+		}
+		return downloadDirectory, nil
+	}
 	state.Click(hitSettingsFollowSetup)
 	if !strings.Contains(copied, "\\e]7;file://") {
 		t.Fatalf("copied %q", copied)
 	}
 	state.Click(hitSettingsParallel4)
 	state.Click(hitSettingsKeepTimesToggle)
+	state.Click(hitSettingsConfigureColumns)
+	state.Click(hitSFTPColumnSettingsToggles.At(int(sftpColumnSize)))
+	state.Click(hitSFTPColumnSettingsClose)
+	state.Click(hitSettingsDownloadAsk)
+	if state.sftpDownloadDirectory != "" {
+		t.Fatal("ask-every-time setting did not clear the default folder")
+	}
+	state.Click(hitSettingsDownloadDirectory)
 	saved, _, err := loadState(state.options.StatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.SFTPParallel != 4 || saved.SFTPKeepTimes != "off" || saved.SFTPFollow != "" {
-		t.Fatalf("saved = %d %q %q", saved.SFTPParallel, saved.SFTPKeepTimes, saved.SFTPFollow)
+	if saved.SFTPParallel != 4 || saved.SFTPKeepTimes != "off" || saved.SFTPFollow != "" ||
+		saved.SFTPColumns != "name:1,size:0,modified:1" || saved.SFTPDownloadDirectory != downloadDirectory {
+		t.Fatalf("saved = %d %q %q %q %q", saved.SFTPParallel, saved.SFTPKeepTimes, saved.SFTPFollow, saved.SFTPColumns, saved.SFTPDownloadDirectory)
 	}
 	restarted := newTestState(t, state.options)
-	if restarted.sftpParallel != 4 || !restarted.sftpKeepTimesOff || restarted.sftpFollowOff {
-		t.Fatalf("restored = %d %v %v", restarted.sftpParallel, restarted.sftpKeepTimesOff, restarted.sftpFollowOff)
+	if restarted.sftpParallel != 4 || !restarted.sftpKeepTimesOff || restarted.sftpFollowOff ||
+		restarted.sftpColumns.enabled(sftpColumnSize) || !restarted.sftpColumns.enabled(sftpColumnModified) ||
+		restarted.sftpDownloadDirectory != downloadDirectory {
+		t.Fatalf("restored = %d %v %v %+v %q", restarted.sftpParallel, restarted.sftpKeepTimesOff, restarted.sftpFollowOff,
+			restarted.sftpColumns, restarted.sftpDownloadDirectory)
 	}
 	_ = session
+}
+
+func TestSFTPColumnSettingsReorderFromTheKeyboardAndSave(t *testing.T) {
+	state := newTestState(t, testOptions(t))
+	state.Click(hitSettings)
+	state.selectSettingsCategory(settingsFiles)
+	state.Click(hitSettingsConfigureColumns)
+	var canvas ui.Canvas
+	state.Paint(&canvas, ui.Size{Width: 1400, Height: 900})
+	handle := hitSFTPColumnSettingsHandles.At(int(sftpColumnSize))
+	if _, ok := hitByID(&canvas, handle); !ok {
+		t.Fatal("the size column has no reorder handle")
+	}
+	result := state.Key(ui.KeyEvent{Target: handle, Key: ui.KeyDown})
+	if !result.Handled || result.Focus != handle {
+		t.Fatalf("keyboard move = %+v", result)
+	}
+	if got, want := state.sftpColumns.String(), "name:1,modified:1,size:1"; got != want {
+		t.Fatalf("column order = %q, want %q", got, want)
+	}
+	saved, _, err := loadState(state.options.StatePath)
+	if err != nil || saved.SFTPColumns != state.sftpColumns.String() {
+		t.Fatalf("saved columns = %q, %v", saved.SFTPColumns, err)
+	}
 }
 
 func TestExtractCommandsQuoteEverythingAndNeverOverwrite(t *testing.T) {

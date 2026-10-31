@@ -13,6 +13,7 @@ import (
 
 	"github.com/vivaui/viva/ui"
 	"motty/internal/i18n"
+	"motty/internal/monitoring"
 	"motty/internal/sshconn"
 	layoutcore "motty/internal/workspace"
 )
@@ -27,6 +28,8 @@ const shortcutSchemaVersion = 1
 // workspace metadata to restore tabs without reconnecting. Run-local numeric
 // IDs are not saved; stable host catalog IDs are.
 type savedState struct {
+	MonitorPanels              []monitoring.Panel  `json:"monitor_panels,omitempty"`
+	MonitorActive              string              `json:"monitor_active,omitempty"`
 	Version                    int                 `json:"version"`
 	Language                   string              `json:"language,omitempty"`
 	Theme                      string              `json:"theme,omitempty"`
@@ -37,6 +40,7 @@ type savedState struct {
 	TerminalFontSize           int                 `json:"terminal_font_size,omitempty"`
 	TerminalFontFace           string              `json:"terminal_font_face,omitempty"`
 	TerminalFontFamily         string              `json:"terminal_font_family,omitempty"`
+	TerminalFontFallbacks      []string            `json:"terminal_font_fallbacks,omitempty"`
 	TerminalScrollback         int                 `json:"terminal_scrollback,omitempty"`
 	ConnectionTimeoutSeconds   int                 `json:"connection_timeout_seconds,omitempty"`
 	ConnectionKeepAliveSeconds int                 `json:"connection_keepalive_seconds,omitempty"`
@@ -45,6 +49,12 @@ type savedState struct {
 	ShareConnections           string              `json:"share_connections,omitempty"`
 	TerminalClipboard          string              `json:"terminal_clipboard,omitempty"`
 	TerminalCursorSteady       bool                `json:"terminal_cursor_steady,omitempty"`
+	TerminalCopyOnSelect       bool                `json:"terminal_copy_on_select,omitempty"`
+	TerminalRightClickPaste    bool                `json:"terminal_right_click_paste,omitempty"`
+	TerminalTabTitle           bool                `json:"terminal_tab_title,omitempty"`
+	TerminalShowLatency        bool                `json:"terminal_show_latency,omitempty"`
+	TerminalBellOff            bool                `json:"terminal_bell_off,omitempty"`
+	TerminalLinkPlainClick     bool                `json:"terminal_link_plain_click,omitempty"`
 	AIPanelWidth               float32             `json:"ai_panel_width,omitempty"`
 	WindowX                    int                 `json:"window_x,omitempty"`
 	WindowY                    int                 `json:"window_y,omitempty"`
@@ -64,10 +74,14 @@ type savedState struct {
 	SFTPPathInput              bool                `json:"sftp_path_input,omitempty"`
 	SFTPPanelAutoOpen          bool                `json:"sftp_panel_auto_open,omitempty"`
 	SFTPPanelSide              string              `json:"sftp_panel_side,omitempty"`
+	SFTPColumns                string              `json:"sftp_columns,omitempty"`
+	SFTPDownloadDirectory      string              `json:"sftp_download_directory,omitempty"`
 	Toolbars                   *savedToolbars      `json:"toolbars,omitempty"`
 	UpdateCheck                string              `json:"update_check,omitempty"`
+	CloseAction                string              `json:"close_action,omitempty"`
 	UpdateSkipped              string              `json:"update_skipped,omitempty"`
 	SFTPBookmarks              []savedBookmark     `json:"sftp_bookmarks,omitempty"`
+	SFTPLocalBookmarks         []string            `json:"sftp_local_bookmarks,omitempty"`
 	OutboundProxy              *savedOutboundProxy `json:"outbound_proxy,omitempty"`
 	HighlightBuiltin           string              `json:"highlight_builtin,omitempty"`
 	Highlights                 []savedHighlight    `json:"highlights,omitempty"`
@@ -76,6 +90,7 @@ type savedState struct {
 	Autofill                   []savedAutofill     `json:"autofill_rules,omitempty"`
 	CommandHistory             bool                `json:"command_history,omitempty"`
 	CommandSuggestOff          bool                `json:"command_suggest_off,omitempty"`
+	CommandInlineSuggestOff    bool                `json:"command_inline_suggest_off,omitempty"`
 	ShortcutVersion            int                 `json:"shortcut_version,omitempty"`
 	Shortcuts                  []savedShortcut     `json:"shortcuts,omitempty"`
 	Workspace                  string              `json:"workspace,omitempty"`
@@ -185,6 +200,8 @@ type savedSession struct {
 	// Local marks a shell on this computer: it has no address to dial.
 	Local          bool   `json:"local,omitempty"`
 	LocalDirectory string `json:"local_directory,omitempty"`
+	// LocalShell is the shell this local tab was opened with; empty follows the default.
+	LocalShell string `json:"local_shell,omitempty"`
 	savedTransport
 }
 
@@ -337,6 +354,8 @@ func writeFileAtomic(path string, data []byte) error {
 func (state *State) snapshot() savedState {
 	savedAgent, savedAgentPath := state.sshAgent.saved()
 	saved := savedState{
+		MonitorPanels:              state.dashboard.panelDefinitions(),
+		MonitorActive:              state.dashboard.active,
 		Version:                    stateFileVersion,
 		Language:                   state.savedLanguage(),
 		Theme:                      state.appearanceMode.saved(),
@@ -345,8 +364,9 @@ func (state *State) snapshot() savedState {
 		SSHAgent:                   savedAgent,
 		SSHAgentPath:               savedAgentPath,
 		TerminalFontSize:           int(state.terminalFontSize),
-		TerminalFontFace:           terminalFontFaceString(state.terminalFontFace),
+		TerminalFontFace:           terminalFontFaceString(state.fonts.classic),
 		TerminalFontFamily:         state.fonts.family,
+		TerminalFontFallbacks:      slices.Clone(state.fonts.fallbacks),
 		TerminalScrollback:         state.terminalScrollback,
 		ConnectionTimeoutSeconds:   int(state.connectionTimeout / time.Second),
 		ConnectionKeepAliveSeconds: int(state.connectionKeepAlive / time.Second),
@@ -355,6 +375,12 @@ func (state *State) snapshot() savedState {
 		ShareConnections:           state.shareConnections.String(),
 		TerminalClipboard:          state.terminalClipboard.String(),
 		TerminalCursorSteady:       state.terminalCursorSteady,
+		TerminalCopyOnSelect:       state.terminalCopyOnSelect,
+		TerminalRightClickPaste:    state.terminalRightClickPaste,
+		TerminalTabTitle:           state.terminalTabTitle,
+		TerminalShowLatency:        state.terminalShowLatency,
+		TerminalBellOff:            state.terminalBellOff,
+		TerminalLinkPlainClick:     state.terminalLinkPlainClick,
 		AIPanelWidth:               state.ai.panelWidth,
 		TerminalSchemeDark:         state.terminalSchemes[appearanceDark],
 		TerminalSchemeLight:        state.terminalSchemes[appearanceLight],
@@ -364,6 +390,7 @@ func (state *State) snapshot() savedState {
 		TerminalPasteImage:         notifyString(state.pasteImageOff),
 		CommandHistory:             state.history.on,
 		CommandSuggestOff:          state.history.suggestOff,
+		CommandInlineSuggestOff:    state.history.inlineOff,
 		SFTPParallel:               state.sftpParallel,
 		SFTPKeepTimes:              notifyString(state.sftpKeepTimesOff),
 		SFTPFollow:                 notifyString(state.sftpFollowOff),
@@ -371,8 +398,11 @@ func (state *State) snapshot() savedState {
 		SFTPPathInput:              state.sftpPathInput,
 		SFTPPanelAutoOpen:          state.sftpPanelAutoOpen,
 		SFTPPanelSide:              sftpPanelSideString(state.sftpPanelSide),
+		SFTPColumns:                state.sftpColumns.String(),
+		SFTPDownloadDirectory:      savedSFTPDownloadDirectory(state.sftpDownloadDirectory),
 		Toolbars:                   state.toolbars.snapshot(),
 		UpdateCheck:                updateCheckString(state.updateAtStart),
+		CloseAction:                state.closeAction.String(),
 		UpdateSkipped:              state.update.skipped,
 		ShortcutVersion:            shortcutSchemaVersion,
 		Shortcuts:                  make([]savedShortcut, 0, shortcutActionCount-1),
@@ -416,7 +446,7 @@ func (state *State) snapshot() savedState {
 	for action := shortcutAction(1); action < shortcutActionCount; action++ {
 		chord := state.shortcuts.chords[action]
 		saved.Shortcuts = append(saved.Shortcuts, savedShortcut{
-			Action: action.String(), Key: string([]byte{chord.Key}), Modifiers: uint8(chord.Modifiers),
+			Action: action.String(), Key: chord.savedKey(), Modifiers: uint8(chord.Modifiers),
 		})
 	}
 	for _, host := range state.hosts {
@@ -439,8 +469,9 @@ func (state *State) snapshot() savedState {
 		}
 	}
 	for _, bookmark := range state.sftpBookmarks {
-		saved.SFTPBookmarks = append(saved.SFTPBookmarks, savedBookmark{Host: bookmark.host, Path: bookmark.path})
+		saved.SFTPBookmarks = append(saved.SFTPBookmarks, savedBookmark{Host: bookmark.host, Path: bookmark.path, Name: bookmark.name, Local: bookmark.local, Shared: bookmark.shared})
 	}
+	saved.SFTPLocalBookmarks = slices.Clone(state.sftpLocalBookmarks)
 	for _, group := range state.hostGroups {
 		saved.HostGroups = append(saved.HostGroups, savedHostGroup{Name: group.Name, Collapsed: !group.Expanded})
 	}
@@ -471,7 +502,7 @@ func (state *State) snapshot() savedState {
 			continue
 		}
 		if session.isLocal() {
-			saved.Sessions = append(saved.Sessions, savedSession{Label: session.Title, Local: true, LocalDirectory: session.localDirectory})
+			saved.Sessions = append(saved.Sessions, savedSession{Label: session.Title, Local: true, LocalDirectory: session.localDirectory, LocalShell: session.host.localShell})
 			if session.ID == state.activeSessionID {
 				saved.ActiveSession = len(saved.Sessions)
 			}
@@ -568,6 +599,8 @@ func (state *State) restoreSettings(saved savedState) {
 // restoreLocal applies what belongs to this computer: the language and look, the
 // fonts, what it does at start, the keys it has, the cloud account, the picture.
 func (state *State) restoreLocal(saved savedState) {
+	state.restoreDashboard(saved.MonitorPanels, saved.MonitorActive)
+	state.restoreSFTPLocalFavorites(saved.SFTPLocalBookmarks)
 	state.toolbars.restore(saved.Toolbars)
 	state.localShell = saved.LocalShell
 	state.sshAgent = agentChoiceFromSaved(saved.SSHAgent, saved.SSHAgentPath)
@@ -587,14 +620,14 @@ func (state *State) restoreLocal(saved savedState) {
 	state.syncNativeAppearance()
 	state.setAppearance(state.resolveAppearance())
 	state.setTerminalFontSize(float32(saved.TerminalFontSize))
-	state.setTerminalFontFace(terminalFontFaceFromString(saved.TerminalFontFace))
-	state.fonts.family = ""
-	if family := strings.TrimSpace(saved.TerminalFontFamily); family != "" {
-		if face := ui.MonoFamily(family); face != ui.MonoSystem {
-			state.fonts.family = family
-			state.setTerminalFontFace(face)
-		}
+	state.fonts.family, state.fonts.classic = "", terminalFontFaceFromString(saved.TerminalFontFace) == ui.MonoClassic
+	if family := strings.TrimSpace(saved.TerminalFontFamily); family != "" && ui.MonoFamily(family) != ui.MonoSystem {
+		state.fonts.family, state.fonts.classic = family, false
 	}
+	// Kept as saved, whatever this computer has installed: a copy carried to another
+	// computer comes back with the choice it was given.
+	state.fonts.fallbacks = cleanFallbackFonts(saved.TerminalFontFallbacks, state.fonts.family)
+	state.applyTerminalFace()
 	state.restoreConnect = restoreConnectPolicyFromString(saved.RestoreConnect)
 	state.shareConnections = shareConnectionsPolicyFromString(saved.ShareConnections)
 	state.ai.panelWidth = saved.AIPanelWidth
@@ -623,6 +656,12 @@ func (state *State) restoreShared(saved savedState) {
 	state.connectionReconnect = reconnectPolicyFromString(saved.ConnectionReconnect)
 	state.terminalClipboard = terminalClipboardPolicyFromString(saved.TerminalClipboard)
 	state.terminalCursorSteady = saved.TerminalCursorSteady
+	state.terminalCopyOnSelect = saved.TerminalCopyOnSelect
+	state.terminalRightClickPaste = saved.TerminalRightClickPaste
+	state.terminalTabTitle = saved.TerminalTabTitle
+	state.terminalShowLatency = saved.TerminalShowLatency
+	state.terminalBellOff = saved.TerminalBellOff
+	state.terminalLinkPlainClick = saved.TerminalLinkPlainClick
 	if saved.TerminalSchemeDark == "" && saved.TerminalSchemeLight == "" && saved.TerminalScheme != "" {
 		state.terminalSchemes[appearanceDark], state.terminalSchemes[appearanceLight] = migrateTerminalScheme(saved.TerminalScheme)
 	} else {
@@ -635,6 +674,7 @@ func (state *State) restoreShared(saved savedState) {
 	state.pasteImageOff = saved.TerminalPasteImage == "off"
 	state.history.on = saved.CommandHistory
 	state.history.suggestOff = saved.CommandSuggestOff
+	state.history.inlineOff = saved.CommandInlineSuggestOff
 	state.restoreSFTPSettings(saved)
 	state.proxy = decodeOutboundProxy(saved.OutboundProxy)
 	state.restoreTerminalTools(saved)
@@ -670,6 +710,8 @@ func (state *State) workspaceName() string {
 		return name
 	}
 	switch state.activeSection {
+	case sectionDashboard:
+		return "monitor"
 	case sectionTerminal:
 		return "terminal"
 	case sectionKeys:
@@ -690,18 +732,27 @@ func (state *State) workspaceName() string {
 	}
 }
 
+// restoreShortcuts applies the bindings the file holds, then fills what is
+// still free with the defaults. The file wins on purpose: a chord saved for one
+// action is not taken by the default of an action a later build added. Such an
+// action stays unbound, reading "—" in the settings until it is given a chord,
+// rather than quietly moving a shortcut the user chose.
 func restoreShortcuts(saved []savedShortcut) shortcutMap {
-	shortcuts := defaultShortcuts()
+	defaults := defaultShortcuts()
+	var shortcuts shortcutMap
 	for _, entry := range saved {
 		action := shortcutActionFromString(entry.Action)
-		if action == shortcutNone || len(entry.Key) != 1 {
+		chord, ok := chordFromSaved(ui.Modifiers(entry.Modifiers), entry.Key)
+		if action == shortcutNone || !ok {
 			continue
 		}
-		key := entry.Key[0]
-		if key >= 'A' && key <= 'Z' {
-			key += 'a' - 'A'
+		shortcuts.bind(action, chord)
+	}
+	for action := shortcutAction(1); action < shortcutActionCount; action++ {
+		if shortcuts.chords[action].valid() {
+			continue
 		}
-		shortcuts.bind(action, shortcutChord{Modifiers: ui.Modifiers(entry.Modifiers), Key: key})
+		shortcuts.bind(action, defaults.chords[action])
 	}
 	shortcuts.refreshLabels()
 	return shortcuts
@@ -712,6 +763,8 @@ func (state *State) restoreWorkspace(workspace string) {
 		return
 	}
 	switch workspace {
+	case "monitor":
+		state.activeSection = sectionDashboard
 	case "terminal":
 		if state.activeSessionID != 0 {
 			state.activeSection = sectionTerminal
@@ -787,7 +840,11 @@ func (state *State) restoreSessions(entries []savedSession, active int) []uint32
 
 func (state *State) restoreSessionHost(entry savedSession) (Host, bool) {
 	if entry.Local {
-		return localHost(state.messages.LocalTerminalTitle), true
+		host := localHost(state.messages.LocalTerminalTitle)
+		if validLocalShell(entry.LocalShell) {
+			host.localShell = entry.LocalShell
+		}
+		return host, true
 	}
 	if entry.Address == "" {
 		return Host{}, false

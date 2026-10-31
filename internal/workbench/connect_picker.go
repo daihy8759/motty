@@ -16,9 +16,15 @@ var connectPickerHits = tree.Feature("connect-picker")
 var (
 	hitConnectPickLocal = tree.ID(connectPickerHits, "connect-pick-local")
 	hitConnectPickList  = tree.Sub(connectPickerHits, tree.Name("connect-pick")) // + the host's ID
+	// hitConnectPickShells is a local terminal running one particular shell, by
+	// its place among the shells this computer lists.
+	hitConnectPickShells = tree.Sub(connectPickerHits, tree.Name("connect-pick-shell"))
 )
 
 func (state *State) openConnectPicker() {
+	if localShellSettingVisible() {
+		state.refreshLocalShells()
+	}
 	state.commandPalette.connect = true
 	state.modal = modalCommandPalette
 	state.commandPalette.search = text.Editor{}
@@ -30,6 +36,13 @@ func (state *State) rebuildConnectPicker() {
 	palette := &state.commandPalette
 	local := localHost(state.messages.LocalTerminalTitle)
 	palette.addDetailed(state.messages.LocalTerminal, local.Address, hitConnectPickLocal)
+	// A computer with several shells offers each as its own entry, which the
+	// search finds by name: the entry above is the default shell of the settings.
+	if choices := state.localShellMenu.choices; localShellSettingVisible() && len(choices) > 1 {
+		for index, choice := range choices {
+			palette.addDetailed(state.messages.LocalTerminal+" · "+choice.Name, local.Address, hitConnectPickShells.At(index))
+		}
+	}
 	// The picker lists saved hosts under the groups they are filed in, as the
 	// Hosts page does, so a long catalog can be read by where it connects.
 	if state.namedHostGroups() == 0 {
@@ -57,12 +70,33 @@ func (state *State) rebuildConnectPicker() {
 	state.refreshCommandPalette()
 }
 
+// shellsListed rebuilds an open picker when the WSL distributions have been
+// named, keeping what was typed and where the selection was.
+func (state *State) shellsListed() {
+	if state.modal != modalCommandPalette || !state.commandPalette.connect {
+		return
+	}
+	palette := &state.commandPalette
+	selected, top := palette.selected, palette.top
+	state.rebuildCommandPalette()
+	if palette.visibleCount > 0 {
+		palette.selected = min(selected, palette.visibleCount-1)
+		palette.top = min(top, palette.selected)
+	}
+}
+
 // clickConnectPick connects the picker's choice in a tab of its own.
 func (state *State) clickConnectPick(id ui.ID) bool {
 	switch {
 	case id == hitConnectPickLocal:
 		state.pendingWorkspace, state.pendingPane = 0, 0
 		state.openLocalTerminal()
+	case id.Scope() == hitConnectPickShells:
+		choices := state.localShellMenu.choices
+		if index := item(id); index < len(choices) {
+			state.pendingWorkspace, state.pendingPane = 0, 0
+			state.openLocalTerminalWith(choices[index])
+		}
 	case id.Scope() == hitConnectPickList:
 		host, ok := state.hostByID(uint32(item(id)))
 		if !ok {

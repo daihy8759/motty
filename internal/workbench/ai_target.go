@@ -268,7 +268,9 @@ func (state *State) paintAITargetSelect(canvas *ui.Canvas) {
 		hint = state.aiTargetLabel(target) + " · " + status + ". " + m.TargetHint
 	}
 	const targetChromeWidth = float32(66) // select text insets, leading icon and chevron
-	size := state.Theme().Metrics.FontSizeM
+	// The selector sits in the composer among pills that are one type step below
+	// the message text, so it is the select's chip step rather than a field.
+	size := metrics.FontSizeS
 	bounds.Width = min(bounds.Width, max(108, canvas.TextWidthWeight(value, size, ui.WeightRegular)+targetChromeWidth))
 	value = panel.targetCaption(canvas, value, size, bounds.Width-targetChromeWidth)
 	panel.targetBounds = bounds
@@ -298,7 +300,7 @@ func (state *State) paintAITargetSelect(canvas *ui.Canvas) {
 	theme.Input = withAlpha(state.pal.muted, 0.5)
 	control := components.BeginSelect(canvas, theme, bounds, components.SelectOptions{
 		TriggerID: hitAITarget, Label: m.Target, Value: value, Hint: hint, Open: panel.targetOpen,
-		Size: components.SelectSizeSmall, Icon: icon,
+		Size: components.SelectSizeXSmall, Icon: icon,
 		Disabled: state.ai.run != nil, Content: content, Layer: layer,
 		DismissID: hitAITargetDismiss, Scope: hitAITarget, Viewport: state.windowRect(), Scroll: state.selectScroll(panel.targetOpen, hitAITargetDismiss),
 	})

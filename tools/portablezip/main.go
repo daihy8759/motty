@@ -28,8 +28,9 @@ motty.exe, Motty keeps its hosts, settings, known hosts and saved passwords here
 and leaves nothing else on this computer.
 
 - Copy or move motty.exe and this folder together to take your setup with you.
-- Saved passwords are protected by a master password alone, not by Windows.
-  Set one in Settings > Security before saving a password.
+- The key to the saved passwords is a file in this folder (vault.key), not part of
+  Windows. Whoever can copy this folder can read the saved passwords, so keep it
+  somewhere you trust.
 - Motty does not update itself in a portable copy. To update, download the new
   zip and replace motty.exe, keeping this folder.
 - To use the normal location instead, move this folder away from motty.exe.
@@ -41,8 +42,8 @@ and leaves nothing else on this computer.
 设置、已知主机和已保存的密码都放在这里,不会在这台电脑上留下别的东西。
 
 - 把 motty.exe 和这个文件夹一起复制或移动,就能带走你的全部配置。
-- 已保存的密码只由主密码保护,不依赖 Windows。保存密码之前,请先在
-  设置 > 安全 中设置主密码。
+- 已保存密码的密钥是这个文件夹里的一个文件(vault.key),不依赖 Windows。
+  能拷走这个文件夹的人就能读出已保存的密码,请把它放在可信的地方。
 - 便携版不会自我更新。更新时下载新的 zip,替换 motty.exe,保留这个文件夹。
 - 想改用默认位置,把这个文件夹从 motty.exe 旁边移走即可。
 `

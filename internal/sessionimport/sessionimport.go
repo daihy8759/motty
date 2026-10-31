@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -495,7 +496,8 @@ func parseXshellSession(result *Result, text, name, group, source string) error 
 	}
 	telnet := false
 	switch protocol := strings.ToUpper(connection.values["protocol"]); protocol {
-	case "", "SSH":
+	case "", "SSH", "SSH2":
+		// SSH2 is the name some clients write for the same protocol.
 	case "TELNET":
 		telnet = true
 	default:
@@ -510,12 +512,35 @@ func parseXshellSession(result *Result, text, name, group, source string) error 
 	user := ""
 	if auth, ok := file.section("CONNECTION:AUTHENTICATION"); ok {
 		user = auth.values["username"]
-		if auth.values["userkey"] != "" {
+		// Bastion clients often put a placeholder such as fake_rsa in UserKey;
+		// that is not a private key file to import or to fail a login for.
+		if key := auth.values["userkey"]; key != "" && !IsPlaceholderKey(key) {
 			result.Keys++
 		}
 	}
 	result.add(Entry{Name: name, Group: group, Host: connection.values["host"], Port: port, User: user, Source: source})
 	return nil
+}
+
+// IsLoopbackHost reports whether host is this computer: 127.0.0.1, ::1 or
+// localhost. Bastion clients write those into one-shot tunnel session files.
+func IsLoopbackHost(host string) bool {
+	if strings.EqualFold(strings.TrimSpace(host), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsLoopback()
+}
+
+// IsPlaceholderKey reports a UserKey name that is not a real private key file.
+// Bastion-generated .xsh files often use fake_rsa (and similar) as a stand-in.
+func IsPlaceholderKey(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return true
+	}
+	lower := strings.ToLower(name)
+	return lower == "fake_rsa" || strings.HasPrefix(lower, "fake_")
 }
 
 func parseXshellArchive(path string) (Result, error) {

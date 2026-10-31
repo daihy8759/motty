@@ -3,6 +3,8 @@
 package localshell
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +66,23 @@ func TestShellStartsInTheRequestedDirectoryWithTheTerminalType(t *testing.T) {
 	if !strings.Contains(output, dir) && !strings.Contains(output, strings.TrimPrefix(dir, "/private")) {
 		t.Fatalf("shell started somewhere else: %q (want %s)", output, dir)
 	}
+}
+
+// An application opened from Finder inherits no locale, and the C locale it
+// would otherwise see makes macOS ls print "?" for every character of a
+// non-ASCII file name.
+func TestShellSeesChineseFileNamesWhenNoLocaleIsInherited(t *testing.T) {
+	for _, name := range []string{"LANG", "LC_ALL", "LC_CTYPE"} {
+		t.Setenv(name, "")
+	}
+	dir := t.TempDir()
+	const name = "产品分类映射.xlsx"
+	if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	shell, wakes := start(t, Config{Dir: dir})
+	shell.Write([]byte("ls\n"))
+	until(t, shell, wakes, name)
 }
 
 func TestResizeReachesTheProgram(t *testing.T) {

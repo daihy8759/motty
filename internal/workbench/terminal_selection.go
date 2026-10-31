@@ -2,16 +2,35 @@ package workbench
 
 import (
 	"math"
+	"time"
 
 	"github.com/vivaui/viva/ui"
 	"motty/internal/term"
 )
 
+// terminalSelection is anchored to buffer lines, not view rows, so it stays on
+// the same text while the view scrolls under a drag.
 type terminalSelection struct {
-	anchor, focus term.Position
+	anchor, focus term.Point
 	dragging      bool
 	selected      bool
+	edge          selectionEdge
 }
+
+// selectionEdge is the auto-scroll a drag asks for while the pointer is held
+// beyond the top or bottom of the grid.
+type selectionEdge struct {
+	direction int // +1 scrolls back into history, -1 toward the live screen, 0 rests
+	lines     int // lines per step, growing with the distance from the grid
+	column    int // the column the focus keeps while the view moves under it
+	last      time.Duration
+	stepped   bool
+}
+
+const (
+	selectionScrollInterval = 50 * time.Millisecond
+	selectionScrollMaxLines = 8
+)
 
 func (selection *terminalSelection) clear() bool {
 	changed := selection.dragging || selection.selected
@@ -19,46 +38,54 @@ func (selection *terminalSelection) clear() bool {
 	return changed
 }
 
-func (selection *terminalSelection) begin(position term.Position) bool {
+func (selection *terminalSelection) begin(point term.Point) bool {
 	changed := selection.clear()
-	selection.anchor = position
-	selection.focus = position
+	selection.anchor = point
+	selection.focus = point
 	selection.dragging = true
 	return changed
 }
 
-func (selection *terminalSelection) extend(position term.Position) bool {
-	if !selection.dragging || selection.focus == position {
+func (selection *terminalSelection) extend(point term.Point) bool {
+	if !selection.dragging || selection.focus == point {
 		return false
 	}
-	selection.focus = position
+	selection.focus = point
 	selection.selected = selection.anchor != selection.focus
 	return true
 }
 
-func (selection *terminalSelection) selectRange(anchor, focus term.Position) {
+func (selection *terminalSelection) selectRange(anchor, focus term.Point) {
 	selection.anchor = anchor
 	selection.focus = focus
 	selection.dragging = false
 	selection.selected = true
+	selection.edge = selectionEdge{}
 }
 
-func (selection terminalSelection) span(row int, line term.Row, cols int) (int, int, bool) {
+// text is the selected text, wherever in the retained buffer it lies.
+func (selection terminalSelection) text(screen *term.Terminal) string {
+	return screen.SelectedRange(selection.anchor, selection.focus)
+}
+
+// span is the part of one displayed row the selection covers; lineNumber is the
+// buffer line that row shows.
+func (selection terminalSelection) span(lineNumber uint64, line term.Row, cols int) (int, int, bool) {
 	if !selection.selected {
 		return 0, 0, false
 	}
 	start, end := selection.anchor, selection.focus
-	if end.Row < start.Row || end.Row == start.Row && end.Column < start.Column {
+	if end.Line < start.Line || end.Line == start.Line && end.Column < start.Column {
 		start, end = end, start
 	}
-	if row < start.Row || row > end.Row {
+	if lineNumber < start.Line || lineNumber > end.Line {
 		return 0, 0, false
 	}
 	from, to := 0, cols
-	if row == start.Row {
+	if lineNumber == start.Line {
 		from = start.Column
 	}
-	if row == end.Row {
+	if lineNumber == end.Line {
 		to = end.Column + 1
 	}
 	if from < len(line.Cells) && line.Cells[from].Attr&term.WideTail != 0 && from > 0 {
@@ -83,12 +110,18 @@ func (state *State) terminalPointer(session *Session, event ui.PointerEvent) ui.
 		position.Column--
 	}
 	linkPosition := terminalLinkPosition(terminal.screen, position)
-	linksEnabled := terminal.screen.Modes().Mouse == term.MouseOff && event.Modifiers&ui.ModifierShift == 0
+	linksEnabled := terminal.screen.Modes().Mouse == term.MouseOff && state.terminalLinkOpens(event.Modifiers)
 	switch event.Kind {
 	case ui.PointerDown:
 		if event.Button == ui.PointerButtonSecondary {
 			// A program that asked for the mouse already had this press; what
-			// reaches here is the terminal's own, so it gets the menu.
+			// reaches here is the terminal's own. It pastes when the user chose
+			// that, and Shift keeps the menu one press away.
+			if state.terminalRightClickPaste && event.Modifiers&ui.ModifierShift == 0 {
+				state.terminalMenu.open = false
+				state.pasteIntoTerminal(session)
+				return ui.EventResult{Handled: true, Repaint: true}
+			}
 			state.openTerminalMenu(session)
 			state.offerActionsAt(session, position)
 			return ui.EventResult{Handled: true, Repaint: true}
@@ -100,14 +133,18 @@ func (state *State) terminalPointer(session *Session, event ui.PointerEvent) ui.
 		if event.ClickCount >= 2 {
 			terminal.links.clear()
 			start, end := terminal.screen.WordBounds(position)
-			selection.selectRange(start, end)
-			return ui.EventResult{Handled: true, Repaint: true}
+			selection.selectRange(terminal.screen.PointAt(start), terminal.screen.PointAt(end))
+			result := ui.EventResult{Handled: true, Repaint: true}
+			if state.terminalCopyOnSelect {
+				result.ClipboardText = selection.text(terminal.screen)
+			}
+			return result
 		}
 		linkChanged := terminal.links.clear()
 		if linksEnabled && event.Button == ui.PointerButtonPrimary {
 			linkChanged = terminal.links.press(terminal.screen, linkPosition) || linkChanged
 		}
-		return ui.EventResult{Handled: true, Repaint: selection.begin(position) || linkChanged}
+		return ui.EventResult{Handled: true, Repaint: selection.begin(terminal.screen.PointAt(position)) || linkChanged}
 	case ui.PointerMove:
 		if !selection.dragging || !event.Captured {
 			if !linksEnabled {
@@ -117,7 +154,8 @@ func (state *State) terminalPointer(session *Session, event ui.PointerEvent) ui.
 			_, hovered := terminal.links.hoveredLink(terminal.screen)
 			return ui.EventResult{Handled: hovered, Repaint: changed}
 		}
-		changed := selection.extend(position)
+		changed := selection.extend(terminal.screen.PointAt(position))
+		state.armSelectionScroll(terminal, event, position.Column)
 		if changed {
 			changed = terminal.links.clear() || changed
 		}
@@ -134,8 +172,9 @@ func (state *State) terminalPointer(session *Session, event ui.PointerEvent) ui.
 			changed := terminal.links.clear()
 			return ui.EventResult{Handled: event.Captured, Repaint: changed}
 		}
-		changed := selection.extend(position)
+		changed := selection.extend(terminal.screen.PointAt(position))
 		selection.dragging = false
+		selection.edge = selectionEdge{}
 		open := false
 		target := ""
 		if !selection.selected {
@@ -155,9 +194,66 @@ func (state *State) terminalPointer(session *Session, event ui.PointerEvent) ui.
 		if open && terminal.openLink != nil {
 			terminal.openLink(target)
 		}
-		return ui.EventResult{Handled: true, Repaint: changed}
+		result := ui.EventResult{Handled: true, Repaint: changed}
+		if state.terminalCopyOnSelect && selection.selected {
+			result.ClipboardText = selection.text(terminal.screen)
+		}
+		return result
 	}
 	return ui.EventResult{}
+}
+
+// armSelectionScroll decides from where a drag's pointer is whether the view
+// has to follow it. A pointer held above or below the grid keeps scrolling
+// even when it stops moving, so the steps come from the frames paint asks for
+// (see stepSelectionScroll), not from further pointer events.
+func (state *State) armSelectionScroll(terminal *terminal, event ui.PointerEvent, column int) {
+	selection := &terminal.selection
+	geometry := terminalLayout(event.Viewport, state.cellWidth, state.cellHeight, state.padding())
+	_, rows := terminal.screen.Size()
+	bottom := geometry.top + float32(rows)*state.cellHeight
+	edge := selectionEdge{column: column, last: selection.edge.last, stepped: selection.edge.stepped}
+	var distance float32
+	switch {
+	case event.Y < geometry.top && terminal.screen.ViewOffset() < terminal.screen.Scrollback():
+		edge.direction, distance = 1, geometry.top-event.Y
+	case event.Y >= bottom && terminal.screen.ViewOffset() > 0:
+		edge.direction, distance = -1, event.Y-bottom
+	default:
+		selection.edge = selectionEdge{}
+		return
+	}
+	if state.cellHeight > 0 {
+		edge.lines = min(1+int(distance/state.cellHeight), selectionScrollMaxLines)
+	} else {
+		edge.lines = 1
+	}
+	selection.edge = edge
+}
+
+// stepSelectionScroll scrolls a dragging terminal toward the pointer, once per
+// interval, and moves the selection's focus onto the row it uncovers. It runs
+// from Wake, where state may change, on the frames paint asked for.
+func (state *State) stepSelectionScroll(terminal *terminal, now time.Duration) {
+	selection := &terminal.selection
+	edge := selection.edge
+	if !selection.dragging || edge.direction == 0 {
+		return
+	}
+	if edge.stepped && now-edge.last < selectionScrollInterval {
+		return
+	}
+	if !terminal.screen.Scroll(edge.direction * edge.lines) {
+		selection.edge = selectionEdge{}
+		return
+	}
+	row := 0
+	if edge.direction < 0 {
+		_, rows := terminal.screen.Size()
+		row = rows - 1
+	}
+	selection.edge.last, selection.edge.stepped = now, true
+	selection.extend(terminal.screen.PointAt(term.Position{Row: row, Column: edge.column}))
 }
 
 func (state *State) terminalMousePointer(session *Session, event ui.PointerEvent, position term.Position) (ui.EventResult, bool) {

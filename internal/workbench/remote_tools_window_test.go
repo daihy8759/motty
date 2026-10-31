@@ -44,6 +44,8 @@ func (h *remoteWindowHost) OpenWindow(config app.Config, _ *ui.Canvas, closed fu
 func (h *remoteWindowHost) AddStatusItem(app.StatusItemConfig) (app.StatusItemControl, error) {
 	return nil, errors.New("not used")
 }
+func (h *remoteWindowHost) SetDockBadge(string) {}
+
 func (h *remoteWindowHost) Quit() {
 	for _, w := range h.windows {
 		w.Close()

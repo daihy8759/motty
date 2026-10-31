@@ -1,9 +1,12 @@
 package workbench
 
 import (
+	"context"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/ui"
@@ -17,14 +20,27 @@ var (
 )
 
 type localShellSelect struct {
-	choices  []localshell.Choice
+	choices  []localshell.Choice // the shells, then the WSL distributions
+	shells   []localshell.Choice
+	distros  []localshell.Choice
 	loaded   bool
 	open     bool
 	bounds   ui.Rect
 	discover func() []localshell.Choice // nil uses the Windows discovery
+	// discoverWSL lists the WSL distributions; nil asks wsl.exe. It starts a
+	// process, so it runs on its own goroutine and answers through listing.
+	discoverWSL func(context.Context) []localshell.Choice
+	listing     chan []localshell.Choice // the answer being waited for, else nil
 }
 
-func localShellSettingVisible() bool { return runtime.GOOS == "windows" }
+// wslListTimeout is how long wsl.exe gets to name the installed distributions.
+const wslListTimeout = 10 * time.Second
+
+// localShellsSupported is whether this computer lists its shells for the user
+// to choose from. Only Windows does: elsewhere the login shell is the one.
+var localShellsSupported = runtime.GOOS == "windows"
+
+func localShellSettingVisible() bool { return localShellsSupported }
 
 func (state *State) refreshLocalShells() {
 	menu := &state.localShellMenu
@@ -32,7 +48,57 @@ func (state *State) refreshLocalShells() {
 	if discover == nil {
 		discover = localshell.InstalledWindowsShells
 	}
-	menu.choices, menu.loaded = discover(), true
+	menu.shells, menu.loaded = discover(), true
+	menu.rebuild()
+	state.listWSLDistros()
+}
+
+func (menu *localShellSelect) rebuild() {
+	menu.choices = append(slices.Clone(menu.shells), menu.distros...)
+}
+
+// listWSLDistros asks for the installed distributions without waiting: the
+// shells are found by looking at files, but naming distributions takes wsl.exe,
+// which may take a moment, or start WSL. Their entries join the list when the
+// answer is adopted by the next paint.
+func (state *State) listWSLDistros() {
+	menu := &state.localShellMenu
+	if menu.listing != nil {
+		return
+	}
+	discover := menu.discoverWSL
+	if discover == nil {
+		discover = localshell.InstalledWSL
+	}
+	listing, invalidate := make(chan []localshell.Choice, 1), state.options.Invalidate
+	menu.listing = listing
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), wslListTimeout)
+		defer cancel()
+		listing <- discover(ctx)
+		if invalidate != nil {
+			invalidate()
+		}
+	}()
+}
+
+// adoptWSLDistros takes the distributions that were asked for, if they have
+// been named.
+func (state *State) adoptWSLDistros() {
+	menu := &state.localShellMenu
+	if menu.listing == nil {
+		return
+	}
+	select {
+	case distros := <-menu.listing:
+		menu.listing = nil
+		if !slices.Equal(distros, menu.distros) {
+			menu.distros = distros
+			menu.rebuild()
+			state.shellsListed()
+		}
+	default:
+	}
 }
 
 func (state *State) localShellSelected() int {
@@ -53,6 +119,7 @@ func (state *State) paintLocalShellSetting(page *settingsPage) {
 
 // Paint the select in the menu pass, outside the settings page's clip.
 func (state *State) paintLocalShellSelect(canvas *ui.Canvas) {
+	state.adoptWSLDistros()
 	menu, m := &state.localShellMenu, state.messages
 	bounds := menu.bounds
 	if !localShellSettingVisible() || state.modal != modalNone || bounds.Width <= 0 || bounds.Y < windowBarHeight || bounds.Y+bounds.Height > state.viewport.Height {
@@ -65,6 +132,9 @@ func (state *State) paintLocalShellSelect(canvas *ui.Canvas) {
 		value, hint = menu.choices[selected].Name, menu.choices[selected].Path
 	} else if state.localShell != "" {
 		value, hint = filepath.Base(state.localShell), state.localShell
+		if distro, ok := localshell.WSLDistro(state.localShell); ok {
+			value = localshell.WSLName(distro) // chosen, but not listed yet
+		}
 	}
 	below := max(state.viewport.Height-8-bounds.Y-bounds.Height-4, 0)
 	above := max(bounds.Y-windowBarHeight-8, 0)
@@ -97,6 +167,7 @@ func (state *State) clickLocalShell(id ui.ID) bool {
 	if !localShellSettingVisible() || state.settingsCategory != settingsTerminal || state.settingsSearching() {
 		return false
 	}
+	state.adoptWSLDistros()
 	menu := &state.localShellMenu
 	switch id {
 	case hitSettingsLocalShell:

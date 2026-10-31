@@ -149,6 +149,13 @@ func TestPrepareBlocks(t *testing.T) {
 			want: "already exists on origin",
 		},
 		{
+			name: "english notes are allowed too",
+			mutate: func(r *fakeRepo, o *options) {
+				r.git["status --porcelain"] = "?? docs/releases/0.1.7.md\n?? docs/releases/0.1.7.en.md"
+			},
+			want: "",
+		},
+		{
 			name: "another untracked file",
 			mutate: func(r *fakeRepo, o *options) {
 				r.git["status --porcelain"] = "?? docs/releases/0.1.7.md\n?? scratch.txt"

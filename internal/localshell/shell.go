@@ -51,6 +51,10 @@ type Config struct {
 	// DirectoryToken enables prompt directory reports for supported local shells.
 	// Empty leaves the shell's startup and prompt untouched.
 	DirectoryToken string
+	// WSLScript is the sh program a WSL distribution runs to start its user's
+	// login shell with directory reports (Shell "wsl:<distribution>"). Empty
+	// starts the distribution's own login shell untouched.
+	WSLScript string
 	// Env is added to the environment the shell inherits.
 	Env []string
 	// Notify is called after output arrives and when the shell ends, from any

@@ -20,8 +20,8 @@ func searchSettings(t *testing.T, state *State, query string) *ui.Canvas {
 func TestSearchingSettingsListsMatchesFromEveryCategoryWithTheirCategory(t *testing.T) {
 	state := newTestState(t, testOptions(t))
 	canvas := searchSettings(t, state, "font")
-	if !state.settingsSearching() || state.settings.count != 2 {
-		t.Fatalf("results = %d, want the font size and the font family", state.settings.count)
+	if !state.settingsSearching() || state.settings.count != 3 {
+		t.Fatalf("results = %d, want the font size, the font family and the fallback fonts", state.settings.count)
 	}
 	for index := 0; index < state.settings.count; index++ {
 		hit, ok := hitByID(canvas, hitSettingsResultList.At(index))

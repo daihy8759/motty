@@ -107,7 +107,7 @@ func (state *State) paintHostIdentityChoice(canvas *ui.Canvas, bounds ui.Rect) {
 		}
 	}
 	content := components.BeginField(canvas, theme, bounds).Paint(state.messages.FieldIdentity, "", "")
-	if state.hostKeyNeedsPassphrase(editor.identity) {
+	if state.hostKeyNeedsPassphrase(editor.identity) && !state.hostAsksKeyPassphrase() {
 		// A question mark after the label: a line under the field would crowd the row below.
 		labelWidth := canvas.TextWidthWeight(state.messages.FieldIdentity, theme.Metrics.FontSizeM, ui.WeightMedium)
 		titleHeight := content.Y - bounds.Y - theme.Metrics.GapItem/2
@@ -199,6 +199,7 @@ func (state *State) clickHostAuthentication(id ui.ID) bool {
 		return false
 	}
 	state.dialogError = ""
+	state.prefillKeyPassphrase()
 	return true
 }
 

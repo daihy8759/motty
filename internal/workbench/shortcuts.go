@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/ui"
 	"motty/internal/term"
 )
@@ -20,6 +21,8 @@ const (
 	shortcutNewTab
 	shortcutLocalTerminal
 	shortcutCloseTab
+	shortcutNextTab
+	shortcutPreviousTab
 	shortcutPanePrevious
 	shortcutPaneNext
 	shortcutPaneSplitHorizontal
@@ -32,12 +35,70 @@ const (
 	shortcutZoomOut
 	shortcutZoomReset
 	shortcutHistory
+	shortcutClearScreen
+	shortcutCompletion
 	shortcutActionCount
 )
 
+// shortcutChord is a modifier set and one key: a printable one in Key, or one of
+// the few named keys in Named. Exactly one of the two is set.
 type shortcutChord struct {
 	Modifiers ui.Modifiers
 	Key       byte
+	Named     ui.Key
+}
+
+// namedShortcutKeys are the keys without text a chord may use, with the name
+// the label shows, the keycap a menu shows, and the name the settings file
+// keeps. They are the keys a tab switcher is bound to; the rest of the keyboard
+// belongs to the terminal program.
+var namedShortcutKeys = [...]struct {
+	key    ui.Key
+	label  string
+	keycap string
+	saved  string
+}{
+	{ui.KeyTab, "Tab", "Tab", "tab"},
+	{ui.KeyPageUp, "PageUp", "PgUp", "page_up"},
+	{ui.KeyPageDown, "PageDown", "PgDn", "page_down"},
+	{ui.KeyLeft, "Left", "←", "left"},
+	{ui.KeyRight, "Right", "→", "right"},
+}
+
+func namedShortcutKey(key ui.Key) (int, bool) {
+	for index := range namedShortcutKeys {
+		if namedShortcutKeys[index].key == key {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
+// savedKey is the chord's key as the settings file writes it: the character, or
+// the name of a named key. Older builds read a name as no key at all and keep
+// the default for that action.
+func (chord shortcutChord) savedKey() string {
+	if index, ok := namedShortcutKey(chord.Named); ok {
+		return namedShortcutKeys[index].saved
+	}
+	return string([]byte{chord.Key})
+}
+
+// chordFromSaved is the inverse of savedKey.
+func chordFromSaved(modifiers ui.Modifiers, key string) (shortcutChord, bool) {
+	for index := range namedShortcutKeys {
+		if namedShortcutKeys[index].saved == key {
+			return shortcutChord{Modifiers: modifiers, Named: namedShortcutKeys[index].key}, true
+		}
+	}
+	if len(key) != 1 {
+		return shortcutChord{}, false
+	}
+	character := key[0]
+	if character >= 'A' && character <= 'Z' {
+		character += 'a' - 'A'
+	}
+	return shortcutChord{Modifiers: modifiers, Key: character}, true
 }
 
 type shortcutMap struct {
@@ -56,6 +117,10 @@ func defaultShortcuts() shortcutMap {
 	shortcuts.chords[shortcutNewTab] = shortcutChord{Modifiers: primary, Key: 't'}
 	shortcuts.chords[shortcutLocalTerminal] = shortcutChord{Modifiers: primary | ui.ModifierShift, Key: 't'}
 	shortcuts.chords[shortcutCloseTab] = shortcutChord{Modifiers: primary, Key: 'w'}
+	// Control+Tab is how browsers, VS Code and Windows Terminal switch tabs on
+	// every platform, the Mac included, where Command+Tab is the system's.
+	shortcuts.chords[shortcutNextTab] = shortcutChord{Modifiers: ui.ModifierControl, Named: ui.KeyTab}
+	shortcuts.chords[shortcutPreviousTab] = shortcutChord{Modifiers: ui.ModifierControl | ui.ModifierShift, Named: ui.KeyTab}
 	shortcuts.chords[shortcutPanePrevious] = shortcutChord{Modifiers: primary | ui.ModifierAlt, Key: 'j'}
 	shortcuts.chords[shortcutPaneNext] = shortcutChord{Modifiers: primary | ui.ModifierAlt, Key: 'k'}
 	shortcuts.chords[shortcutPaneSplitHorizontal] = shortcutChord{Modifiers: primary | ui.ModifierAlt, Key: 'h'}
@@ -68,6 +133,8 @@ func defaultShortcuts() shortcutMap {
 	shortcuts.chords[shortcutZoomOut] = shortcutChord{Modifiers: primary, Key: '-'}
 	shortcuts.chords[shortcutZoomReset] = shortcutChord{Modifiers: primary, Key: '0'}
 	shortcuts.chords[shortcutHistory] = shortcutChord{Modifiers: primary | ui.ModifierShift, Key: 'h'}
+	shortcuts.chords[shortcutClearScreen] = shortcutChord{Modifiers: primary, Key: 'k'}
+	shortcuts.chords[shortcutCompletion] = shortcutChord{Modifiers: primary | ui.ModifierShift, Key: 'j'}
 	shortcuts.refreshLabels()
 	return shortcuts
 }
@@ -79,9 +146,15 @@ func (shortcuts *shortcutMap) refreshLabels() {
 }
 
 func (chord shortcutChord) valid() bool {
-	return chord.Modifiers&(ui.ModifierControl|ui.ModifierMeta) != 0 &&
-		chord.Modifiers&^(ui.ModifierShift|ui.ModifierControl|ui.ModifierAlt|ui.ModifierMeta) == 0 &&
-		(chord.Key >= 'a' && chord.Key <= 'z' || chord.Key >= '0' && chord.Key <= '9' || chord.Key == '=' || chord.Key == '-')
+	if chord.Modifiers&(ui.ModifierControl|ui.ModifierMeta) == 0 ||
+		chord.Modifiers&^(ui.ModifierShift|ui.ModifierControl|ui.ModifierAlt|ui.ModifierMeta) != 0 {
+		return false
+	}
+	if chord.Named != ui.KeyUnknown {
+		_, named := namedShortcutKey(chord.Named)
+		return named && chord.Key == 0
+	}
+	return chord.Key >= 'a' && chord.Key <= 'z' || chord.Key >= '0' && chord.Key <= '9' || chord.Key == '=' || chord.Key == '-'
 }
 
 func (chord shortcutChord) label() string {
@@ -100,6 +173,10 @@ func (chord shortcutChord) label() string {
 	}
 	if chord.Modifiers&ui.ModifierShift != 0 {
 		label.WriteString("Shift+")
+	}
+	if index, ok := namedShortcutKey(chord.Named); ok {
+		label.WriteString(namedShortcutKeys[index].label)
+		return label.String()
 	}
 	key := chord.Key
 	if key >= 'a' && key <= 'z' {
@@ -137,6 +214,9 @@ func (chord shortcutChord) keys(dst []string) []string {
 	if chord.Modifiers&ui.ModifierMeta != 0 {
 		dst = append(dst, modifierKeycap(ui.ModifierMeta))
 	}
+	if index, ok := namedShortcutKey(chord.Named); ok {
+		return append(dst, namedShortcutKeys[index].keycap)
+	}
 	key := chord.Key
 	if key >= 'a' && key <= 'z' {
 		key -= 'a' - 'A'
@@ -148,7 +228,7 @@ func (chord shortcutChord) keys(dst []string) []string {
 // reads its own keys (Ctrl+R searches history, Ctrl+D ends input), so where
 // Command is not the modifier a snippet chord needs Shift or Alt as well.
 func (chord shortcutChord) validForSnippet() bool {
-	return chord.valid() && chord.Modifiers&(ui.ModifierMeta|ui.ModifierShift|ui.ModifierAlt) != 0
+	return chord.valid() && chord.Named == ui.KeyUnknown && chord.Modifiers&(ui.ModifierMeta|ui.ModifierShift|ui.ModifierAlt) != 0
 }
 
 func shortcutChordFromEvent(event ui.KeyEvent) (shortcutChord, bool) {
@@ -166,6 +246,13 @@ func shortcutChordFromEvent(event ui.KeyEvent) (shortcutChord, bool) {
 	}
 	chord := shortcutChord{Modifiers: modifiers, Key: key}
 	return chord, chord.valid()
+}
+
+// shortcutChordFromKey is the chord of a key without text, one of the named
+// keys a chord may use. Printable chords come through shortcutChordFromEvent.
+func shortcutChordFromKey(event ui.KeyEvent) (shortcutChord, bool) {
+	chord := shortcutChord{Modifiers: event.Modifiers, Named: event.Key}
+	return chord, event.Key != ui.KeyUnknown && chord.valid()
 }
 
 func (shortcuts *shortcutMap) actionFor(chord shortcutChord) shortcutAction {
@@ -207,6 +294,10 @@ func (action shortcutAction) String() string {
 		return "local_terminal"
 	case shortcutCloseTab:
 		return "close_tab"
+	case shortcutNextTab:
+		return "next_tab"
+	case shortcutPreviousTab:
+		return "previous_tab"
 	case shortcutPanePrevious:
 		return "pane_previous"
 	case shortcutPaneNext:
@@ -231,6 +322,10 @@ func (action shortcutAction) String() string {
 		return "zoom_reset"
 	case shortcutHistory:
 		return "command_history"
+	case shortcutClearScreen:
+		return "clear_screen"
+	case shortcutCompletion:
+		return "command_completion"
 	default:
 		return ""
 	}
@@ -273,27 +368,7 @@ func (state *State) Shortcut(event ui.KeyEvent) (outcome ui.EventResult) {
 		return ui.EventResult{Handled: true, Repaint: true}
 	}
 	if state.modal == modalShortcutCapture {
-		if event.Repeat {
-			return ui.EventResult{Handled: true}
-		}
-		if owner := state.snippetNamed(chord); owner != "" {
-			state.shortcutError = fmt.Sprintf(state.messages.ShortcutsConflictFmt, owner)
-			return ui.EventResult{Handled: true, Repaint: true}
-		}
-		conflict, bound := state.shortcuts.bind(state.shortcutCapture, chord)
-		if !bound {
-			if conflict != shortcutNone {
-				state.shortcutError = fmt.Sprintf(state.messages.ShortcutsConflictFmt, state.shortcutActionLabel(conflict))
-			} else {
-				state.shortcutError = state.messages.ShortcutsInvalid
-			}
-			return ui.EventResult{Handled: true, Repaint: true}
-		}
-		state.modal = modalNone
-		state.shortcutCapture = shortcutNone
-		state.shortcutError = ""
-		state.save()
-		return ui.EventResult{Handled: true, Repaint: true}
+		return state.captureShortcut(event, chord)
 	}
 	if result := state.remoteSearchShortcut(event); result.Handled {
 		return result
@@ -315,6 +390,12 @@ func (state *State) Shortcut(event ui.KeyEvent) (outcome ui.EventResult) {
 				state.sendSnippet(index)
 			}
 			return ui.EventResult{Handled: true, Repaint: true}
+		}
+		if index, ok := tabNumberChord(chord); ok {
+			if !event.Repeat && state.activateTab(index) {
+				return ui.EventResult{Handled: true, Repaint: true, Focus: state.activeTerminalFocusHit()}
+			}
+			return ui.EventResult{Handled: true}
 		}
 		return ui.EventResult{}
 	}
@@ -347,6 +428,81 @@ func (state *State) Shortcut(event ui.KeyEvent) (outcome ui.EventResult) {
 	return state.executeShortcut(action)
 }
 
+// tabNumberChord reports which tab Command plus a digit names, counting from
+// zero. Only the Mac has a Command key: Control plus a digit is the terminal
+// program's, and Meta on Windows and Linux is the Windows key.
+func tabNumberChord(chord shortcutChord) (int, bool) {
+	if defaultShortcutModifier() != ui.ModifierMeta || chord.Modifiers != ui.ModifierMeta || chord.Named != ui.KeyUnknown ||
+		chord.Key < '1' || chord.Key > '9' {
+		return 0, false
+	}
+	return int(chord.Key - '1'), true
+}
+
+// captureShortcut binds the chord the shortcut dialog is waiting for, or says
+// why it cannot be: another action or a snippet already has it.
+func (state *State) captureShortcut(event ui.KeyEvent, chord shortcutChord) ui.EventResult {
+	if event.Repeat {
+		return ui.EventResult{Handled: true}
+	}
+	if owner := state.snippetNamed(chord); owner != "" {
+		state.shortcutError = fmt.Sprintf(state.messages.ShortcutsConflictFmt, owner)
+		return ui.EventResult{Handled: true, Repaint: true}
+	}
+	conflict, bound := state.shortcuts.bind(state.shortcutCapture, chord)
+	if !bound {
+		if conflict != shortcutNone {
+			state.shortcutError = fmt.Sprintf(state.messages.ShortcutsConflictFmt, state.shortcutActionLabel(conflict))
+		} else {
+			state.shortcutError = state.messages.ShortcutsInvalid
+		}
+		return ui.EventResult{Handled: true, Repaint: true}
+	}
+	state.modal = modalNone
+	state.shortcutCapture = shortcutNone
+	state.shortcutError = ""
+	state.save()
+	return ui.EventResult{Handled: true, Repaint: true}
+}
+
+// namedShortcut runs the action bound to a chord whose key has no text, which
+// reaches the application as a key and not through Shortcut. The keyboard stays
+// with a modal dialog and with a remote desktop that has it, as for any other
+// shortcut. A release of the key is swallowed too, so a terminal that asked for
+// releases is not sent the end of a press it never saw.
+func (state *State) namedShortcut(event ui.KeyEvent) (ui.EventResult, bool) {
+	chord, ok := shortcutChordFromKey(event)
+	if !ok {
+		return ui.EventResult{}, false
+	}
+	if state.modal == modalShortcutCapture {
+		if event.Release {
+			return ui.EventResult{Handled: true}, true
+		}
+		return state.captureShortcut(event, chord), true
+	}
+	if state.modal != modalNone || state.tabDrag.active {
+		return ui.EventResult{}, false
+	}
+	if _, view := state.focusedDesktop(event.Target); view != nil && !view.released {
+		return ui.EventResult{}, false
+	}
+	action := state.shortcuts.actionFor(chord)
+	if action == shortcutNone {
+		return ui.EventResult{}, false
+	}
+	if event.Release || event.Repeat && !action.repeats() {
+		return ui.EventResult{Handled: true}, true
+	}
+	return state.executeShortcut(action), true
+}
+
+// repeats reports whether holding the chord runs the action again and again:
+// holding Control+Tab walks through the tabs.
+func (action shortcutAction) repeats() bool {
+	return action == shortcutNextTab || action == shortcutPreviousTab
+}
+
 func (state *State) executeShortcut(action shortcutAction) ui.EventResult {
 	result := ui.EventResult{Handled: true, Repaint: true}
 	session, hasSession := state.sessionByIDPointer(state.activeSessionID)
@@ -375,6 +531,14 @@ func (state *State) executeShortcut(action shortcutAction) ui.EventResult {
 		result.Focus = state.activeTerminalFocusHit()
 	case shortcutCloseTab:
 		state.closeActivePaneOrTab()
+	case shortcutNextTab:
+		if state.cycleWorkspace(1) {
+			result.Focus = state.activeTerminalFocusHit()
+		}
+	case shortcutPreviousTab:
+		if state.cycleWorkspace(-1) {
+			result.Focus = state.activeTerminalFocusHit()
+		}
 	case shortcutPanePrevious:
 		state.Click(hitPanePrevious)
 	case shortcutPaneNext:
@@ -400,6 +564,12 @@ func (state *State) executeShortcut(action shortcutAction) ui.EventResult {
 			state.openHistory(session)
 			result.Focus = hitHistorySearch
 		}
+	case shortcutClearScreen:
+		if hasSession && session.term != nil {
+			session.term.clearScreen(state.messages)
+		}
+	case shortcutCompletion:
+		state.openCompletions()
 	case shortcutAssistant:
 		state.toggleAIPanel()
 		// Opened, the keyboard goes to the message box; closed, back to the terminal.
@@ -423,6 +593,9 @@ func (state *State) pasteIntoTerminal(session *Session) {
 	}
 	value, err := state.options.ClipboardText()
 	if err == nil && value != "" {
+		if state.modal == modalTerminalInput || state.guardTerminalText(session, app.TextEvent{Kind: app.TextPaste, Text: value}) {
+			return
+		}
 		state.typed(session, encodeTerminalPaste(value, session.term))
 		return
 	}

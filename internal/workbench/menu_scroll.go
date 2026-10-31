@@ -103,6 +103,12 @@ func (state *State) menuPointer(event ui.PointerEvent) (ui.EventResult, bool) {
 // menuKey moves the keyboard through the open menu with the arrow, Home, End and
 // Page keys, scrolling the item it reaches into view.
 func (state *State) menuKey(event ui.KeyEvent) (ui.EventResult, bool) {
+	if state.popups.owner == hitSFTPHeaderMenuDismiss {
+		session, ok := state.sessionByIDPointer(state.activeSessionID)
+		if !ok || !state.sftpHeaderMenuAvailable(session.files) {
+			return ui.EventResult{}, false
+		}
+	}
 	scroll := state.openMenuScroll()
 	if scroll == nil || event.Release {
 		return ui.EventResult{}, false

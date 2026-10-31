@@ -92,6 +92,11 @@ const (
 	iconGitHub
 	iconChevronLeft
 	iconNote
+	iconSFTPTransfer
+	iconSFTPBrowseSync
+	iconSFTPProfiles
+	iconPaperclip
+	iconImage
 )
 
 // terminalPage reports whether the window shows the panes of a workspace rather
@@ -112,6 +117,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		canvas.AfterPaint(func() { state.Click(id) })
 	}
 	state.syncVisible()
+	state.reveal.beginPaint()
 	state.contextRect = ui.Rect{}
 	state.hostsBounds, state.chrome.hostList = ui.Rect{}, ui.Rect{}
 	state.devBeginPaint()
@@ -127,6 +133,9 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.ai.cfg.agentSelectOpen = false
 	}
 	state.aiPanelBeginPaint()
+	// A running dashboard keeps sampling on every page, but only the page it is
+	// on needs the repaint each sample triggers.
+	state.dashboard.visible.Store(state.activeSection == sectionDashboard)
 	// The terminal layout follows the window and the font; remember what it
 	// was painted with so a resize can work out the rows and columns.
 	state.viewport = size
@@ -172,14 +181,20 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintLockup(canvas, chrome.lockup.Rect())
 	}
 
+	// The embedded file header also paints a popup: start the shared menu
+	// lifecycle before workspace content so its scroll/focus state survives.
+	state.beginMenus()
 	if terminal {
 		state.paintWorkspacePanes(canvas, size)
+		state.paintIndependentMonitor(canvas, size)
 		state.paintAIPanel(canvas, size)
 	} else {
 		workspace := workspaceSlot.Rect().Inset(ui.All(workspaceBorder))
 		canvas.Clip(workspace)
 		if !state.devPaintPage(canvas, workspace) {
 			switch state.activeSection {
+			case sectionDashboard:
+				state.paintDashboard(canvas, workspace)
 			case sectionKeys:
 				state.paintKeysWorkspace(canvas, workspace)
 			case sectionForwards:
@@ -200,16 +215,23 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintAIPanel(canvas, size)
 	}
 	viewport := state.windowRect()
-	state.beginMenus()
 	state.paintAITargetSelect(canvas)
 	state.paintMCPClientSelect(canvas)
 	state.paintLocalShellSelect(canvas)
+	state.paintMonitorIntervalMenu(canvas)
+	state.paintDashboardMenu(canvas)
 	state.paintTransferCenter(canvas)
 	// The gallery's select is painted here, outside the workspace's clip and
 	// inside the frame's menu pass, so its popup can leave the page and keeps the
 	// menu state its keyboard handling needs.
 	state.devPaintOverlay(canvas)
 	switch state.modal {
+	case modalTerminalInput:
+		state.paintTerminalInputConfirm(canvas, viewport)
+	case modalDashboardAdd:
+		state.paintDashboardAddMenu(canvas)
+	case modalDashboard:
+		state.paintDashboardDialog(canvas, viewport)
 	case modalNewHost:
 		state.paintHostDialog(canvas, viewport)
 	case modalDeleteHost:
@@ -236,8 +258,6 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintPasswordDialog(canvas, viewport)
 	case modalVaultUnlock:
 		state.paintVaultUnlockDialog(canvas, viewport)
-	case modalMasterPassword:
-		state.paintMasterPasswordDialog(canvas, viewport)
 	case modalVaultForget:
 		state.paintVaultForgetDialog(canvas, viewport)
 	case modalHighlightRule:
@@ -260,6 +280,8 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintRemoteTools(canvas, viewport)
 	case modalToolbarSettings:
 		state.paintToolbarSettings(canvas, viewport)
+	case modalSFTPColumns:
+		state.paintSFTPColumnSettings(canvas, viewport)
 	case modalRemoteClipboard:
 		state.paintRemoteClipboardDialog(canvas, viewport)
 	case modalFileTransfer:
@@ -289,6 +311,8 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	state.paintTabDrag(canvas, viewport)
 	state.paintTabMenu(canvas, viewport)
 	state.paintHostMenu(canvas, viewport)
+	state.paintLocalShellPicker(canvas, viewport)
+	state.paintSnippetMenu(canvas, viewport)
 	state.paintSFTPMenu(canvas, viewport)
 	state.paintHostMenus(canvas, viewport)
 	state.endMenus()
@@ -471,15 +495,16 @@ func (state *State) declareWindowBar(f *flex.Frame, bar *windowBar, probe, pictu
 						if index == 0 {
 							first = -scroll
 						}
+						label := state.tabLabel(workspace)
 						tabOptions := ui.HitOptions{Role: ui.RoleTab, Selected: active}
 						if workspace.Locked {
 							tabOptions.Hint = m.TabLockedHint
 						}
 						f.Row().Size(geometry.tabWidth, barTabHeight).Shrink(0).MarginSides(0, barGap, 0, first).
 							PadSides(0, 3, 0, 4).Items(flex.Center).Radius(radius.item).Border(1, edge).Background(fill).
-							HitWith(id, workspace.Title, tabOptions).Children(func() {
+							HitWith(id, label, tabOptions).Children(func() {
 							entry.badge = f.Slot().Size(20, 20).MarginSides(0, 7, 0, 0)
-							f.Text(workspace.Title).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(foreground).LineHeight(20).Ellipsis()
+							f.Text(label).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(foreground).LineHeight(20).Ellipsis()
 							if workspace.Locked {
 								f.Icon(lucideIcons[iconLock]).Size(13, 13).Shrink(0).MarginSides(0, 0, 0, 5).Color(foreground)
 							}
@@ -528,6 +553,11 @@ func (state *State) declareWindowBar(f *flex.Frame, bar *windowBar, probe, pictu
 					bar.assistant = f.Slot().Size(barButtonSize, barButtonSize)
 				case hitTheme:
 					state.barButton(f, probe, spec.id, themeIcon, themeLabel)
+				case hitWindowLocalTerminal:
+					state.barButton(f, probe, spec.id, spec.icon, state.toolbarLabel(spec.id))
+					if !probe {
+						state.openLocalShellPickerOn(f.Canvas(), spec.id, false)
+					}
 				default:
 					state.barButton(f, probe, spec.id, spec.icon, state.toolbarLabel(spec.id))
 				}
@@ -639,6 +669,9 @@ type chromeLayout struct {
 	lockup flex.Box
 	// newTabBadges are the places of the systems' badges on the new-tab page.
 	newTabBadges []flex.Box
+	// newTabShells is the arrow beside the Local Terminal row that opens the
+	// shell menu, kept to place that menu under it.
+	newTabShells flex.Box
 	// hostList is the hosts list: where the wheel is aimed.
 	hostList ui.Rect
 }
@@ -655,6 +688,7 @@ func (state *State) declareNavigation(f *flex.Frame) {
 		active bool
 	}{
 		{hitHosts, iconHosts, m.NavHosts, state.activeSection == sectionHosts},
+		{hitDashboard, iconActivity, m.Dashboard.Title, state.activeSection == sectionDashboard},
 		{hitKeychain, iconKey, m.NavKeychain, state.activeSection == sectionKeys},
 		{hitProxies, iconGlobe, m.NavProxies, state.activeSection == sectionProxies},
 		{hitPortForwarding, iconForward, m.NavPortForwarding, state.activeSection == sectionForwards},
@@ -672,6 +706,7 @@ func (state *State) declareNavigation(f *flex.Frame) {
 		// the component gallery there (see declareDevNavigation).
 		f.Spacer()
 		state.navigationItem(f, hitLocalTerminal, iconTerminal, m.LocalTerminal, false, 4)
+		state.openLocalShellPickerOn(f.Canvas(), hitLocalTerminal, false)
 		state.devDeclareNavigation(f)
 		state.navigationItem(f, hitSettings, iconSettings, m.NavSettings, state.activeSection == sectionSettings, 16)
 	})
@@ -778,6 +813,7 @@ func (state *State) paintHostsHeader(canvas *ui.Canvas, bounds ui.Rect) ui.Rect 
 		{hitEditHost, m.EditHost, iconPencil, false, false},
 		{hitCopyHost, m.CopyHost, iconCopy, false, false},
 		{hitMoveHostGroup, m.MoveHostGroup, iconFolderOpen, false, false},
+		{hitDashboardAddHosts, state.messages.Dashboard.AddHosts, iconActivity, false, false},
 		{hitDeleteHost, m.DeleteHost, iconTrash, false, true},
 	}
 	var actionWidths [len(actions)]float32
@@ -787,7 +823,16 @@ func (state *State) paintHostsHeader(canvas *ui.Canvas, bounds ui.Rect) ui.Rect 
 	if anySelected {
 		enabled := state.selectedHostID != 0
 		single := enabled && len(state.hostSelections) <= 1
-		actions[1].enabled, actions[2].enabled, actions[3].enabled, actions[4].enabled = single, single, enabled, enabled
+		for i := range actions {
+			switch actions[i].id {
+			case hitEditHost, hitCopyHost:
+				actions[i].enabled = single
+			case hitMoveHostGroup, hitDeleteHost:
+				actions[i].enabled = enabled
+			case hitDashboardAddHosts:
+				actions[i].enabled = state.dashboardCanAddHosts()
+			}
+		}
 		used := canvas.TextWidthWeight(state.hostSelectionText, metrics.FontSizeS, ui.WeightMedium) + toggleWidth + 3*rowGap
 		for _, action := range actions {
 			used += canvas.TextWidthWeight(action.label, metrics.FontSizeS, ui.WeightSemibold) + 4 + 2*quietPadding + actionGap
@@ -877,14 +922,22 @@ func (state *State) paintHostsHeader(canvas *ui.Canvas, bounds ui.Rect) ui.Rect 
 	state.paintHostViewToggle(canvas, toggle.Rect().X, toggle.Rect().Y+toggle.Rect().Height/2)
 	if anySelected {
 		for index, action := range actions {
+			theme := state.Theme()
+			theme.Metrics.ControlHeight = rowHeight
+			theme.Metrics.FontSizeM = metrics.FontSizeS
+			if action.danger {
+				theme.Foreground = theme.Danger
+			}
+			button := components.BeginButton(canvas, theme, action.id, buttons[index].Rect())
 			if actionsCondensed {
-				style := iconButtonQuiet
-				if action.danger {
-					style = iconButtonDanger
-				}
-				state.paintIconButton(canvas, action.id, action.icon, buttons[index].Rect(), action.label, !action.enabled, style, pal.workspace)
-			} else {
-				state.paintQuietButton(canvas, action.id, buttons[index].Rect(), action.label, action.danger, action.enabled)
+				button = button.WithIcon(lucideIcons[action.icon]).Icon()
+			}
+			if !action.enabled {
+				button = button.Disabled()
+			}
+			button.Ghost(action.label)
+			if action.id == hitDashboardAddHosts {
+				state.dashboard.addAnchor = buttons[index].Rect()
 			}
 			if action.id == hitMoveHostGroup {
 				state.groupMenu.button = buttons[index].Rect()
@@ -1040,35 +1093,6 @@ func (state *State) paintHostFilterMenu(canvas *ui.Canvas, viewport ui.Rect) {
 		menu.AddItem(components.DropdownMenuItem{ID: hitHostFilterMenuList.At(index), Label: state.hostGroupLabel(state.hostGroups[index])})
 	}
 	menu.End()
-}
-
-// paintQuietButton is a text button with no edge or fill until the pointer is on
-// it: for a row of actions on a selection, where five bordered boxes in a line
-// would be louder than the list they act on.
-func (state *State) paintQuietButton(canvas *ui.Canvas, id ui.ID, bounds ui.Rect, label string, danger, enabled bool) {
-	pal := state.pal
-	foreground := pal.text
-	if danger {
-		foreground = pal.danger
-	}
-	var fill ui.Color
-	switch {
-	case !enabled:
-		foreground = pal.faint
-	case canvas.Pressed() == id:
-		fill = pal.surfaceHot
-	case canvas.Hovered() == id:
-		fill = pal.surfaceSoft
-	}
-	f := state.chrome.widget.Begin(canvas, state.Theme(), bounds)
-	f.Row().Fill().Center().Radius(radius.control).Background(fill).
-		HitWith(id, label, ui.HitOptions{Role: ui.RoleButton, Disabled: !enabled}).Children(func() {
-		f.Text(label).FontSize(metrics.FontSizeS).Weight(ui.WeightSemibold).Color(foreground)
-	})
-	f.End()
-	if canvas.FocusVisible() == id {
-		canvas.RoundedBorder(bounds, radius.control, 1.5, pal.accent, ui.Color{})
-	}
 }
 
 func (state *State) paintHostGroupMenu(canvas *ui.Canvas, bounds, viewport ui.Rect) {
@@ -1330,12 +1354,7 @@ func (state *State) hostListHeight(width float32) float32 {
 
 // scrollHosts moves the hosts list with the wheel.
 func (state *State) scrollHosts(event ui.ScrollEvent) ui.EventResult {
-	step := event.DeltaY
-	if !event.Precise && step > 0 && step < 24 {
-		step = 24
-	} else if !event.Precise && step < 0 && step > -24 {
-		step = -24
-	}
+	step := event.StepY(24)
 	before := state.hostsScroll
 	visible := state.chrome.hostList.Height
 	state.hostsScroll = min(max(before+step, 0), max(state.hostsContent-visible, 0))
@@ -1503,34 +1522,22 @@ func (state *State) hostBadgeFill(background ui.Color) ui.Color {
 // paintEmptyHosts is the first-run screen: no hosts are invented, the user is
 // invited to add one.
 func (state *State) paintEmptyHosts(canvas *ui.Canvas, bounds ui.Rect) {
-	pal, m := state.pal, state.messages
-	width := toolbarButtonWidth(canvas, m.NewHost, true)
-	var add flex.Box
+	m := state.messages
+	var icon, add flex.Box
 	f := state.chrome.empty.Begin(canvas, state.Theme(), bounds)
-	f.Column().Fill().Items(flex.Center).Children(func() {
-		// The icon's top is 46 above the point 40% down the page.
-		f.Slot().HeightPercent(40).MinHeight(46)
-		f.Row().Size(62, 62).MarginSides(-46, 0, 0, 0).Center().Radius(15).Background(pal.surface).Children(func() {
-			f.Icon(lucideIcons[iconHosts]).Size(24, 24).Color(pal.muted)
-		})
-		f.Text(m.HostsEmpty).FontSize(17).Weight(ui.WeightSemibold).Color(pal.text).MarginSides(20, 0, 0, 0)
-		f.Paragraph(m.HostsEmptySub, 2).FontSize(metrics.FontSizeM).Color(pal.muted).MarginSides(8, 0, 0, 0).Width(max(bounds.Width-24, 0)).TextCenter()
-		add = f.Slot().Size(width, toolbarHeight).MarginSides(20, 0, 0, 0)
-	})
+	icon, add = state.declareEmptyPage(f, bounds, m.HostsEmpty, m.HostsEmptySub, m.NewHost)
 	f.End()
-	state.paintToolbarButtonIn(canvas, hitAddHostEmpty, add.Rect(), m.NewHost, iconPlus, true, true, false)
+	state.paintEmptyPage(canvas, icon, add, iconHosts, hitAddHostEmpty, m.NewHost, true)
 }
 
 // paintNoMatches is what the list shows when the search box hides every host.
 func (state *State) paintNoMatches(canvas *ui.Canvas, bounds ui.Rect) {
-	pal, m := state.pal, state.messages
+	m := state.messages
+	var icon, add flex.Box
 	f := state.chrome.empty.Begin(canvas, state.Theme(), bounds)
-	f.Column().Fill().Items(flex.Center).Children(func() {
-		f.Slot().HeightPercent(40)
-		f.Text(m.NoMatches).FontSize(17).Weight(ui.WeightSemibold).Color(pal.text).MarginSides(2, 0, 0, 0)
-		f.Paragraph(m.NoMatchesSub, 2).FontSize(metrics.FontSizeM).Color(pal.muted).MarginSides(8, 0, 0, 0).Width(max(bounds.Width-24, 0)).TextCenter()
-	})
+	icon, add = state.declareEmptyPage(f, bounds, m.NoMatches, m.NoMatchesSub, "")
 	f.End()
+	state.paintEmptyPage(canvas, icon, add, iconSearch, ui.ID{}, "", true)
 }
 
 // lucideIcons maps the internal icon kinds to compiled Lucide icons
@@ -1576,41 +1583,46 @@ var lucideIcons = [...]ui.Icon{
 	iconColumns2:   icons.Columns2,
 	iconRows2:      icons.Rows2,
 
-	iconBot:          icons.Bot,
-	iconHistory:      icons.History,
-	iconCopy:         icons.Copy,
-	iconChevronRight: icons.ChevronRight,
-	iconChevronLeft:  icons.ChevronLeft,
-	iconChevronDown:  icons.ChevronDown,
-	iconSliders:      icons.SlidersHorizontal,
-	iconAlert:        icons.CircleAlert,
-	iconCircleCheck:  icons.CircleCheck,
-	iconRadio:        icons.RadioTower,
-	iconKeyboard:     icons.Keyboard,
-	iconStar:         icons.Star,
-	iconStarSolid:    icons.StarSolid,
-	iconArchive:      icons.Archive,
-	iconHardDrive:    icons.HardDrive,
-	iconExternal:     icons.SquarePen,
-	iconPlug:         icons.Plug,
-	iconPaste:        icons.ClipboardPaste,
-	iconSelectAll:    icons.SquareDashed,
-	iconEraser:       icons.Eraser,
-	iconEye:          icons.Eye,
-	iconEyeOff:       icons.EyeOff,
-	iconEllipsis:     icons.Ellipsis,
-	iconWrench:       icons.Wrench,
-	iconCloseOthers:  icons.ListX,
-	iconCloseRight:   icons.ArrowRightToLine,
-	iconSparkles:     icons.Sparkles,
-	iconTransfer:     icons.ArrowUpDown,
-	iconBug:          icons.Bug,
-	iconInfo:         icons.Info,
-	iconQQ:           icons.Qq,
-	iconWeChat:       icons.Wechat,
-	iconDiscord:      icons.Discord,
-	iconGitHub:       icons.Github,
-	iconNote:         icons.StickyNote,
+	iconBot:            icons.Bot,
+	iconHistory:        icons.History,
+	iconCopy:           icons.Copy,
+	iconChevronRight:   icons.ChevronRight,
+	iconChevronLeft:    icons.ChevronLeft,
+	iconChevronDown:    icons.ChevronDown,
+	iconSliders:        icons.SlidersHorizontal,
+	iconAlert:          icons.CircleAlert,
+	iconCircleCheck:    icons.CircleCheck,
+	iconRadio:          icons.RadioTower,
+	iconKeyboard:       icons.Keyboard,
+	iconStar:           icons.Star,
+	iconStarSolid:      icons.StarSolid,
+	iconArchive:        icons.Archive,
+	iconHardDrive:      icons.HardDrive,
+	iconExternal:       icons.SquarePen,
+	iconPlug:           icons.Plug,
+	iconPaperclip:      icons.Paperclip,
+	iconImage:          icons.Image,
+	iconPaste:          icons.ClipboardPaste,
+	iconSelectAll:      icons.SquareDashed,
+	iconEraser:         icons.Eraser,
+	iconEye:            icons.Eye,
+	iconEyeOff:         icons.EyeOff,
+	iconEllipsis:       icons.Ellipsis,
+	iconWrench:         icons.Wrench,
+	iconCloseOthers:    icons.ListX,
+	iconCloseRight:     icons.ArrowRightToLine,
+	iconSparkles:       icons.Sparkles,
+	iconTransfer:       icons.ArrowUpDown,
+	iconBug:            icons.Bug,
+	iconInfo:           icons.Info,
+	iconQQ:             icons.Qq,
+	iconWeChat:         icons.Wechat,
+	iconDiscord:        icons.Discord,
+	iconGitHub:         icons.Github,
+	iconNote:           icons.StickyNote,
+	iconSFTPTransfer:   icons.SftpTransfer,
+	iconSFTPBrowseSync: icons.SftpSync,
+	iconSFTPProfiles:   icons.SftpProfiles,
 }
 
 func paintIcon(canvas *ui.Canvas, kind uint8, bounds ui.Rect, foreground ui.Color) {
@@ -1940,7 +1952,7 @@ func (state *State) paintDialogFieldWithSecurity(canvas *ui.Canvas, id ui.ID, fi
 	state.revealHostField(canvas, id, content)
 	value := state.editor.field(field).String()
 	focused := canvas.Focused() == id
-	components.PaintInput(canvas, theme, content, components.InputSnapshot{
+	state.paintSecretInput(canvas, content, components.InputSnapshot{
 		ID:              id,
 		Label:           title,
 		Value:           value,
@@ -1999,35 +2011,19 @@ func (state *State) paintPasswordDialog(canvas *ui.Canvas, viewport ui.Rect) {
 	})
 	layout := dialog.Begin(m.PasswordTitle, state.passwordDescription)
 	fields, save := state.layoutPasswordFields(canvas, layout.Body)
-	hint := m.PasswordHint
-	switch {
-	case state.secrets.canSave:
-	case state.secrets.needsMaster:
-		hint = m.PasswordHintNoStore
-	default:
-		hint = m.PasswordHintUnsaved
-	}
-	if len(state.passwordQuestions) > 1 {
-		// One hint under every field would run into the label below it; the
-		// labels and the buttons are enough to explain a multi-field round.
-		hint = ""
-	}
+	hint := state.passwordHintText()
 	for index, bounds := range fields {
 		question := state.passwordQuestions[index]
 		label := strings.TrimSpace(question.Text)
 		if label == "" {
 			label = m.PasswordLabel
 		}
-		fieldHint := hint
-		if state.secrets.canSave {
-			fieldHint = "" // the save box carries it as a help icon
-		}
 		field := components.BeginField(canvas, theme, bounds)
-		content := field.Paint(label, fieldHint, "")
+		content := field.Paint(label, "", "")
 		value := state.passwordFields[index].String()
 		id := hitPasswordFields.At(index + 1)
 		focused := canvas.Focused() == id
-		components.PaintInput(canvas, theme, content, components.InputSnapshot{
+		state.paintSecretInput(canvas, content, components.InputSnapshot{
 			ID: id, Label: label, Value: value, Secure: question.Secret,
 			Focused: focused, PlatformEditing: focused && (value != "" || !question.Secret), Invalid: state.passwordError != "",
 		})
@@ -2047,10 +2043,13 @@ func (state *State) paintPasswordDialog(canvas *ui.Canvas, viewport ui.Rect) {
 func (state *State) passwordBodyHeight() float32 {
 	count := max(len(state.passwordQuestions), 1)
 	if count == 1 {
-		// One field is 62 high plus its 4px bottom margin. The error line, when
-		// present, and the save box follow directly; no large fixed gap is
-		// reserved for an error that may never appear.
+		// One field is 62 high plus its 4px bottom margin. The hint line under
+		// it, the error line, when present, and the save box follow directly;
+		// no large fixed gap is reserved for an error that may never appear.
 		height := float32(66)
+		if !state.secrets.canSave && state.passwordHintText() != "" {
+			height += 18
+		}
 		if state.passwordError != "" {
 			height += 18
 		}
@@ -2088,6 +2087,7 @@ func (state *State) layoutPasswordFields(canvas *ui.Canvas, body ui.Rect) (field
 		for index := range boxes {
 			boxes[index] = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
 		}
+		state.hintLine(f)
 		state.problemLine(f, state.passwordError)
 		if state.secrets.canSave {
 			if multi {
@@ -2107,6 +2107,34 @@ func (state *State) layoutPasswordFields(canvas *ui.Canvas, body ui.Rect) (field
 	return fields, save
 }
 
+// passwordHintText is the guidance about submitting and saving: a help icon on
+// the save box when it can save, otherwise a line under the field. A
+// multi-field round shows none; its labels and buttons are explanation enough.
+func (state *State) passwordHintText() string {
+	hint := state.messages.PasswordHint
+	switch {
+	case state.secrets.canSave:
+	default:
+		hint = state.messages.PasswordHintUnsaved
+	}
+	if len(state.passwordQuestions) > 1 {
+		hint = ""
+	}
+	return hint
+}
+
+// hintLine declares the hint row under the fields. The field's description
+// slot would draw past its fixed 62 pixel slot onto the error line, so the
+// hint is a row of its own.
+func (state *State) hintLine(f *flex.Frame) {
+	if state.secrets.canSave {
+		return
+	}
+	if hint := state.passwordHintText(); hint != "" {
+		f.Text(hint).FontSize(metrics.FontSizeS).Weight(ui.WeightRegular).Color(state.pal.muted).LineHeight(18)
+	}
+}
+
 func (state *State) paintKeyPassphraseDialog(canvas *ui.Canvas, viewport ui.Rect) {
 	m, theme := state.messages, state.Theme()
 	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
@@ -2119,7 +2147,7 @@ func (state *State) paintKeyPassphraseDialog(canvas *ui.Canvas, viewport ui.Rect
 	content := field.Paint(m.KeyPassphraseLabel, m.KeyPassphraseHint, "")
 	value := state.keyPassphrase.String()
 	focused := canvas.Focused() == hitKeyPassphraseField
-	components.PaintInput(canvas, theme, content, components.InputSnapshot{
+	state.paintSecretInput(canvas, content, components.InputSnapshot{
 		ID: hitKeyPassphraseField, Label: m.KeyPassphraseLabel, Value: value, Secure: true,
 		Focused: focused, PlatformEditing: focused && value != "", Invalid: state.keyPassphraseError != "",
 	})

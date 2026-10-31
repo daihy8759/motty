@@ -562,10 +562,11 @@ func TestAISettingsImportWaitsForALockedVault(t *testing.T) {
 		}
 	})
 	state := world.state
-	if err := state.secrets.vault.SetMasterPassword("master password"); err != nil {
+	if err := state.secrets.vault.LegacyForTests("master password"); err != nil {
 		t.Fatal(err)
 	}
-	state.secrets.vault.Lock()
+	state.secrets.declined = true
+	state.secrets.vault.DropKeyForTests()
 	importOpen(t, world)
 	importPreview(t, world, 0)
 	state.Click(hitAISetImportApply)

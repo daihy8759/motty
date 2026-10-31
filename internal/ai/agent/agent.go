@@ -64,6 +64,9 @@ type Config struct {
 	// Run then returns only the new assistant and tool messages. It is used when
 	// an Ask run hands the same request to a new Agent run.
 	UserInHistory bool
+	// UserImages go with the user message Run adds, before its text. They are
+	// ignored when UserInHistory is set: that message already has its own.
+	UserImages []llm.Image
 	// NoTools answers without even the escalation tool. It is used after the
 	// user declines Ask mode's request to switch to Agent.
 	NoTools bool
@@ -144,9 +147,14 @@ func trimHistory(history []llm.Message, budget int) []llm.Message {
 	return history[starts[kept]:]
 }
 
+// imageCost is what a picture counts for in the history budget. Models price a
+// picture by its dimensions, about a thousand tokens whatever the file size, so
+// its bytes would charge a photo far more than the room it takes in the context.
+const imageCost = 8 << 10
+
 // messageBytes is the wire size a message roughly costs.
 func messageBytes(message llm.Message) int {
-	size := len(message.Text) + len(message.ToolCallID) + 8
+	size := len(message.Text) + len(message.ToolCallID) + 8 + len(message.Images)*imageCost
 	for _, call := range message.ToolCalls {
 		size += len(call.ID) + len(call.Name) + len(call.Arguments) + 8
 	}
@@ -209,7 +217,7 @@ func Run(ctx context.Context, cfg Config, history []llm.Message, userText string
 	base := len(history)
 	safe := base // msgs[:safe] is a valid history
 	if !cfg.UserInHistory {
-		user := llm.Message{Role: llm.RoleUser, Text: userText}
+		user := llm.Message{Role: llm.RoleUser, Text: userText, Images: cfg.UserImages}
 		msgs = append(msgs, user)
 		safe++
 	}

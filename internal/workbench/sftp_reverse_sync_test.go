@@ -164,6 +164,25 @@ func TestReverseFolderSyncCannotExecuteAfterTypingDuringListing(t *testing.T) {
 	}
 }
 
+// A shell that reports its prompt but never the start of a command cannot be
+// proven idle. The panel must say that, not ask the user
+// to finish a command that is not running.
+func TestReverseFolderSyncExplainsAShellThatCannotReportCommandStarts(t *testing.T) {
+	state, session, fake, _ := openTestSFTP(t)
+	state.Click(hitSettingsTerminalFollowToggle)
+	shell := fake.shell(t)
+	shell.say(folderSyncMarker(session, "A") + folderSyncMarker(session, "B"))
+	state.Wake()
+	state.navigateSFTPDirectory(session.files, "/home/test/docs")
+	waitSFTP(t, state, session, func(v *sftpView) bool { return !v.busy && v.path == "/home/test/docs" })
+	if got := folderSyncInput(shell); got != "" {
+		t.Fatalf("a terminal that could not be proven idle received %q", got)
+	}
+	if session.files.status != state.messages.Tools.FilesTerminalFollowUnsupported {
+		t.Fatalf("status = %q", session.files.status)
+	}
+}
+
 type folderSyncErrorRemote struct{ *workbenchSFTPRemote }
 
 func (r folderSyncErrorRemote) ReadDir(directory string) ([]os.FileInfo, error) {

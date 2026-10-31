@@ -52,14 +52,14 @@ func main() {
 	// exits. A headless test run is its own world and never meets the real one.
 	if os.Getenv("VIVA_HEADLESS") != "" {
 		if err := headlessClaim(datadir.Current().Dir); err != nil {
-			log.Fatal(err)
+			fatal(err)
 		}
 	} else {
-		primary, claim, err := claimLaunch(datadir.Current().Dir, args, func(more []string) {
+		primary, claim, err := claimLaunch(datadir.Current().Dir, handoffArguments(args, background), func(more []string) {
 			windows.launch(more)
 		})
 		if err != nil {
-			log.Fatal(err)
+			fatal(err)
 		} else if !primary {
 			explainSecondaryLaunch(os.Stderr)
 			return
@@ -67,6 +67,9 @@ func main() {
 			defer claim.Close()
 		}
 	}
+	// Only the copy that owns the data directory writes its files.
+	startLogging()
+	defer stopLogging()
 	if len(args) > 0 {
 		windows.launch(args)
 	}
@@ -100,6 +103,11 @@ func main() {
 		if err != nil {
 			return err
 		}
+		// A development copy is told apart on its Dock icon, where every window
+		// shows it, rather than by renaming the product in the interface.
+		if buildinfo.DockBadge != "" {
+			application.SetDockBadge(buildinfo.DockBadge)
+		}
 		// Putting the icon in the status area costs about 60 ms, which would
 		// otherwise be part of how long the window takes to appear.
 		status.show(application)
@@ -107,8 +115,9 @@ func main() {
 	})
 	hub.Close()
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
+	log.Print("motty: exiting normally")
 }
 
 func mainWindowTitle() string { return buildinfo.ProductName }
@@ -154,12 +163,12 @@ func (status *tray) hasStatusArea() bool { return status != nil && status.item !
 // keystore is where the saved-passwords vault of the data directory keeps its
 // key: the system's own store, which is nil here, except in a portable copy.
 // That one travels between computers and must leave nothing behind on them, so
-// its vault is kept by a master password alone.
+// its key is a file next to the vault, which goes where the data goes.
 func keystore() vault.Keystore { return keystoreFor(datadir.Current().Dir) }
 
 func keystoreFor(dir string) vault.Keystore {
 	if location := datadir.Current(); location.Portable && dir == location.Dir {
-		return vault.NoKeystore{}
+		return vault.FileKeystore{Path: filepath.Join(dir, "vault.key")}
 	}
 	return nil
 }
@@ -231,9 +240,11 @@ func openWorkbenchWindow(application *app.Application, status *tray, hub *workbe
 	// has sessions hides (the connections go on, and the icon brings the window
 	// back), and so does the last window, so that closing it leaves the
 	// application in the status area instead of quitting it. Any other window
-	// with nothing in it just closes.
+	// with nothing in it just closes, and so does every window when the user
+	// chose in Settings that closing quits.
 	requestClose := func(allow func()) {
-		if status.hasStatusArea() && (state.WantsToStay() || status.list.WindowCount() <= 1) {
+		if status.hasStatusArea() && state.StaysInTray() && (state.WantsToStay() || status.list.WindowCount() <= 1) {
+			log.Print("motty: window hidden to the status area; the program keeps running")
 			mainWindow.Hide()
 			return
 		}
@@ -247,6 +258,7 @@ func openWorkbenchWindow(application *app.Application, status *tray, hub *workbe
 		Invalidate: invalidate, NewWindow: newWindow,
 		OpenContentWindow: application.OpenContentWindow,
 		Group:             windowGroup, Blank: place.blank, Log: recentLog,
+		LogDir: logDirectory(), PreviousCrash: crashNoticeFor(place),
 		RememberWindowFrame: place.rememberFrame,
 		TearOff: func(origin ui.Point, adopt func(*workbench.State)) error {
 			return openWorkbenchWindow(application, status, hub, newWindow, false, placement{origin: &origin, adopt: adopt, blank: true})
@@ -257,6 +269,7 @@ func openWorkbenchWindow(application *app.Application, status *tray, hub *workbe
 		PreferredLanguages: preferredLanguages,
 		Raise:              func() { mainWindow.Show() },
 		StartAtLogin:       loginStart(),
+		StatusArea:         status.hasStatusArea,
 		Updater:            updater(),
 		Quit:               func() { windows.quitWithDocuments(application.Quit) },
 		AISettingsChanged: func() {
@@ -345,6 +358,7 @@ func openWorkbenchWindow(application *app.Application, status *tray, hub *workbe
 		OnFrameChange: state.NoteWindowFrame,
 		OnMinimize:    state.SetWindowMinimized,
 		OnClosed: func() {
+			log.Print("motty: window closed")
 			windows.remove(state)
 			hub.Remove(state)
 			state.Close()

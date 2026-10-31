@@ -117,12 +117,22 @@ func (state *State) launchReady() bool {
 }
 
 func (state *State) openLaunch(args []string) {
-	text, link := launchText(args)
-	if text == "" {
+	if path, ok := xshellLaunchPath(args); ok {
+		if state.options.Raise != nil {
+			state.options.Raise()
+		}
+		state.openXshellFile(path)
 		return
 	}
-	if state.options.Raise != nil {
+	text, link := launchText(args)
+	// A second start of the program brings the window forward even with nothing
+	// to open; without it the user who double-clicks the icon of a program hidden
+	// in the tray sees nothing happen. A start at login (--background) does not.
+	if !slices.Contains(args, "--background") && state.options.Raise != nil {
 		state.options.Raise()
+	}
+	if text == "" {
+		return
 	}
 	parsed, err := parseConnection(text)
 	if err != nil {

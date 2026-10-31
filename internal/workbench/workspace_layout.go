@@ -1,6 +1,10 @@
 package workbench
 
-import layoutcore "motty/internal/workspace"
+import (
+	"slices"
+
+	layoutcore "motty/internal/workspace"
+)
 
 const defaultPaneRatio = float32(0.5)
 
@@ -69,6 +73,7 @@ func (state *State) SplitPane(target, session uint32, axis layoutcore.Axis, plac
 	}
 	state.syncActiveSession()
 	state.activeSection = sectionTerminal
+	state.syncMonitorTarget()
 	return nil
 }
 
@@ -90,6 +95,7 @@ func (state *State) MovePane(session, target uint32, axis layoutcore.Axis, ratio
 	}
 	state.syncActiveSession()
 	state.activeSection = sectionTerminal
+	state.syncMonitorTarget()
 	return nil
 }
 
@@ -171,6 +177,11 @@ func (state *State) activatePane(workspaceID layoutcore.WorkspaceID, paneID layo
 	}
 	state.syncActiveSession()
 	state.activeSection = sectionTerminal
+	state.syncMonitorTarget()
+	if previous != paneID {
+		// The candidate list belongs to the terminal that opened it.
+		state.closeCompletionList()
+	}
 	if previous != paneID && state.viewport.Width > 0 && state.viewport.Height > 0 {
 		state.fitWorkspaceTerminals(workspaceID)
 		state.fitSFTP(state.viewport)
@@ -184,6 +195,34 @@ func (state *State) activateWorkspace(id layoutcore.WorkspaceID) bool {
 	}
 	state.syncActiveSession()
 	state.activeSection = sectionTerminal
+	state.syncMonitorTarget()
+	state.closeCompletionList()
+	return true
+}
+
+// cycleWorkspace moves to the tab delta places along the tab bar, wrapping at
+// either end, and reports whether it moved. With one tab there is nowhere to go.
+func (state *State) cycleWorkspace(delta int) bool {
+	state.workspaceTabs = state.deck.Workspaces(state.workspaceTabs[:0])
+	count := len(state.workspaceTabs)
+	if count < 2 {
+		return false
+	}
+	current := state.deck.ActiveWorkspace()
+	index := slices.IndexFunc(state.workspaceTabs, func(workspace layoutcore.WorkspaceInfo) bool { return workspace.ID == current })
+	if index < 0 {
+		index = 0
+	}
+	return state.activateTab((index + delta%count + count) % count)
+}
+
+// activateTab makes the index-th tab of the tab bar the active one.
+func (state *State) activateTab(index int) bool {
+	state.workspaceTabs = state.deck.Workspaces(state.workspaceTabs[:0])
+	if index < 0 || index >= len(state.workspaceTabs) || !state.activateWorkspace(state.workspaceTabs[index].ID) {
+		return false
+	}
+	state.save()
 	return true
 }
 

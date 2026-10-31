@@ -32,6 +32,7 @@ func startBackend(config Config) (backend, error) {
 	}
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
 	cmd.Env = append(cmd.Env, config.Env...)
+	cmd.Env = withUTF8Locale(cmd.Env)
 	size := &pty.Winsize{Cols: uint16(max(config.Cols, 1)), Rows: uint16(max(config.Rows, 1))}
 	master, err := pty.StartWithSize(cmd, size)
 	if err != nil {

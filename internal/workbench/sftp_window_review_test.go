@@ -154,7 +154,8 @@ func TestSFTPWindowToolbarAndNativeFileActions(t *testing.T) {
 	dualWait(t, state, w, view, func() bool { return !w.view.busy && remoteText(remote, "/home/test/renamed.yml") == "" })
 	w.session.host.CatalogID = "dual-window-host"
 	w.click(hitSFTPBookmarkToggle)
-	if !state.bookmarked(&w.session, w.view.path) {
+	// The directory star saves only this server path, independently of profiles.
+	if !w.placeBrowser().directoryFavorite(false) {
 		t.Fatal("bookmark not added")
 	}
 	w.navigate(false, "/home/test/docs")

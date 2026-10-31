@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +13,12 @@ import (
 // state is closed when the test ends, because Windows cannot delete an open file.
 func newTestState(t testing.TB, options Options) *State {
 	t.Helper()
+	if options.KnownHostsPath == "" {
+		// Left empty, it and an empty StatePath default to the user's own Motty
+		// folder: a test would open the real config.db and stamp it with this
+		// build's format.
+		options.KnownHostsPath = filepath.Join(t.TempDir(), "known_hosts")
+	}
 	if options.PreferredLanguages == nil {
 		// The tests read English; the machine running them may not speak it.
 		options.PreferredLanguages = func() []string { return nil }

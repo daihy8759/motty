@@ -234,6 +234,9 @@ func (state *State) aiProviderMeta(provider store.Provider) string {
 		}
 		return kind + "  ·  " + address + "  ·  " + auth + "  ·  " + key
 	}
+	if provider.APIFormat == store.APIFormatResponses {
+		return kind + "  ·  " + m.ProviderFormatResponses + "  ·  " + address + "  ·  " + key
+	}
 	return kind + "  ·  " + address + "  ·  " + key
 }
 
@@ -528,10 +531,14 @@ func (state *State) paintAIProviderForm(canvas *ui.Canvas, viewport ui.Rect) {
 	if cfg.kind == store.KindAnthropic {
 		authHeight = 60
 	}
+	formatHeight := float32(0) // only an OpenAI-compatible provider has a choice of protocol; the route under it adds a line and a gap
+	if cfg.kind == store.KindOpenAI {
+		formatHeight = 84
+	}
 	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
 		Layer: dialogLayer, Scope: dialogScope,
 		DismissID: hitAISetFormDismiss, CloseID: hitAISetFormClose, InitialFocusID: hitAISetFormName,
-		ContentSize: ui.Size{Width: 500}, FitBody: true, BodyHeight: withError(2+presetHeight+3*60+authHeight+keyHeight+4, cfg.formErr), // the fields, key last
+		ContentSize: ui.Size{Width: 500}, FitBody: true, BodyHeight: withError(2+presetHeight+3*60+authHeight+formatHeight+keyHeight+4, cfg.formErr), // the fields, key last
 	})
 	layout := dialog.Begin(title, m.FormDescription)
 
@@ -544,7 +551,7 @@ func (state *State) paintAIProviderForm(canvas *ui.Canvas, viewport ui.Rect) {
 	if cfg.kind == store.KindAnthropic {
 		selected, placeholder = hitAISetFormKindClaude, m.FormBaseURLClaude
 	}
-	var preset, name, kind, auth, url, key flex.Box
+	var preset, name, kind, auth, format, url, key flex.Box
 	f := state.settingsRow.Begin(canvas, theme, layout.Body)
 	f.Column().Fill().PadSides(2, 4, 0, 4).Children(func() {
 		if presetHeight > 0 {
@@ -556,6 +563,9 @@ func (state *State) paintAIProviderForm(canvas *ui.Canvas, viewport ui.Rect) {
 			auth = f.Slot().Height(authHeight)
 		}
 		url = f.Slot().Height(60)
+		if formatHeight > 0 {
+			format = f.Slot().Height(formatHeight)
+		}
 		key = f.Slot().Height(keyHeight).MarginSides(0, 0, 4, 0)
 		if cfg.formErr != "" {
 			f.Text(cfg.formErr).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(state.pal.danger).LineHeight(18)
@@ -574,6 +584,9 @@ func (state *State) paintAIProviderForm(canvas *ui.Canvas, viewport ui.Rect) {
 		state.paintAIAuthField(canvas, auth.Rect())
 	}
 	state.aiFormField(canvas, hitAISetFormURL, m.FormBaseURL, placeholder, "", false, &cfg.baseURL, url.Rect())
+	if formatHeight > 0 {
+		state.paintAIFormatField(canvas, format.Rect())
+	}
 	state.aiFormField(canvas, hitAISetFormKey, m.FormKey, m.FormKeyPH, hint, true, &cfg.apiKey, key.Rect())
 	dialog.Actions(layout,
 		components.ButtonAction{ID: hitAISetFormCancel, Label: state.messages.Cancel, Variant: components.ButtonSecondary},
@@ -595,6 +608,21 @@ func (state *State) paintAIAuthField(canvas *ui.Canvas, bounds ui.Rect) {
 	components.BeginSegmentedControl(canvas, theme, content, options[:], selected).Paint()
 }
 
+// paintAIFormatField paints the OpenAI-compatible protocol choice, with the
+// route each protocol is sent to underneath: the address typed above is only
+// the base, and which route follows is not guessable from it.
+func (state *State) paintAIFormatField(canvas *ui.Canvas, bounds ui.Rect) {
+	cfg, m, theme := &state.ai.cfg, state.messages.AISettings, state.Theme()
+	route := m.FormFormatChatRoute
+	selected := hitAISetFormFormatChat
+	if cfg.apiFormat == store.APIFormatResponses {
+		route, selected = m.FormFormatResponsesRoute, hitAISetFormFormatResp
+	}
+	content := components.BeginField(canvas, theme, bounds).Paint(m.FormFormat, route, "")
+	options := state.aiFormatOptions()
+	components.BeginSegmentedControl(canvas, theme, content, options[:], selected).Paint()
+}
+
 // aiFormField paints one labelled input of the provider dialog. A secure field
 // shows bullets in place of its text.
 func (state *State) aiFormField(canvas *ui.Canvas, id ui.ID, title, placeholder, hint string, secure bool, editor interface{ String() string }, bounds ui.Rect) {
@@ -602,7 +630,7 @@ func (state *State) aiFormField(canvas *ui.Canvas, id ui.ID, title, placeholder,
 	content := components.BeginField(canvas, theme, bounds).Paint(title, hint, "")
 	value := editor.String()
 	focused := canvas.Focused() == id
-	components.PaintInput(canvas, theme, content, components.InputSnapshot{
+	state.paintSecretInput(canvas, content, components.InputSnapshot{
 		ID: id, Label: title, Value: value, Placeholder: placeholder, Secure: secure,
 		Focused: focused, PlatformEditing: focused && value != "",
 	})

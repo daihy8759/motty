@@ -63,14 +63,8 @@ func (editor *proxyEditor) validate(state *State) string {
 }
 
 func (state *State) openProxyDialog() {
-	sshHosts := 0
-	for _, host := range state.hosts {
-		if host.isSSH() {
-			sshHosts++
-		}
-	}
-	if sshHosts < 2 {
-		state.status = state.messages.ErrProxyHostsRequired
+	if state.sshHostCount() < 2 {
+		state.showActionWarning(state.messages.ProxyDialogTitle, state.messages.ErrProxyHostsRequired)
 		return
 	}
 	targetID := state.selectedHostID
@@ -84,7 +78,7 @@ func (state *State) openProxyDialog() {
 		}
 	}
 	if targetID == 0 {
-		state.status = state.messages.ErrProxyTargetTaken
+		state.showActionWarning(state.messages.ProxyDialogTitle, state.messages.ErrProxyTargetTaken)
 		return
 	}
 	jumpID := uint32(0)

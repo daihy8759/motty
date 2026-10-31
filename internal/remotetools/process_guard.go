@@ -62,6 +62,9 @@ done
 // later identity could bind a replacement PID to the previous process's text.
 // Unsupported platforms keep all the listing/search functionality read-only.
 func ReadSafeProcessSnapshot(ctx context.Context, runner Runner, key SortKey) (ProcessSnapshot, error) {
+	if system := runnerSystem(runner); system == "windows" || system == "darwin" {
+		return ReadProcessSnapshot(ctx, runner, key)
+	}
 	before, err := readProcessIdentities(ctx, runner)
 	if canceled := processContextError(ctx, err); canceled != nil {
 		return ProcessSnapshot{}, canceled

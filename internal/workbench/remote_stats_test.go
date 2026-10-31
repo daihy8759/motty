@@ -230,6 +230,7 @@ func TestRemoteStatsShowGPUPiecesOnlyWhenTheServerHasGPUs(t *testing.T) {
 		fake.streamCommand = streamReadings(lines...)
 		state.Click(hitRemoteStats)
 		waitRemoteStats(t, state, func(view *remoteStatsView) bool { return view.state == remoteStatsReady })
+		state.Click(hitMonitorHardware)
 		var canvas ui.Canvas
 		state.Paint(&canvas, ui.Size{Width: 1600, Height: 900})
 		var pieces []string

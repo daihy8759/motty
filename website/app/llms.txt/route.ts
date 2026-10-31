@@ -1,4 +1,5 @@
-import { changelog, versionLabel } from '@/lib/changelog';
+import { versionLabel } from '@/lib/changelog';
+import { loadReleases } from '@/lib/releases';
 import { downloadGroups, downloadHref } from '@/lib/download-content';
 import { landing } from '@/lib/landing-content';
 import { docsPath, source } from '@/lib/source';
@@ -15,6 +16,7 @@ export const dynamic = 'force-static';
  */
 export async function GET() {
   const groups = await downloadGroups('en');
+  const newest = (await loadReleases())[0];
   const lines: string[] = [
     `# ${site.name}`,
     '',
@@ -47,7 +49,7 @@ export async function GET() {
     '',
     '## Changelog',
     '',
-    `- Newest release: ${versionLabel(changelog[0].version)} (${changelog[0].date})`,
+    `- Newest release: ${newest ? `${versionLabel(newest.version)} (${newest.date})` : 'none published yet'}`,
     `- Every release, newest first: ${site.url}/en/changelog`,
     `- Release notes: ${site.releases}`,
     '',

@@ -27,7 +27,7 @@ func (state *State) askCloseTabs(keep layoutcore.WorkspaceID, pick func(position
 			pending.count++
 			if tab.Locked {
 				pending.locked++
-				pending.title = tab.Title
+				pending.title = state.tabLabel(tab)
 			}
 		}
 	}
@@ -44,7 +44,7 @@ func (state *State) askCloseLockedTab(id layoutcore.WorkspaceID) {
 	if !ok {
 		return
 	}
-	state.tabsClose = tabsClose{ids: []layoutcore.WorkspaceID{id}, count: 1, locked: 1, title: state.workspaceTabs[index].Title}
+	state.tabsClose = tabsClose{ids: []layoutcore.WorkspaceID{id}, count: 1, locked: 1, title: state.tabLabel(state.workspaceTabs[index])}
 	state.modal = modalCloseTabs
 }
 

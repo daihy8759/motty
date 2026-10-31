@@ -28,9 +28,12 @@ func (language Language) String() string {
 // Messages is the complete set of user-visible workbench strings. Adding a
 // language means adding one field initialization, not touching call sites.
 type Messages struct {
-	FileWindow FileWindowMessages
-	SFTPWindow SFTPWindowMessages
-	Transfers  TransferCenterMessages
+	ActionFeedback ActionFeedbackMessages
+	Monitor        MonitorMessages
+	Dashboard      DashboardMessages
+	FileWindow     FileWindowMessages
+	SFTPWindow     SFTPWindowMessages
+	Transfers      TransferCenterMessages
 	// AIPanel and AISettings hold the assistant's texts; see ai_panel.go and
 	// ai_settings.go.
 	AIPanel    AIPanelMessages
@@ -38,10 +41,14 @@ type Messages struct {
 	// Tools holds the terminal tools' texts; see terminal_tools.go.
 	Tools    ToolsMessages
 	Toolbars ToolbarMessages
+	// TerminalInput holds the terminal command and character-handling notices.
+	TerminalInput TerminalInputMessages
 	// Autofill holds the autofill rules' texts; see autofill.go.
 	Autofill AutofillMessages
 	// History holds the command history's texts; see history.go.
 	History HistoryMessages
+	// Completion holds the command completion's texts; see completion.go.
+	Completion CompletionMessages
 	// SSHSync holds the texts of the sync with the OpenSSH config; see ssh_sync.go.
 	SSHSync SSHSyncMessages
 	// Desktop holds the remote-desktop tabs' texts; see desktop.go.
@@ -126,6 +133,8 @@ type Messages struct {
 	SettingsLocalShell                     string
 	SettingsLocalShellDescription          string
 	SettingsLocalShellEmpty                string
+	LocalShellDefault                      string
+	LocalShellChoose                       string
 	SettingsTerminalFontSize               string
 	SettingsTerminalFontSizeDescription    string
 	SettingsTerminalFontFamily             string
@@ -149,31 +158,21 @@ type Messages struct {
 	PasswordSave                           string
 	KeyPassphraseSave                      string
 	PasswordSavedRefused                   string
+	ShowSecret                             string
+	HideSecret                             string
 	SettingsGroupSecurity                  string
 	SettingsVault                          string
 	SettingsVaultDescriptionFmt            string
 	SettingsVaultDescriptionLockedFmt      string
 	SettingsVaultEmpty                     string
 	SettingsVaultForgetAll                 string
-	SettingsMasterPassword                 string
-	SettingsMasterPasswordDescription      string
-	SettingsMasterPasswordSet              string
-	SettingsMasterPasswordChange           string
-	SettingsMasterPasswordRemove           string
-	SettingsMasterPasswordLock             string
-	SettingsMasterPasswordUnlock           string
+	SettingsVaultConvert                   string
+	VaultConvertDescription                string
+	VaultNeedsConversion                   string
 	VaultUnlockTitle                       string
 	VaultUnlockLabel                       string
 	VaultUnlockButton                      string
 	VaultWrongPassword                     string
-	MasterPasswordTitleSet                 string
-	MasterPasswordTitleChange              string
-	MasterPasswordDescription              string
-	MasterPasswordNewLabel                 string
-	MasterPasswordConfirmLabel             string
-	MasterPasswordSave                     string
-	MasterPasswordTooShortFmt              string
-	MasterPasswordMismatch                 string
 	VaultForgetTitle                       string
 	VaultForgetDescription                 string
 	VaultForgetConfirm                     string
@@ -182,8 +181,6 @@ type Messages struct {
 	VaultKeyLost                           string
 	VaultUnavailable                       string
 	VaultCorruptFmt                        string
-	VaultMasterSet                         string
-	VaultMasterRemoved                     string
 	VaultCleared                           string
 	SettingsRestore                        string
 	SettingsSSHAgent                       string
@@ -208,6 +205,7 @@ type Messages struct {
 	MenuCopy                               string
 	MenuPaste                              string
 	MenuSelectAll                          string
+	MenuClearScreen                        string
 	MenuClearScrollback                    string
 	MenuResourceMonitor                    string
 	LocalTerminal                          string
@@ -237,6 +235,9 @@ type Messages struct {
 	ShortcutNewTab                       string
 	ShortcutLocalTerminal                string
 	ShortcutCloseTab                     string
+	ShortcutNextTab                      string
+	ShortcutPreviousTab                  string
+	ShortcutClearScreen                  string
 	RecordingStart                       string
 	RecordingStop                        string
 	RecordingExport                      string
@@ -468,8 +469,8 @@ type Messages struct {
 	PasswordLabel                  string
 	PasswordHint                   string
 	PasswordHintUnsaved            string
-	PasswordHintNoStore            string
 	PasswordRetry                  string
+	PasswordRetryFactor            string
 	StatusConnectedFmt             string
 	StatusConnectFailed            string
 	ClipboardRequestTitle          string
@@ -797,6 +798,7 @@ func For(language Language) Messages {
 		messages.Toolbars = chineseToolbars
 		messages.Autofill = chineseAutofill
 		messages.History = chineseHistory
+		messages.Completion = chineseCompletion
 		messages.SSHSync = chineseSSHSync
 		messages.Desktop = chineseDesktop
 		messages.About = chineseAbout
@@ -807,6 +809,7 @@ func For(language Language) Messages {
 		messages.Toolbars = englishToolbars
 		messages.Autofill = englishAutofill
 		messages.History = englishHistory
+		messages.Completion = englishCompletion
 		messages.SSHSync = englishSSHSync
 		messages.Desktop = englishDesktop
 		messages.About = englishAbout

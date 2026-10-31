@@ -5,4 +5,5 @@ package buildinfo
 const (
 	productName = "Motty"
 	development = false
+	dockBadge   = ""
 )

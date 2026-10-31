@@ -159,7 +159,7 @@ func excludedFromBackup(name string) bool {
 
 // backupDocument gathers what a backup holds: every shared record, deleted ones
 // as tombstones, the trusted keys and the saved passwords. A locked vault is
-// reported as vault.ErrLocked, since the passwords cannot be read.
+// reported as vault.ErrNeedsConversion, since the passwords cannot be read.
 func (state *State) backupDocument() (backup.Document, error) {
 	if state.config == nil {
 		return backup.Document{}, errors.New(state.messages.Tools.SyncErrNoStore)
@@ -198,7 +198,7 @@ func (state *State) backupErrorText(err error) string {
 		return m.BackupErrNotBackup
 	case errors.Is(err, backup.ErrTooNew):
 		return m.BackupErrTooNew
-	case errors.Is(err, vault.ErrLocked):
+	case errors.Is(err, vault.ErrNeedsConversion):
 		return m.BackupErrVault
 	case errors.Is(err, cloudsync.ErrUnauthorized):
 		// The service's own words (an S3 error code, GitHub's message) follow.
@@ -234,8 +234,8 @@ func (state *State) applyBackup(document backup.Document) (hosts int, err error)
 		return 0, backup.ErrTooNew
 	}
 	opened := state.secrets.vault
-	if len(document.Secrets) > 0 && opened != nil && opened.HasMasterPassword() && !opened.Unlocked() {
-		return 0, vault.ErrLocked
+	if len(document.Secrets) > 0 && opened != nil && opened.NeedsConversion() {
+		return 0, vault.ErrNeedsConversion
 	}
 
 	if data, readErr := os.ReadFile(state.options.StatePath); readErr == nil {
@@ -274,6 +274,8 @@ func (state *State) applyBackup(document backup.Document) (hosts int, err error)
 				return len(state.hosts), nil
 			}
 		}
+		// A backup made before secrets were kept under hosts has them under logins.
+		state.migrateSecretsToHosts(true)
 	}
 	return len(state.hosts), nil
 }
@@ -363,7 +365,7 @@ func (state *State) runExportBackup(form *formDialog) string {
 func (state *State) openRestoreBackup() {
 	m := state.messages.Tools
 	if len(state.sessions) > 0 {
-		state.status = m.BackupErrSessions
+		state.showActionWarning(m.BackupRestoreTitle, m.BackupErrSessions)
 		return
 	}
 	paths, err := state.options.OpenFiles(app.OpenFileOptions{
@@ -374,7 +376,7 @@ func (state *State) openRestoreBackup() {
 		return
 	}
 	if err != nil {
-		state.status = fmt.Sprintf(m.BackupFailedFmt, err)
+		state.showActionFailure(m.BackupRestoreTitle, err, state.messages.ActionFeedback.FilePickerFailed)
 		return
 	}
 	info, err := os.Stat(paths[0])
@@ -386,7 +388,11 @@ func (state *State) openRestoreBackup() {
 		data, err = os.ReadFile(paths[0])
 	}
 	if err != nil {
-		state.status = fmt.Sprintf(m.BackupFailedFmt, err)
+		detail := state.messages.ActionFeedback.ReadFailed
+		if errors.Is(err, backup.ErrTooLarge) {
+			detail = state.messages.ActionFeedback.BackupTooLarge
+		}
+		state.showFileReadFailure(m.BackupRestoreTitle, err, detail)
 		return
 	}
 	state.openForm(formDialog{
@@ -496,7 +502,7 @@ func (state *State) syncLogin(retry func(), quiet bool) (store cloudsync.Store, 
 	if !state.sync.configured() || opened == nil {
 		return fail(m.SyncErrNeedsVault)
 	}
-	if opened.HasMasterPassword() && !opened.Unlocked() {
+	if opened.NeedsConversion() {
 		if quiet {
 			state.sync.waitingForVault = true
 			return fail(m.BackupErrVault)

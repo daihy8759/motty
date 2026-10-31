@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"errors"
+	"path/filepath"
 
 	"github.com/vivaui/viva/app"
 	"motty/internal/vault"
@@ -22,6 +23,12 @@ func (systemKeystore) Load(service, account string) ([]byte, error) {
 
 func (systemKeystore) Delete(service, account string) error {
 	return keystoreError(app.DeleteSecret(service, account))
+}
+
+// defaultKeystore keeps the data key of the vault at path in the system's secret
+// store, and in a key file next to the vault where the system has none.
+func defaultKeystore(vaultPath string) vault.Keystore {
+	return vault.FallbackKeystore{System: systemKeystore{}, File: vault.FileKeystore{Path: filepath.Join(filepath.Dir(vaultPath), "vault.key")}}
 }
 
 // keystoreError names what the system's store said in the vault's terms.

@@ -88,3 +88,24 @@ func BenchmarkSelectedText(b *testing.B) {
 	}
 	_ = selected
 }
+
+func TestSelectedRangeFollowsTextThroughScrollingAndHistoryTrim(t *testing.T) {
+	screen := New(10, 4, 4)
+	screen.Write([]byte("one\r\ntwo\r\nthree\r\n"))
+	from, to := screen.PointAt(Position{Row: 0}), screen.PointAt(Position{Row: 1, Column: 9})
+	if got := screen.SelectedRange(from, to); got != "one\ntwo" {
+		t.Fatalf("before output %q", got)
+	}
+	screen.Write([]byte("four\r\nfive\r\n"))
+	if got := screen.SelectedRange(from, to); got != "one\ntwo" {
+		t.Fatalf("after the lines moved into history %q", got)
+	}
+	screen.Scroll(2)
+	if got := screen.SelectedRange(from, to); got != "one\ntwo" {
+		t.Fatalf("after scrolling back %q", got)
+	}
+	screen.Write([]byte("six\r\nseven\r\neight\r\n"))
+	if got := screen.SelectedRange(from, to); got == "one\ntwo" || strings.Contains(got, "three") {
+		t.Fatalf("dropped lines were not clamped away: %q", got)
+	}
+}

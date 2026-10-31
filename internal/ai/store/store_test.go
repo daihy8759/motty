@@ -139,6 +139,44 @@ func TestProviderAuthStyleRoundTrip(t *testing.T) {
 	}
 }
 
+func TestProviderAPIFormatRoundTrip(t *testing.T) {
+	s, _ := openTemp(t)
+	for _, provider := range []Provider{
+		{ID: "responses", Name: "A", Kind: KindOpenAI, BaseURL: "https://gw.example.com/v1", APIFormat: APIFormatResponses, Enabled: true},
+		{ID: "chat", Name: "B", Kind: KindOpenAI, APIFormat: APIFormatChat, Enabled: true},
+		{ID: "claude", Name: "C", Kind: KindAnthropic, APIFormat: APIFormatResponses, Enabled: true},
+	} {
+		if err := s.SaveProvider(provider); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SaveProvider(Provider{ID: "bad", Kind: KindOpenAI, APIFormat: "completions"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown format: %v", err)
+	}
+	if err := s.SaveProvider(Provider{ID: "cli", Kind: KindCodexCLI, APIFormat: APIFormatResponses}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("CLI provider with a format: %v", err)
+	}
+	got, err := s.Providers()
+	if err != nil || len(got) != 3 {
+		t.Fatalf("%v %v", got, err)
+	}
+	formats := map[string]string{}
+	for _, provider := range got {
+		formats[provider.ID] = provider.APIFormat
+	}
+	// Chat Completions is stored as the empty value and Anthropic has no format.
+	if formats["responses"] != APIFormatResponses || formats["chat"] != "" || formats["claude"] != "" {
+		t.Fatalf("formats = %v", formats)
+	}
+	// Switching back to Chat Completions overwrites the stored format.
+	if err := s.SaveProvider(Provider{ID: "responses", Name: "A", Kind: KindOpenAI, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.Providers(); got[0].ID != "responses" || got[0].APIFormat != "" {
+		t.Fatalf("after switching back: %#v", got[0])
+	}
+}
+
 // A database written before bearer authentication existed must migrate without
 // losing providers, and every existing row keeps the historical x-api-key
 // behavior.
@@ -176,7 +214,7 @@ func TestVersion2DatabaseMigratesWithTheDefaultAuthStyle(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("providers = %v, err %v", got, err)
 	}
-	if got[0].ID != "old" || got[0].AuthStyle != "" {
+	if got[0].ID != "old" || got[0].AuthStyle != "" || got[0].APIFormat != "" {
 		t.Fatalf("migrated provider = %#v", got[0])
 	}
 }

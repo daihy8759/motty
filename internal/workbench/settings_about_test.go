@@ -68,12 +68,12 @@ func TestAboutShowsTheBuildAndOpensTheCommunityLinks(t *testing.T) {
 		t.Fatalf("the category is named %q", state.settingsCategoryName(settingsAbout))
 	}
 	facts := aboutFacts()
-	for _, want := range []string{about.Tagline, about.InfoTitle, about.Version, about.CommunityTitle, about.ProjectTitle, about.QQ, about.WeChat, about.Discord, facts.platform, facts.runtime} {
+	for _, want := range []string{about.Tagline, about.InfoTitle, about.Version, about.CommunityTitle, about.ProjectTitle, about.QQ, about.WeChat, about.Discord, about.Viva, facts.platform, facts.runtime} {
 		if !contains(texts, want) {
 			t.Errorf("the About page does not paint %q", want)
 		}
 	}
-	for _, id := range []ui.ID{hitAboutCopyInfo, hitAboutQQ, hitAboutWeChat, hitAboutDiscord, hitAboutIssues, hitAboutRepo, hitAboutDocs} {
+	for _, id := range []ui.ID{hitAboutCopyInfo, hitAboutQQ, hitAboutWeChat, hitAboutDiscord, hitAboutIssues, hitAboutRepo, hitAboutDocs, hitAboutViva} {
 		if _, ok := hitByID(&canvas, id); !ok {
 			t.Errorf("the About page does not paint %d", id)
 		}
@@ -112,6 +112,7 @@ func TestAboutShowsTheBuildAndOpensTheCommunityLinks(t *testing.T) {
 		{hitAboutIssues, aboutIssuesURL},
 		{hitAboutRepo, aboutRepoURL},
 		{hitAboutDocs, aboutDocsURL},
+		{hitAboutViva, aboutVivaURL},
 	} {
 		opened = nil
 		state.Click(link.id)

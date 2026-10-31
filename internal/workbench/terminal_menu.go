@@ -156,7 +156,7 @@ func (state *State) showInFiles(session *Session, target string) {
 	switch {
 	case view == nil:
 	case view.local:
-		state.listLocal(view, filepath.FromSlash(dir))
+		state.navigateLocalDirectory(view, filepath.FromSlash(dir))
 	default:
 		state.navigateSFTPDirectory(view, dir)
 	}
@@ -203,6 +203,7 @@ func (state *State) paintTerminalMenu(canvas *ui.Canvas, viewport ui.Rect) {
 	rows.add(components.ContextMenuItem{ID: hitTerminalMenuCopy, Label: messages.MenuCopy, Icon: icon(iconCopy), Keys: caps(shortcutCopy), Disabled: !hasSelection})
 	rows.add(components.ContextMenuItem{ID: hitTerminalMenuPaste, Label: messages.MenuPaste, Icon: icon(iconPaste), Keys: caps(shortcutPaste), Disabled: !live})
 	rows.add(components.ContextMenuItem{ID: hitTerminalMenuSelectAll, Label: messages.MenuSelectAll, Icon: icon(iconSelectAll)})
+	rows.add(components.ContextMenuItem{ID: hitTerminalMenuClearScreen, Label: messages.MenuClearScreen, Icon: icon(iconEraser), Keys: caps(shortcutClearScreen), Disabled: session.term.screen.Modes().AltScreen})
 	rows.add(components.ContextMenuItem{ID: hitTerminalMenuClear, Label: messages.MenuClearScrollback, Icon: icon(iconEraser), Disabled: session.term.screen.Scrollback() == 0})
 	rows.add(components.ContextMenuItem{ID: hitTerminalMenuSave, Label: messages.Tools.MenuSaveOutput, Icon: icon(iconFileDown)})
 	rows.separate()
@@ -293,7 +294,7 @@ func (state *State) clickTerminalMenu(id ui.ID) bool {
 	switch id {
 	case hitTerminalMenuCopy:
 		if selection := session.term.selection; selection.selected {
-			if err := state.options.SetClipboardText(session.term.screen.SelectedText(selection.anchor, selection.focus)); err != nil {
+			if err := state.options.SetClipboardText(selection.text(session.term.screen)); err != nil {
 				state.status = err.Error()
 			}
 		}
@@ -301,7 +302,11 @@ func (state *State) clickTerminalMenu(id ui.ID) bool {
 		state.pasteIntoTerminal(session)
 	case hitTerminalMenuSelectAll:
 		cols, rows := session.term.screen.Size()
-		session.term.selection.selectRange(term.Position{}, term.Position{Row: rows - 1, Column: cols - 1})
+		session.term.selection.selectRange(
+			session.term.screen.PointAt(term.Position{}),
+			session.term.screen.PointAt(term.Position{Row: rows - 1, Column: cols - 1}))
+	case hitTerminalMenuClearScreen:
+		session.term.clearScreen(state.messages)
 	case hitTerminalMenuClear:
 		session.term.screen.ClearScrollback()
 	case hitTerminalMenuSave:

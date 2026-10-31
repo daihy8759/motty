@@ -21,6 +21,7 @@ RACE_PACKAGES = \
 	./internal/portforward \
 	./internal/rdpcore \
 	./internal/remotestats \
+	./internal/monitoring \
 	./internal/rfb \
 	./internal/s3 \
 	./internal/scpclient \

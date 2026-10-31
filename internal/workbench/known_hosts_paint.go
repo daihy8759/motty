@@ -29,8 +29,20 @@ func (state *State) paintKnownHostsWorkspace(canvas *ui.Canvas, bounds ui.Rect) 
 		statusColor = pal.danger
 	}
 	paginated := len(view.visible) > knownHostsPageSize
+	emptyTitle, emptyDescription, emptyIconKind := "", "", uint8(iconKnown)
+	emptyDescriptionColor := pal.muted
+	empty := view.errorText != "" || len(view.rows) == 0 || len(view.visible) == 0
+	switch {
+	case view.errorText != "":
+		emptyTitle, emptyDescription, emptyIconKind = messages.KnownHostsError, view.errorText, iconHelp
+		emptyDescriptionColor = pal.danger
+	case len(view.rows) == 0:
+		emptyTitle, emptyDescription = messages.KnownHostsEmpty, messages.KnownHostsEmptySub
+	case len(view.visible) == 0:
+		emptyTitle, emptyDescription, emptyIconKind = messages.KnownHostsNoMatches, messages.KnownHostsNoMatchesSub, iconSearch
+	}
 
-	var search, content, pagination, refresh, retrust, remove flex.Box
+	var search, content, emptyIconBox, pagination, refresh, retrust, remove flex.Box
 	f := state.knownHostsLayout.Begin(canvas, state.Theme(), bounds)
 	f.Column().Fill().PadSides(12, 18, 0, 18).Children(func() {
 		f.Column().MarginSides(4, 0, 12, 0).Gap(3).Children(func() {
@@ -44,7 +56,11 @@ func (state *State) paintKnownHostsWorkspace(canvas *ui.Canvas, bounds ui.Rect) 
 			retrust = f.Slot().Size(retrustWidth, toolbarHeight)
 			remove = f.Slot().Size(deleteWidth, toolbarHeight)
 		})
-		content = f.Slot().Grow(1).MarginSides(14, 0, 0, 0)
+		if empty {
+			emptyIconBox, _ = state.declareEmptyPageWithColor(f, bounds, emptyTitle, emptyDescription, "", emptyDescriptionColor)
+		} else {
+			content = f.Slot().Grow(1).MarginSides(14, 0, 0, 0)
+		}
 		f.Divider().Background(pal.line)
 		// The footer's columns narrow with the card so the status keeps its room.
 		countWidth := min(168, (bounds.Width-36)*0.30)
@@ -69,14 +85,9 @@ func (state *State) paintKnownHostsWorkspace(canvas *ui.Canvas, bounds ui.Rect) 
 		InlineStart:   components.InputGroupSlot{Kind: components.InputGroupSlotIcon, Icon: lucideIcons[iconSearch]},
 	})
 
-	switch {
-	case view.errorText != "":
-		state.paintKnownHostsEmpty(canvas, content.Rect(), messages.KnownHostsError, view.errorText, pal.danger)
-	case len(view.rows) == 0:
-		state.paintKnownHostsEmpty(canvas, content.Rect(), messages.KnownHostsEmpty, messages.KnownHostsEmptySub, pal.muted)
-	case len(view.visible) == 0:
-		state.paintKnownHostsEmpty(canvas, content.Rect(), messages.KnownHostsNoMatches, messages.KnownHostsNoMatchesSub, pal.muted)
-	default:
+	if empty {
+		state.paintEmptyPage(canvas, emptyIconBox, flex.Box{}, emptyIconKind, ui.ID{}, "", false)
+	} else {
 		state.paintKnownHostsTable(canvas, content.Rect())
 	}
 	if paginated {
@@ -125,16 +136,6 @@ func (state *State) paintKnownHostsTable(canvas *ui.Canvas, bounds ui.Rect) {
 			components.BeginCheckbox(canvas, state.Theme(), hitKnownHostCheckList.At(index), ui.Rect{X: box.X, Y: box.Y}, record.selected).Label(record.selectLabel).Paint()
 		}
 	}
-}
-
-func (state *State) paintKnownHostsEmpty(canvas *ui.Canvas, bounds ui.Rect, title, description string, descriptionColor ui.Color) {
-	f := state.knownHostsEmptyLayout.Begin(canvas, state.Theme(), bounds)
-	f.Column().Fill().Items(flex.Center).Children(func() {
-		f.Spacer().HeightPercent(42).Grow(0).MarginSides(0, 0, -16, 0).Shrink(0)
-		f.Text(title).FontSize(17).Weight(ui.WeightSemibold).Color(state.pal.text).LineHeight(28).TextCenter().FillWidth().Ellipsis()
-		f.Paragraph(description, 3).FontSize(metrics.FontSizeS).Color(descriptionColor).LineHeight(24).TextCenter().MarginSides(6, 0, 0, 0).Width(max(bounds.Width-12, 0))
-	})
-	f.End()
 }
 
 func (state *State) paintKnownHostsDialog(canvas *ui.Canvas, viewport ui.Rect) {

@@ -137,6 +137,11 @@ func (state *State) releaseClosedSFTPConnections() {
 // Include standalone SSH authentication without adding invisible terminal tabs.
 func (state *State) connectionSessions() func(func(*Session) bool) {
 	return func(yield func(*Session) bool) {
+		for _, source := range state.dashboard.sources {
+			if !yield(&source.session) {
+				return
+			}
+		}
 		for i := range state.sessions {
 			if !yield(&state.sessions[i]) {
 				return

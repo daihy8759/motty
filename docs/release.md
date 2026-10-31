@@ -105,9 +105,12 @@ commit as the version bump; the annotated tag carries the same text verbatim, so
 the notes are what was reviewed, and the draft release is created from the file.
 The checksums job appends the `Built against vivaui/viva <sha>.` line, so the file
 itself never carries that line. Write it for the people who read the update
-dialog — what they can do now that they could not before — in Chinese, with the
-`## 新功能 / 改进 / 修复 / 安装` sections the earlier releases use. The notes in
-the update dialog are the `notes` field of `latest.json`, copied from this body.
+dialog — what they can do now that they could not before — in Chinese. Use the
+`## 新功能`, `## 改进` and `## 修复` headings with one short sentence per `- ` item
+and no bold lead-in, followed by a `## 安装` table of platforms and packages; keep
+the summary paragraph, signer and log boilerplate out (the download page and
+README carry that). The notes in the update dialog are the `notes` field of
+`latest.json`, copied from this body.
 
 ## The framework commit
 
@@ -200,12 +203,18 @@ no `.p12` is needed. See `viva help package` for every variable.
 
 ## The changelog page
 
-`website/lib/changelog.ts` holds one entry per release, newest first, with the
-English and Chinese text side by side. The website's `/en/changelog` and
-`/zh/changelog` render it, and the nav links to it. Once a release is published,
-add its entry there with the publish date and push: the site rebuilds and the
-entry goes live. The entry is the release notes written for readers, in both
-languages, so keep it to what a user notices.
+The website's `/en/changelog` and `/zh/changelog` are built from
+`docs/releases/<version>.md`: no release writes the page separately, and there
+is no second copy to fall out of step. `website.yml` watches `docs/releases/**`,
+so the release commit itself rebuilds the page. `website/lib/releases.ts` parses the
+`## 新功能`, `## 改进` and `## 修复` sections at build time and takes each
+release's date from GitHub, falling back to the notes' commit date when the
+build has no network.
+
+`docs/releases/<version>.en.md` is optional. It carries the same three sections
+in English and is used for the English page; without it that page shows the
+Chinese notes. Write it in the release commit when the English changelog should
+read as English — there is no post-release website commit either way.
 
 The release title carries the tag as-is (`Motty v0.1.2`, not `Motty 0.1.2`), so
 the version on GitHub reads the same as in the app and in the changelog.

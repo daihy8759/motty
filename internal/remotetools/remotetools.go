@@ -108,12 +108,19 @@ func processCommand(key SortKey) string {
 // ownPipeline reports whether a command line is the listing's own: the shell
 // that runs it and the stages of its pipe would otherwise head the list.
 func ownPipeline(command string) bool {
-	return strings.Contains(command, collectorMarker) || strings.HasPrefix(command, "sort -k") ||
+	return strings.Contains(command, collectorMarker) || strings.Contains(command, "/bin/ps -A -o pid= -o user= -o pcpu=") || strings.HasPrefix(command, "sort -k") ||
 		strings.HasPrefix(command, "head -n ") || strings.HasPrefix(command, "cut -c1-")
 }
 
 // Processes lists the busiest processes, most first.
 func Processes(ctx context.Context, runner Runner, key SortKey) ([]Process, error) {
+	if runnerSystem(runner) == "windows" {
+		snapshot, err := readWindowsProcesses(ctx, runner, key)
+		if len(snapshot.Processes) > maxProcesses {
+			snapshot.Processes = snapshot.Processes[:maxProcesses]
+		}
+		return snapshot.Processes, err
+	}
 	output, err := runner.RunCommand(ctx, processCommand(key), maxOutput)
 	if unsupportedPSOptions(output) {
 		output, err = runner.RunCommand(ctx, legacyProcessCommand, maxOutput)

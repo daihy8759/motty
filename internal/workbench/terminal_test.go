@@ -373,17 +373,25 @@ func TestCommandChordsDriveTheTabs(t *testing.T) {
 	connect(t, state, world)
 	first, second := state.sessions[0].ID, state.sessions[1].ID
 
-	key(state, 1, ui.KeyEvent{Modifiers: ui.ModifierMeta, Text: "1"})
-	if state.activeSessionID != first {
-		t.Fatal("Command+1 did not select the first tab")
-	}
-	key(state, 0, ui.KeyEvent{Modifiers: ui.ModifierMeta, Text: "2"})
-	if state.activeSessionID != second {
-		t.Fatal("Command+2 did not select the second tab")
-	}
-	key(state, 1, ui.KeyEvent{Modifiers: ui.ModifierMeta, Text: "9"}) // no ninth tab
-	if state.activeSessionID != second {
-		t.Fatal("a missing tab changed the selection")
+	if defaultShortcutModifier() == ui.ModifierMeta {
+		// A tab is a workspace on the tab bar: selecting one has to move the bar,
+		// not only the session the keyboard goes to.
+		workspaces := state.deck.Workspaces(nil)
+		digit := func(text string) {
+			state.Shortcut(ui.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: ui.ModifierMeta, Text: text})
+		}
+		digit("1")
+		if state.activeSessionID != first || state.deck.ActiveWorkspace() != workspaces[0].ID {
+			t.Fatal("Command+1 did not select the first tab")
+		}
+		digit("2")
+		if state.activeSessionID != second || state.deck.ActiveWorkspace() != workspaces[1].ID {
+			t.Fatal("Command+2 did not select the second tab")
+		}
+		digit("9") // no ninth tab
+		if state.activeSessionID != second {
+			t.Fatal("a missing tab changed the selection")
+		}
 	}
 	key(state, 1, ui.KeyEvent{Modifiers: ui.ModifierMeta, Text: "t"})
 	if state.activeSection != sectionHosts {
@@ -436,22 +444,22 @@ func TestTheWheelScrollsBackAndTypingReturnsToTheBottom(t *testing.T) {
 		t.Fatalf("Shift+PageUp: offset %d, sent %q", t0.screen.ViewOffset(), shell.typed()[typed:])
 	}
 
-	// On the alternate screen the wheel is arrow keys only when the program
-	// explicitly asks for alternate scroll mode.
+	// On the alternate screen the wheel is arrow keys unless the program turned
+	// alternate scroll mode off or asked for the mouse itself.
 	t0.screen.ScrollToBottom()
 	shell.say("\x1b[?1049h")
 	state.Wake()
 	typed = len(shell.typed())
 	state.Scroll(ui.ScrollEvent{DeltaY: 2 * state.cellHeight, Precise: true})
-	if got := shell.typed()[typed:]; got != "" {
-		t.Fatalf("wheel without alternate-scroll mode sent %q", got)
+	if got := shell.typed()[typed:]; got != "\x1b[B\x1b[B" {
+		t.Fatalf("wheel on the alternate screen sent %q", got)
 	}
-	shell.say("\x1b[?1007h")
+	shell.say("\x1b[?1007l")
 	state.Wake()
 	typed = len(shell.typed())
 	state.Scroll(ui.ScrollEvent{DeltaY: 2 * state.cellHeight, Precise: true})
-	if got := shell.typed()[typed:]; got != "\x1b[B\x1b[B" {
-		t.Fatalf("wheel on the alternate screen sent %q", got)
+	if got := shell.typed()[typed:]; got != "" {
+		t.Fatalf("wheel with alternate-scroll mode reset sent %q", got)
 	}
 	// The wheel does not reach the terminal off the terminal page: the host list
 	// may take it, but the terminal's view stays where it was.
@@ -559,5 +567,63 @@ func TestALargeFloodIsParsedInOneWakeWithoutAnInvalidator(t *testing.T) {
 	state.Wake()
 	if session := &state.sessions[0]; len(session.term.rx) != 0 {
 		t.Fatalf("%d bytes remained without an Invalidator", len(session.term.rx))
+	}
+}
+
+// A program that asks the terminal for its colors with OSC 10 and 11 (Codex,
+// Helix, bat and others) picks a light or a dark theme from the answer, so the
+// answer has to be the colors the terminal is drawn with now: from the first
+// frame, after the appearance changes, and under a chosen color scheme.
+func TestTerminalAnswersColorQueriesWithItsLook(t *testing.T) {
+	state, _, _, shell := liveSession(t)
+	ask := func() string {
+		before := len(shell.typed())
+		shell.say("\x1b]10;?\x1b\\\x1b]11;?\x1b\\")
+		state.Wake()
+		return shell.typed()[before:]
+	}
+	reply := func(foreground, background string) string {
+		return "\x1b]10;rgb:" + foreground + "\x1b\\\x1b]11;rgb:" + background + "\x1b\\"
+	}
+	answers := map[appearance]string{
+		appearanceLight: reply("1d1d/1d1d/1f1f", "fafa/fafa/fcfc"),
+		appearanceDark:  reply("e2e2/e7e7/eeee", "0b0b/0e0e/1313"),
+	}
+	if got, want := ask(), answers[state.appearance]; got != want {
+		t.Fatalf("a new session answered %q, want %q", got, want)
+	}
+	for _, look := range []appearance{appearanceLight, appearanceDark, appearanceLight} {
+		state.setAppearance(look)
+		if got, want := ask(), answers[look]; got != want {
+			t.Fatalf("after switching to appearance %v the terminal answered %q, want %q", look, got, want)
+		}
+	}
+	state.setTerminalScheme("dracula")
+	if got, want := ask(), reply("f8f8/f8f8/f2f2", "2828/2a2a/3636"); got != want {
+		t.Fatalf("under the Dracula scheme the terminal answered %q, want %q", got, want)
+	}
+}
+
+// The private terminal of the AI provider login answers the same queries, so a
+// login program picks its theme from the colors the dialog is painted with.
+func TestLoginTerminalAnswersColorQueries(t *testing.T) {
+	state, _, _, _ := liveSession(t)
+	login := &aiCLILogin{term: newTerminalWithScrollback(90, 16, 200), cancel: func() {}}
+	var replies []string
+	login.term.screen.SetReply(func(reply []byte) { replies = append(replies, string(reply)) })
+	state.ai.login = login
+	state.reportTerminalColors(login.term)
+	ask := func() string {
+		replies = nil
+		login.term.screen.Write([]byte("\x1b]11;?\x1b\\"))
+		return strings.Join(replies, "")
+	}
+	state.setAppearance(appearanceLight)
+	if got, want := ask(), "\x1b]11;rgb:fafa/fafa/fcfc\x1b\\"; got != want {
+		t.Fatalf("light: the login terminal answered %q, want %q", got, want)
+	}
+	state.setAppearance(appearanceDark)
+	if got, want := ask(), "\x1b]11;rgb:0b0b/0e0e/1313\x1b\\"; got != want {
+		t.Fatalf("dark: the login terminal answered %q, want %q", got, want)
 	}
 }

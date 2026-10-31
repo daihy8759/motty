@@ -42,6 +42,7 @@ func TestSampleIsTheDifferenceBetweenTwoReadings(t *testing.T) {
 	want := Sample{
 		CPUPercent: 37.5, MemoryUsedBytes: 3 << 30, MemoryTotalBytes: 8 << 30,
 		ReceiveBytesPerSecond: 128 << 10, SendBytesPerSecond: 64 << 10,
+		UptimeSeconds: 11,
 	}
 	if got, ok := sample(before, after); !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("sample = %+v ok=%v", got, ok)
@@ -270,7 +271,7 @@ func TestCommandPrintsReadingsOnThisHost(t *testing.T) {
 	var readings []counters
 	started := time.Now()
 	for len(readings) < 3 && lines.Scan() {
-		if isGPULine(lines.Bytes()) {
+		if isGPULine(lines.Bytes()) || strings.HasPrefix(lines.Text(), "gop-net-primary ") || strings.HasPrefix(lines.Text(), "gop-core ") {
 			continue
 		}
 		got, err := parse(append(lines.Bytes(), '\n'))

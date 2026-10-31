@@ -1,0 +1,352 @@
+package workbench
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/vivaui/viva/ui"
+	"motty/internal/i18n"
+	"motty/internal/remotestats"
+	"motty/internal/sshconn"
+	layoutcore "motty/internal/workspace"
+)
+
+func monitorFixture(t testing.TB) (*State, *Session) {
+	t.Helper()
+	state, s, _, _ := openTestSFTP(t)
+	state.setLanguage(i18n.Chinese)
+	state.setAppearance(appearanceLight)
+	state.renameSession(s, "docker-ubuntu")
+	s.host.Color = "#3b82f6"
+	s.stats = &remoteStatsView{state: remoteStatsReady}
+	p := &s.stats.panel
+	p.interval = 2
+	p.data = remotestats.Details{CPUCount: 12, Load: [3]float64{2.31, 1.84, 1.22}, Uptime: 69242400, Kernel: "4.18.0",
+		Disks: []remotestats.Disk{
+			{Path: "/", Used: 2096 * (1 << 30) / 10, Total: 2952 * (1 << 30) / 10, Percent: 71},
+			{Path: "/data", Used: 176 << 30, Total: 200 << 30, Percent: 88},
+			{Path: "/var/log", Used: 81 * (1 << 30) / 10, Total: 50 << 30, Percent: 16},
+			{Path: "/run", Used: 3 << 20, Total: 23 << 30, Percent: 1, Virtual: true},
+			{Path: "/dev/shm", Used: 9 << 20, Total: 23 << 30, Percent: 1, Virtual: true},
+		},
+		Networks: []remotestats.Network{{Name: "eth0", ReceivePerSecond: 204288, SendPerSecond: 159130, HasRate: true}, {Name: "docker0", ReceivePerSecond: 1200, SendPerSecond: 850, HasRate: true}},
+	}
+	p.haveDetails = true
+	for i := range 61 {
+		cpu := 28.4 + float64((i*7)%13-6)
+		mem := 53 + float64((i*3)%7-3)
+		state.sampleMonitor(s.stats, remotestats.Sample{CPUPercent: cpu, MemoryUsedBytes: uint64(mem / 100 * float64(462*(1<<30)/10)), MemoryTotalBytes: 462 * (1 << 30) / 10, ReceiveBytesPerSecond: 204288 + uint64(i%5)*12000, SendBytesPerSecond: 159130 + uint64(i%7)*8000, UptimeSeconds: 69242400, NetworkInterface: "eth0"})
+	}
+	for i := range 61 {
+		p.x[i] = float32(i)
+	}
+	state.sampleMonitor(s.stats, remotestats.Sample{CPUPercent: 28.4, MemoryUsedBytes: 2443 * (1 << 30) / 100, MemoryTotalBytes: 462 * (1 << 30) / 10, ReceiveBytesPerSecond: 204288, SendBytesPerSecond: 159130, UptimeSeconds: 69242400, NetworkInterface: "eth0"})
+	for i := range 61 {
+		p.x[i] = float32(i)
+	}
+	p.sample.Cores = []remotestats.Core{{ID: "0", Percent: 10.8}, {ID: "1", Percent: 23.9}, {ID: "2", Percent: 24.4}, {ID: "3", Percent: 8.7}, {ID: "4", Percent: 15.3}, {ID: "5", Percent: 13.6}, {ID: "6", Percent: 4.1}, {ID: "7", Percent: 11.5}}
+	p.data.CPUCount = 8
+	state.formatMonitor(s.stats)
+	c, _ := state.deck.Context(state.deck.ActiveWorkspace())
+	c.Kind, c.Open, c.Width, c.MonitorOpen = layoutcore.ContextSFTP, true, 340, true
+	_ = state.deck.SetContext(state.deck.ActiveWorkspace(), c)
+	return state, s
+}
+
+func TestMonitorUsesTheWindowsSamplerWithoutProcfsCommands(t *testing.T) {
+	state, _, fake, _ := liveSession(t)
+	session := state.contextSession()
+	session.host.System = sshconn.SystemWindows
+	fake.streamCommand = func(ctx context.Context, command string, limit int, line func([]byte) bool) error {
+		if !strings.HasPrefix(command, "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ") {
+			t.Error("Windows server received a non-PowerShell sampler")
+		}
+		return streamReadings(`gop-stats-win-v1 {"cpu":25,"total":8589934592,"free":4294967296,"uptime":100,"networkAvailable":false,"cores":[{"id":"0","percent":25}],"meta":{"count":1,"kernel":"Windows","disks":[{"path":"C:\\","total":1000,"free":400}]}}`)(ctx, command, limit, line)
+	}
+	state.Click(hitRemoteStats)
+	waitRemoteStats(t, state, func(v *remoteStatsView) bool { return v.state == remoteStatsReady })
+	if session.stats.panel.worker != nil || !session.stats.panel.haveDetails || !session.stats.panel.data.LoadUnavailable || session.stats.panel.cpuText != "25.0%" {
+		t.Fatal("Windows monitor started Unix details polling or lost CIM metadata")
+	}
+	if session.stats.panel.downText != "—" {
+		t.Fatal("unavailable network counter was shown as zero")
+	}
+}
+
+func TestMonitorUnsupportedSystemsDoNotRunLinuxScripts(t *testing.T) {
+	for _, system := range []sshconn.RemoteSystem{sshconn.SystemDarwin, sshconn.SystemFreeBSD} {
+		state, _, fake, _ := liveSession(t)
+		session := state.contextSession()
+		session.host.System = system
+		state.Click(hitRemoteStats)
+		if session.stats.state != remoteStatsUnsupported || session.stats.worker != nil || session.stats.panel.worker != nil {
+			t.Fatalf("unsupported %s started polling", system)
+		}
+		fake.mu.Lock()
+		calls := len(fake.commandCalls)
+		fake.mu.Unlock()
+		if calls != 0 {
+			t.Fatalf("unsupported server received %d resource commands", calls)
+		}
+	}
+}
+
+func BenchmarkPaintMonitor(b *testing.B) {
+	state, _ := monitorFixture(b)
+	var canvas ui.Canvas
+	size := ui.Size{Width: 1280, Height: 900}
+	state.Paint(&canvas, size)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		canvas.Reset()
+		state.Paint(&canvas, size)
+	}
+}
+
+func TestMonitorKeepsFilesAndRestoresWidth(t *testing.T) {
+	state, session := monitorFixture(t)
+	state.Resize(ui.Size{Width: 1600, Height: 900})
+	state.resizeMonitor(436)
+	before := session.files
+	state.Click(hitMonitorClose)
+	c, _ := state.deck.Context(state.deck.ActiveWorkspace())
+	if c.MonitorOpen || !c.Open || session.files != before || c.MonitorWidth != 436 {
+		t.Fatalf("monitor disturbed files or width: %+v", c)
+	}
+	restored := newTestState(t, state.options)
+	c, _ = restored.deck.Context(restored.deck.ActiveWorkspace())
+	if c.MonitorWidth != 436 {
+		t.Fatalf("width after restart=%v", c.MonitorWidth)
+	}
+}
+
+func TestMonitorHistoryStaysBounded(t *testing.T) {
+	state, s := monitorFixture(t)
+	for range 300 {
+		state.sampleMonitor(s.stats, remotestats.Sample{CPUPercent: 40, MemoryTotalBytes: 1 << 30})
+	}
+	if s.stats.panel.count != 61 {
+		t.Fatal("history grows without bounds")
+	}
+	state.Click(hitMonitorClose)
+	if state.monitorShown(state.deck.ActiveWorkspace()) {
+		t.Fatal("file tab did not hide the monitor")
+	}
+	if r, _ := state.scrollMonitor(ui.ScrollEvent{X: 5, Y: 70, DeltaY: 100}); r.Handled {
+		t.Fatal("hidden monitor stole file scrolling")
+	}
+}
+
+func TestMonitorIndependentPanelGeometryPreservesTerminal(t *testing.T) {
+	for _, side := range []layoutcore.ContextSide{layoutcore.ContextLeft, layoutcore.ContextRight} {
+		for _, width := range []float32{800, 1000, 1280, 1600} {
+			t.Run(fmt.Sprint(side, "/", width), func(t *testing.T) {
+				state, _ := monitorFixture(t)
+				id := state.deck.ActiveWorkspace()
+				c, _ := state.deck.Context(id)
+				c.Side = side
+				_ = state.deck.SetContext(id, c)
+				size := ui.Size{Width: width, Height: 900}
+				state.Paint(&ui.Canvas{}, size)
+				b := state.workspacePixelBounds(size)
+				if b.Width < minPaneWidth || b.X < 0 || b.X+b.Width > width {
+					t.Fatalf("terminal geometry=%+v", b)
+				}
+				if !state.monitorDrawer(size) && state.monitorRect.Width > 360 {
+					t.Fatal("monitor became a wide dashboard")
+				}
+			})
+		}
+	}
+}
+
+func TestMonitorPauseStopsBothReaders(t *testing.T) {
+	state, _, fake, _ := liveSession(t)
+	fake.streamCommand = streamReadings(statsReadings...)
+	state.Click(hitRemoteStats)
+	waitRemoteStats(t, state, func(v *remoteStatsView) bool { return v.state == remoteStatsReady })
+	s := state.contextSession()
+	fast, details := s.stats.worker, s.stats.panel.worker
+	state.Click(hitMonitorPause)
+	if !s.stats.panel.paused || s.stats.worker != nil || s.stats.panel.worker != nil {
+		t.Fatal("pause kept polling")
+	}
+	for _, done := range []<-chan struct{}{fast.Done(), details.Done()} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("paused worker did not exit")
+		}
+	}
+}
+
+func TestMonitorHistoryGapsAndInterfaceChanges(t *testing.T) {
+	p := monitorView{interval: 2, sample: remotestats.Sample{CPUPercent: 32, MemoryUsedBytes: 1, MemoryTotalBytes: 4, NetworkInterface: "eth0", ReceiveBytesPerSecond: 1024}, diskAvailable: true, diskValue: 71}
+	p.appendHistory(0)
+	p.appendHistory(2)
+	p.appendHistory(30)
+	if p.count != 4 || !math.IsNaN(float64(p.cpu[2])) || p.cpu[3] != 32 || p.disk[3] != 71 || p.memory[3] != 25 {
+		t.Fatalf("missing pause gap: %+v", p.cpu[:p.count])
+	}
+	p.sample.NetworkInterface = "eth1"
+	p.appendHistory(32)
+	if !math.IsNaN(float64(p.down[0])) || p.down[p.count-1] != 1 || p.cpu[0] != 32 {
+		t.Fatal("interface change mixed traffic histories or cleared CPU")
+	}
+	p.sample.CPUUnavailable, p.sample.NetworkUnavailable = true, true
+	p.sample.MemoryTotalBytes = 0
+	p.detailsFailed = true
+	p.appendHistory(34)
+	for _, a := range [...]*[61]float32{&p.cpu, &p.memory, &p.disk, &p.down, &p.up} {
+		if !math.IsNaN(float64(a[p.count-1])) {
+			t.Fatal("missing observation became a zero")
+		}
+	}
+}
+
+func TestMonitorResizeDoesNotChangeFilePresentation(t *testing.T) {
+	state, _ := monitorFixture(t)
+	size := ui.Size{Width: 1800, Height: 900}
+	state.Resize(size)
+	id := state.deck.ActiveWorkspace()
+	before, _ := state.deck.Context(id)
+	state.Paint(&ui.Canvas{}, size)
+	b := state.monitorRect
+	state.monitorPointer(ui.PointerEvent{Kind: ui.PointerDown, Target: hitMonitorDivider, Button: ui.PointerButtonPrimary, X: b.X - 1, Y: 200})
+	state.monitorPointer(ui.PointerEvent{Kind: ui.PointerMove, X: b.X - 1 - 120, Y: 200})
+	state.Paint(&ui.Canvas{}, size)
+	if state.monitorRect.Width != 440 {
+		t.Fatalf("drag width=%v", state.monitorRect.Width)
+	}
+	state.monitorPointer(ui.PointerEvent{Kind: ui.PointerUp, X: state.monitorRect.X - 1, Y: 200})
+	after, _ := state.deck.Context(id)
+	if after.Side != before.Side || after.Width != before.Width || !after.Open || state.monitorResizing {
+		t.Fatalf("resize affected files: %+v", after)
+	}
+	state.monitorKey(ui.KeyEvent{Target: hitMonitorDivider, Key: ui.KeyHome})
+	state.Paint(&ui.Canvas{}, size)
+	if state.monitorRect.Width != layoutcore.MinMonitorWidth {
+		t.Fatal("keyboard minimum width failed")
+	}
+	state.monitorKey(ui.KeyEvent{Target: hitMonitorDivider, Key: ui.KeyEnd})
+	state.Paint(&ui.Canvas{}, size)
+	if state.monitorRect.Width != layoutcore.MaxMonitorWidth {
+		t.Fatal("keyboard maximum width failed")
+	}
+}
+
+func TestMonitorDividerKeysFollowTheDockedSide(t *testing.T) {
+	for _, left := range []bool{false, true} {
+		state, _ := monitorFixture(t)
+		size := ui.Size{Width: 1800, Height: 900}
+		state.Resize(size)
+		id := state.deck.ActiveWorkspace()
+		context, _ := state.deck.Context(id)
+		context.MonitorOpen, context.MonitorWidth, context.MonitorLeft = true, 400, left
+		if err := state.deck.SetContext(id, context); err != nil {
+			t.Fatal(err)
+		}
+		state.Paint(&ui.Canvas{}, size)
+		before := state.monitorRect.Width
+		state.monitorKey(ui.KeyEvent{Target: hitMonitorDivider, Key: ui.KeyLeft})
+		state.Paint(&ui.Canvas{}, size)
+		after := state.monitorRect.Width
+		// Left always moves the divider left: a right-docked monitor widens and
+		// a left-docked one narrows, so the key follows the pointer's direction.
+		if left == (after >= before) {
+			t.Fatalf("left dock %v: Left key width %v -> %v", left, before, after)
+		}
+	}
+}
+
+func TestMonitorRefreshAnimationPausesAndRespectsReducedMotion(t *testing.T) {
+	for _, reduced := range []bool{false, true} {
+		for _, paused := range []bool{false, true} {
+			state, session := monitorFixture(t)
+			p := &session.stats.panel
+			p.paused = paused
+			var canvas ui.Canvas
+			canvas.SetReduceMotion(reduced)
+			canvas.SetClock(func() time.Duration { return time.Second })
+			canvas.BeginFrame()
+			state.paintMonitorRefresh(&canvas, p, ui.Rect{Width: 82, Height: 26}, true)
+			canvas.EndFrame()
+			delay, scheduled := canvas.NextFrame()
+			if reduced || paused {
+				if scheduled {
+					t.Fatalf("idle animation keeps scheduling: reduced=%v paused=%v", reduced, paused)
+				}
+			} else if !scheduled || delay <= 0 || delay > time.Second/30 {
+				t.Fatalf("clock cadence=%v/%v", delay, scheduled)
+			}
+			if len(canvas.Hits()) != 1 || !canvas.Hits()[0].Expandable {
+				t.Fatal("refresh has duplicate or inaccessible hit targets")
+			}
+		}
+	}
+}
+
+func TestMonitorTransientControlsDoNotFollowAnotherConnection(t *testing.T) {
+	state, session := monitorFixture(t)
+	state.Resize(ui.Size{Width: 1600, Height: 900})
+	state.Paint(&ui.Canvas{}, state.viewport)
+	state.monitorPointer(ui.PointerEvent{Kind: ui.PointerDown, Target: hitMonitorDivider, Button: ui.PointerButtonPrimary, X: state.monitorRect.X, Y: 100})
+	state.Click(hitMonitorInterval)
+	if !state.monitorMenu || !state.monitorResizing {
+		t.Fatal("controls did not start")
+	}
+	c, _ := state.deck.Context(state.deck.ActiveWorkspace())
+	beforeInterval := session.stats.panel.interval
+	state.activeSessionID++ // equivalent to retargeting a split pane during a drag
+	state.monitorPointer(ui.PointerEvent{Kind: ui.PointerMove, X: 100, Y: 100})
+	if state.monitorResizing {
+		t.Fatal("divider drag followed another connection")
+	}
+	after, _ := state.deck.Context(state.deck.ActiveWorkspace())
+	if after.MonitorWidth != c.MonitorWidth {
+		t.Fatal("stale drag changed the next pane")
+	}
+	state.monitorKey(ui.KeyEvent{Key: ui.KeyDown, Target: hitMonitorInterval})
+	if state.monitorMenu {
+		t.Fatal("refresh popup followed another connection")
+	}
+	state.activeSessionID = session.ID
+	if session.stats.panel.interval != beforeInterval {
+		t.Fatal("stale refresh selection changed a connection")
+	}
+}
+
+func TestMonitorFailureStopsTheCountdownFrames(t *testing.T) {
+	state, session := monitorFixture(t)
+	var canvas ui.Canvas
+	canvas.BeginFrame()
+	state.paintMonitorRefresh(&canvas, &session.stats.panel, ui.Rect{Width: 82, Height: 26}, false)
+	canvas.EndFrame()
+	if _, scheduled := canvas.NextFrame(); scheduled {
+		t.Fatal("failed sampling keeps animating")
+	}
+}
+
+func TestMonitorStartsForAQuietWorkspaceOnActivation(t *testing.T) {
+	state, _, fake, _ := liveSession(t)
+	fake.streamCommand = streamReadings(statsReadings...)
+	state.Paint(&ui.Canvas{}, ui.Size{Width: 1400, Height: 900})
+	id := state.deck.ActiveWorkspace()
+	c, _ := state.deck.Context(id)
+	c.MonitorOpen = true
+	if err := state.deck.SetContext(id, c); err != nil {
+		t.Fatal(err)
+	}
+	state.activeSection = sectionHosts
+	state.activateWorkspace(id)
+	session := state.contextSession()
+	if session == nil || session.stats == nil || session.stats.worker == nil {
+		t.Fatal("quiet workspace waits for unrelated terminal output to start its monitor")
+	}
+	state.closeMonitor()
+}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/vivaui/viva/components"
+	"motty/internal/i18n"
 	"motty/internal/sshconn"
 )
 
@@ -29,6 +30,12 @@ type agentChoice struct {
 	kind agentKind
 	// path is the socket or named pipe of a custom agent.
 	path string
+}
+
+type agentDescriptionCache struct {
+	choice      agentChoice
+	language    i18n.Language
+	description string
 }
 
 const (
@@ -103,11 +110,19 @@ func (state *State) paintSSHAgentRow(page *settingsPage) {
 	m := state.messages
 	options := state.settingsAgentOptions()
 	selected := options[state.sshAgent.kind].ID
-	description := m.SettingsSSHAgentDescription
-	if address := state.sshAgent.resolved(); address != "" {
-		description = fmt.Sprintf(m.SettingsSSHAgentUsingFmt, address)
+	page.row(m.SettingsSSHAgent, state.sshAgentRowDescription(), options[:], selected)
+}
+
+func (state *State) sshAgentRowDescription() string {
+	cache, m := &state.agentSetting, state.messages
+	if cache.description == "" || cache.choice != state.sshAgent || cache.language != state.language {
+		cache.choice, cache.language = state.sshAgent, state.language
+		cache.description = m.SettingsSSHAgentDescription
+		if address := state.sshAgent.resolved(); address != "" {
+			cache.description = fmt.Sprintf(m.SettingsSSHAgentUsingFmt, address)
+		}
 	}
-	page.row(m.SettingsSSHAgent, description, options[:], selected)
+	return cache.description
 }
 
 // setSSHAgent applies a choice to the connections made from now on; the ones

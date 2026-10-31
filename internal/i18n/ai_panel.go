@@ -18,13 +18,14 @@ type AIPanelMessages struct {
 	Toggle    string
 	Close     string
 
-	NewConversation string
-	History         string
-	HistoryTitle    string
-	HistoryEmpty    string
-	HistoryOpen     string
-	HistoryDelete   string
-	HistoryRename   string
+	NewConversation       string
+	History               string
+	HistoryTitle          string
+	HistoryEmpty          string
+	HistoryOpen           string
+	HistoryDelete         string
+	HistoryRename         string
+	HistoryScrollbarLabel string
 
 	// The rename dialog of a saved conversation.
 	RenameTitle       string
@@ -56,12 +57,30 @@ type AIPanelMessages struct {
 	Send                string
 	Stop                string
 
-	EmptyTitle  string
-	EmptyHint   string
-	Example1    string
-	Example2    string
-	Example3    string
-	ScrollToEnd string
+	// Files and pictures attached to a message. The Fmt strings take the file's
+	// name first.
+	Attach               string // the paperclip: its name and tooltip
+	AttachPickerTitle    string
+	AttachDropHint       string // over the panel while files are dragged in
+	AttachRemoveFmt      string
+	AttachedLabel        string // the name of the row of attachments under a sent message
+	AttachTooManyFmt     string // takes the most that can be attached
+	AttachFolderFmt      string
+	AttachEmptyFmt       string
+	AttachTextTooBigFmt  string // takes the name and the size limit
+	AttachTooLargeFmt    string
+	AttachUnsupportedFmt string
+	AttachTotalTextFmt   string // takes the name and the size limit of all text
+	AttachFailedFmt      string // takes the name and the system's reason
+	PastedImageName      string // the name a picture pasted from the clipboard goes by
+
+	EmptyTitle     string
+	EmptyHint      string
+	Example1       string
+	Example2       string
+	Example3       string
+	ScrollToEnd    string
+	ScrollbarLabel string
 
 	// The empty panel while no terminal is open: what to do to give the assistant
 	// something to look at, and questions that need no terminal.

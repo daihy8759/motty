@@ -81,6 +81,24 @@ func hitCenter(t *testing.T, canvas *ui.Canvas, id ui.ID) ui.Point {
 	return ui.Point{X: hit.Bounds.X + hit.Bounds.Width/2, Y: hit.Bounds.Y + hit.Bounds.Height/2}
 }
 
+func dragSelectWholeText(t *testing.T, state *State, canvas *ui.Canvas, id ui.ID) {
+	t.Helper()
+	hit, ok := canvasHit(canvas.Hits(), id)
+	if !ok {
+		t.Fatalf("no selectable text hit %v in %+v", id, canvas.Hits())
+	}
+	start := ui.Point{X: hit.Bounds.X + 1, Y: hit.Bounds.Y + 1}
+	end := ui.Point{X: hit.Bounds.X + hit.Bounds.Width, Y: hit.Bounds.Y + hit.Bounds.Height - 1}
+	if result := answerPointer(state, ui.PointerDown, start, id); !result.Handled || result.Focus != id {
+		t.Fatalf("pressing selectable text = %+v, want focus %v", result, id)
+	}
+	answerPointer(state, ui.PointerMove, end, id)
+	answerPointer(state, ui.PointerUp, end, id)
+	if !state.ai.panel.hasAITextSelection() {
+		t.Fatalf("dragging %v left no selection: %+v", id, state.ai.panel.textSelect)
+	}
+}
+
 func copyChord(target ui.ID) ui.KeyEvent {
 	return ui.KeyEvent{Text: "c", Modifiers: defaultShortcutModifier(), Target: target}
 }
@@ -93,6 +111,85 @@ func TestCopyChordCopiesTheAnswerSelection(t *testing.T) {
 	result := state.Shortcut(copyChord(hitAIAnswerText.At(0)))
 	if !result.Handled || copied != "alpha" {
 		t.Fatalf("copy chord copied %q, handled=%v; want the selected text", copied, result.Handled)
+	}
+}
+
+func TestUserMessageDragSelectsAndCopiesWithoutVisualWraps(t *testing.T) {
+	state, _ := panelState(t, nil)
+	state.ai.open = true
+	text := strings.Repeat("copy this user question ", 12)
+	state.ai.items = []aiItem{{kind: aiUser, text: text}}
+	canvas, _ := paintAt(state, panelWide)
+	id := hitAIAnswerText.At(0)
+	dragSelectWholeText(t, state, canvas, id)
+	if got, ok := state.ai.panel.aiTextSelectionText(); !ok || got != text {
+		t.Fatalf("selected user text %q, %v; want %q", got, ok, text)
+	}
+	var copied string
+	state.options.SetClipboardText = func(value string) error { copied = value; return nil }
+	if result := state.Shortcut(copyChord(id)); !result.Handled || copied != text {
+		t.Fatalf("copying user text = %q, %+v", copied, result)
+	}
+	canvas, _ = paintAt(state, panelWide)
+	if rects := markdownSelectionRects(canvas, withAlpha(state.pal.text, 0.25)); len(rects) == 0 {
+		t.Fatalf("the user selection was not highlighted: %+v", state.ai.panel.textSelect)
+	}
+}
+
+func TestToolCommandAndOutputDragSelectAndCopy(t *testing.T) {
+	state, _ := panelState(t, nil)
+	state.ai.open = true
+	command := "cd /dev && pwd"
+	output := "/dev\n[exit status 0]"
+	state.ai.items = []aiItem{{
+		kind: aiTool, call: llm.ToolCall{ID: "1", Name: "terminal_exec", Arguments: `{"command":"` + command + `"}`},
+		status: aiToolDone, result: output,
+	}}
+	paintAt(state, panelWide)
+	state.Click(hitAIRows.At(0))
+	canvas, _ := paintAt(state, panelWide)
+
+	commandID := hitAIAnswerText.At(0)
+	dragSelectWholeText(t, state, canvas, commandID)
+	if got, ok := state.ai.panel.aiTextSelectionText(); !ok || got != command {
+		t.Fatalf("selected command %q, %v; want %q", got, ok, command)
+	}
+
+	outputID := hitAIToolOutputText.At(0)
+	dragSelectWholeText(t, state, canvas, outputID)
+	if got, ok := state.ai.panel.aiTextSelectionText(); !ok || got != output {
+		t.Fatalf("selected output %q, %v; want %q", got, ok, output)
+	}
+	var copied string
+	state.options.SetClipboardText = func(value string) error { copied = value; return nil }
+	if result := state.Shortcut(copyChord(outputID)); !result.Handled || copied != output {
+		t.Fatalf("copying tool output = %q, %+v", copied, result)
+	}
+
+	state.Click(hitAIRows.At(0))
+	canvas, _ = paintAt(state, panelWide)
+	if state.ai.panel.hasAITextSelection() {
+		t.Fatal("collapsing the output kept its selection")
+	}
+	if _, ok := canvasHit(canvas.Hits(), outputID); ok {
+		t.Fatal("collapsed output still has a selectable text hit")
+	}
+}
+
+func TestToolOutputSelectionCopiesOnlyVisibleLines(t *testing.T) {
+	state, _ := panelState(t, nil)
+	state.ai.open = true
+	state.ai.items = []aiItem{{
+		kind: aiTool, call: llm.ToolCall{ID: "1", Name: "terminal_read"}, status: aiToolDone,
+		result: strings.Repeat("visible\n", aiMaxOutput) + "hidden",
+	}}
+	paintAt(state, panelWide)
+	state.Click(hitAIRows.At(0))
+	canvas, _ := paintAt(state, panelWide)
+	dragSelectWholeText(t, state, canvas, hitAIToolOutputText.At(0))
+	want := strings.TrimSuffix(strings.Repeat("visible\n", aiMaxOutput), "\n")
+	if got, ok := state.ai.panel.aiTextSelectionText(); !ok || got != want {
+		t.Fatalf("selected truncated output %q, %v; want only %q", got, ok, want)
 	}
 }
 
@@ -256,7 +353,7 @@ func TestAnswerTextDragAcrossALinkStillSelects(t *testing.T) {
 	}
 }
 
-func TestPressesOnUserReasoningAndToolRowsCreateNoAnswerSelection(t *testing.T) {
+func TestPressesOutsideTextAndCollapsibleHeadersCreateNoSelection(t *testing.T) {
 	state, _ := panelState(t, nil)
 	state.ai.open = true
 	state.ai.items = []aiItem{
@@ -589,4 +686,23 @@ func TestAnswerSelectionClampsToTheRenderedText(t *testing.T) {
 	if panel.textSelect.sel.Focus != len("alpha beta gamma") {
 		t.Fatalf("the selection was not clamped: %+v", panel.textSelect.sel)
 	}
+}
+
+// A message past the block's line budget must say it was cut; before this the
+// last painted row looked like the end of what the user sent.
+func TestTruncatedUserMessageEndsWithAnEllipsis(t *testing.T) {
+	state, _ := panelState(t, nil)
+	state.ai.open = true
+	var text strings.Builder
+	for range 5000 {
+		text.WriteString("line\n")
+	}
+	state.ai.items = []aiItem{{kind: aiUser, text: text.String()}}
+	canvas, _ := paintAt(state, panelWide)
+	for _, painted := range canvas.Texts() {
+		if strings.HasSuffix(painted.Value, "…") {
+			return
+		}
+	}
+	t.Fatal("the truncated user message does not show that it was cut")
 }

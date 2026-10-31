@@ -11,6 +11,7 @@ import (
 	"motty/internal/ai/agent"
 	"motty/internal/ai/llm"
 	"motty/internal/ai/tools"
+	"motty/internal/i18n"
 )
 
 // shellThatRuns makes a fake shell that runs what it is typed with /bin/sh and
@@ -249,6 +250,24 @@ func TestThePromptAfterAnAICommandIsNotMarkedAsAI(t *testing.T) {
 	}
 	if _, ok := term.aiRows[start]; !ok {
 		t.Fatal("the AI command row lost its mark")
+	}
+}
+
+func TestClearingTheScreenDropsTheAssistantMarksOfTheRowsItErased(t *testing.T) {
+	term := newTerminal(80, 24)
+	term.screen.Write([]byte("$ ai-command\r\nresult\r\nPROMPT $ "))
+	prompt := term.screen.Row(term.screen.Cursor().Y).ID
+	term.aiRows = make(map[uint64]struct{}, 3)
+	for row := 0; row < 3; row++ {
+		term.aiRows[term.screen.Row(row).ID] = struct{}{}
+	}
+	term.aiStartID = term.screen.Row(0).ID
+	term.clearScreen(i18n.EnglishMessages)
+	if _, ok := term.aiRows[prompt]; !ok {
+		t.Fatal("the prompt line lost its mark")
+	}
+	if len(term.aiRows) != 1 || term.aiStartID != 0 {
+		t.Fatalf("marks = %d, start = %d; want only the prompt line, with no start row", len(term.aiRows), term.aiStartID)
 	}
 }
 

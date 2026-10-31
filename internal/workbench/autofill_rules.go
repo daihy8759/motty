@@ -14,7 +14,6 @@ import (
 	"github.com/vivaui/viva/ui"
 	"motty/internal/autofill"
 	"motty/internal/otp"
-	"motty/internal/sshconn"
 	"motty/internal/vault"
 )
 
@@ -185,13 +184,13 @@ func (state *State) sendAutofill(session *Session, rule *autofill.Rule) {
 		if session.endpoint.Host == "" {
 			result = vaultMissing
 		} else {
-			value, result = state.vaultSecret(passwordSecretName(session.endpoint))
+			value, result = state.vaultSecret(state.passwordName(session))
 		}
 	case autofill.SendOTP:
 		if session.endpoint.Host == "" {
 			result = vaultMissing
 		} else {
-			value, result = state.takeOTP(session.endpoint)
+			value, result = state.takeOTP(session)
 		}
 	case autofill.SendText:
 		value, result = state.vaultSecret(autofillSecretName(rule))
@@ -231,7 +230,7 @@ func (state *State) vaultSecret(name string) (string, vaultResult) {
 	}
 	value, found, err := vaultFile.Get(name)
 	switch {
-	case errors.Is(err, vault.ErrLocked):
+	case errors.Is(err, vault.ErrNeedsConversion):
 		return "", vaultLocked
 	case err != nil || !found:
 		return "", vaultMissing
@@ -241,8 +240,8 @@ func (state *State) vaultSecret(name string) (string, vaultResult) {
 
 // takeOTP is the current code of an account's secret. A counter-based secret
 // moves on with every code used, or the next one would repeat.
-func (state *State) takeOTP(endpoint sshconn.Endpoint) (string, vaultResult) {
-	name := otpSecretName(endpoint)
+func (state *State) takeOTP(session *Session) (string, vaultResult) {
+	name := state.otpSecretName(session)
 	value, result := state.vaultSecret(name)
 	if result != vaultFound {
 		return "", result
@@ -376,8 +375,7 @@ func (state *State) storeAutofillText(rule *autofill.Rule, value string) string 
 	switch {
 	case vaultFile == nil:
 		return fmt.Sprintf(m.ErrorVaultFmt, "—")
-	case vaultFile.Unlocked():
-	case vaultFile.HasMasterPassword():
+	case vaultFile.NeedsConversion():
 		return m.ErrorVaultLocked
 	default:
 		if err := vaultFile.Prepare(); err != nil {
@@ -512,7 +510,7 @@ func (state *State) paintAutofillDialog(canvas *ui.Canvas, viewport ui.Rect) {
 	field := func(box flex.Box, id ui.ID, label, placeholder, value string, secret bool) {
 		content := components.BeginField(canvas, theme, box.Rect()).Paint(label, "", "")
 		focused := canvas.Focused() == id
-		components.PaintInput(canvas, theme, content, components.InputSnapshot{
+		state.paintSecretInput(canvas, content, components.InputSnapshot{
 			ID: id, Label: label, Value: value, Placeholder: placeholder, Secure: secret,
 			Focused: focused, PlatformEditing: focused && value != "", Invalid: form.dialogError != "",
 		})

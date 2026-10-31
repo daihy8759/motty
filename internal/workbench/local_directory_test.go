@@ -119,7 +119,7 @@ func TestLocalDirectoriesRestoreIndependentlyWithoutFileFollowing(t *testing.T) 
 		t.Fatalf("restored sessions = %d", len(restored.sessions))
 	}
 	for i, session := range restored.sessions {
-		if session.localDirectory != dirs[i] || localStartupDirectory(session.localDirectory) != dirs[i] {
+		if session.localDirectory != dirs[i] || localStartupDirectory(session.localDirectory, "") != dirs[i] {
 			t.Fatalf("session %d restored directory = %q", i, session.localDirectory)
 		}
 	}
@@ -155,14 +155,14 @@ func TestLocalDirectoryRejectsNestedLoginAndMissingFoldersFallBack(t *testing.T)
 	if session.localDirectory != dir {
 		t.Fatal("an unverified directory report changed the next startup folder")
 	}
-	if got := localStartupDirectory(filepath.Join(dir, "removed")); got != "" {
+	if got := localStartupDirectory(filepath.Join(dir, "removed"), ""); got != "" {
 		t.Fatalf("missing directory did not fall back: %q", got)
 	}
 	file := filepath.Join(dir, "file")
 	if err := os.WriteFile(file, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if localStartupDirectory(file) != "" {
+	if localStartupDirectory(file, "") != "" {
 		t.Fatal("regular file accepted as startup directory")
 	}
 }

@@ -362,7 +362,7 @@ func (state *State) aiImportApply() {
 // matching provider already has is not a reason to ask.
 func (state *State) aiImportNeedsUnlock(selected []aiproviderimport.Candidate) bool {
 	opened := state.secrets.vault
-	if opened == nil || !opened.HasMasterPassword() || opened.Unlocked() {
+	if opened == nil || !opened.NeedsConversion() {
 		return false
 	}
 	for _, candidate := range selected {

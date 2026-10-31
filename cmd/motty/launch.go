@@ -303,6 +303,16 @@ func reportStarted(err error) {
 	}
 }
 
+// handoffArguments is what a second launch tells the running copy: the
+// arguments, and that it was started in the background (at login), which must
+// not bring the window to the front.
+func handoffArguments(args []string, background bool) []string {
+	if !background {
+		return args
+	}
+	return append(slices.Clone(args), "--background")
+}
+
 // launchArguments drops what the system adds to a command line and reports
 // whether the program was started in the background (at login).
 func launchArguments(args []string) (rest []string, background bool) {

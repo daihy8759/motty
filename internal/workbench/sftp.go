@@ -31,8 +31,9 @@ type sftpRow struct {
 	sortName             string
 	selected             bool
 	cells                [5]string
-	icon                 *ui.Icon // the file-type glyph, chosen when the listing arrives
-	mono                 bool     // the glyph has no colors of its own and is tinted
+	icon                 *ui.Icon      // the file-type glyph, chosen when the listing arrives
+	mono                 bool          // the glyph has no colors of its own and is tinted
+	appIcon              *fileIconSlot // the system's icon for a local application bundle, once it has answered
 	hidden               bool
 	matchStart, matchEnd int // byte range highlighted by the current folder filter
 }
@@ -51,11 +52,14 @@ const (
 	sftpDialogSymlink
 	sftpDialogExtract
 	sftpDialogCompress
+	sftpDialogBrowseCreateDirectory
 )
 
 // sftpFolder is a folder on show: where it is, its rows and the user's place in
 // them. The panel has one for the server and one for this computer.
 type sftpFolder struct {
+	history        sftpHistory
+	navigation     sftpNavigation
 	path           string
 	allRows        []sftpRow
 	rows           []sftpRow
@@ -65,6 +69,8 @@ type sftpFolder struct {
 	first          int
 	visibleRows    int     // rows the last paint had room for
 	wheel          float32 // wheel travel not yet worth a whole row
+	scroll         components.ScrollAreaGeometry
+	scrollOffset   float32
 	pathField      sftpPathField
 	filterEditor   text.Editor
 	filterInput    app.TextInput
@@ -75,39 +81,57 @@ type sftpFolder struct {
 	headerMenuOpen bool
 	sortOrder      sftpWindowSort
 	sortChosen     bool
+	localCoverage  localListingCoverage
+	coverageLabel  string // bounded scope, formatted when a listing/filter changes
+	coverageText   string // full semantic warning, independent of ordinary feedback
+	coverageEmpty  string
+	hiddenMatch    bool // the query matches rows this folder hides
 }
 
 type sftpView struct {
 	detached                        *sftpWindow // optional native dual-pane owner; transport/navigation stay per view
 	worker                          *sftpclient.Worker
 	transferScan                    uint64
+	transferHost                    *transferHost
 	transferServer, transferAddress string
 	// sftpFolder is the server's folder; lfolder is this computer's, shown
 	// instead of it while local is set.
 	sftpFolder
-	lfolder         sftpFolder
-	local           bool
-	localOnly       bool   // a local terminal's panel: no server, no worker, no other side to switch to
-	localSeq        uint64 // the latest local listing; an older answer is dropped
-	remoteSeq       uint64 // the latest remote listing prepared; older work is dropped
-	preparingPath   string // the large listing whose rows are being prepared
-	followUpPath    string // a follow-up that arrived before those rows were ready
-	followUpEntries []sftpclient.Entry
-	busy            bool
-	approximate     bool // the listing came from `ls` over SCP
-	operation       sftpclient.Operation
-	status          string
+	lfolder           sftpFolder
+	local             bool
+	localOnly         bool   // a local terminal's panel: no server, no worker, no other side to switch to
+	localSeq          uint64 // the latest local listing; an older answer is dropped
+	remoteSeq         uint64 // the latest remote listing prepared; older work is dropped
+	navigationID      uint64
+	waitingID         uint64
+	waitingNavigation sftpNavigation
+	preparingID       uint64
+	acceptedListID    uint64
+	preparingPath     string // the large listing whose rows are being prepared
+	// refreshAfterListing names the folder to read again once the foreground
+	// listing that started before a save lands.
+	refreshAfterListing string
+	followUpPath        string // a follow-up that arrived before those rows were ready
+	followUpEntries     []sftpclient.Entry
+	busy                bool
+	approximate         bool // the listing came from `ls` over SCP
+	operation           sftpclient.Operation
+	status              string
 	// listingStatus is the listing message status still holds, so a completed
 	// listing can retire it without dropping the feedback that replaced it.
 	listingStatus         string
+	localListingStatus    bool // the shared listing message belongs to a pending local read
 	errorText             string
 	refreshStatus         string
 	dialog                sftpDialogKind
 	dialogEditor          text.Editor
 	dialogEditor2         text.Editor
 	bookmarksOpen         bool
+	places                sftpPlaceMenu
 	dropping              bool // files are being dragged over the panel
 	dropRow               int  // the folder row they are over, or -1
+	scrollDrag            bool
+	scrollGrab            float32
 	details               sftpDetails
 	extracting            bool
 	archiveSequence       uint64
@@ -135,7 +159,7 @@ type sftpView struct {
 	listingBytes int // approximate bytes held by listings
 	// listingLimitBytes overrides maxSFTPListingBytes in tests.
 	listingLimitBytes     int
-	prefetching           map[string]struct{}
+	prefetching           map[string]uint64
 	waiting               string
 	pathRequest           string // the directory submitted through the path input, awaiting its listing
 	abandonedPath         string // a path request the user canceled while it was in flight
@@ -164,9 +188,14 @@ const (
 func (state *State) openSFTP(session *Session) {
 	if session != nil && session.isLocal() && session.files == nil {
 		view := &sftpView{local: true, localOnly: true}
+		view.adoptHistory(session.fileHistory)
 		view.selected, view.lfolder.selected = -1, -1
 		session.files = view
-		state.listLocal(view, state.localPanelStart(session))
+		start := session.fileHistory[0].path
+		if start == "" || session.term != nil && session.term.followPath != "" {
+			start = state.localPanelStart(session)
+		}
+		state.listLocal(view, start)
 		return
 	}
 	if session == nil || !session.hasServer() || session.conn == nil || session.phase != sshconn.PhaseConnected {
@@ -177,9 +206,11 @@ func (state *State) openSFTP(session *Session) {
 	}
 	connection, transfer := session.conn, session.host.Transfer
 	view := &sftpView{busy: true, operation: sftpclient.OperationList}
+	view.adoptHistory(session.fileHistory)
 	view.startListingStatus(state.messages.SFTPLoading)
 	view.sftpFolder.showHidden = true
 	view.transferServer, view.transferAddress = session.Title, session.Address
+	view.transferHost = transferHostFor(session)
 	view.selected, view.lfolder.selected = -1, -1
 	view.worker = sftpclient.NewWorker(func() (sftpclient.Remote, error) { return openRemoteFiles(connection, transfer) }, state.notifyFor(session))
 	state.configureSFTPWorker(view)
@@ -189,16 +220,24 @@ func (state *State) openSFTP(session *Session) {
 			state.terminalDirectory(session.ID, cwd)
 		}
 	}
-	if !view.worker.List("") {
+	state.listSFTP(view, session.fileHistory[1].path)
+	if !view.busy {
 		view.busy = false
 		view.errorText = state.messages.SFTPUnavailable
 	}
 }
 
 func (state *State) closeSFTP(session *Session) {
-	if session == nil || session.files == nil {
+	if session == nil {
 		return
 	}
+	session.fileHistory = [2]sftpSavedHistory{}
+	if session.files == nil {
+		return
+	}
+	session.files.localSeq++
+	session.files.remoteSeq++
+	session.files.navigation, session.files.lfolder.navigation = sftpNavigation{}, sftpNavigation{}
 	if session.files.cancelExtract != nil {
 		session.files.cancelExtract()
 	}
@@ -251,13 +290,19 @@ func (state *State) clickSFTP(id ui.ID) {
 		state.clickSFTPDialog(view, id)
 		return
 	}
+	if view.bookmarksOpen {
+		sftpPlaceBrowser{owner: state, session: session, view: view}.clickDirectoryPlace(id)
+		return
+	}
 	folder := view.active()
 	if folder.headerMenuOpen {
+		if state.clickSFTPHistory(view, view.local, id, hitSFTPHistoryBack, hitSFTPHistoryForward, sftpRecentHits) {
+			folder.headerMenuOpen = false
+			return
+		}
 		if column, ok := id.In(sftpHeaderSortHits); ok && column < 3 {
 			folder.headerMenuOpen = false
-			folder.sortChosen = true
-			folder.sortOrder.toggle(column)
-			folder.sortRows(folder.sortOrder)
+			state.toggleSFTPSidebarSort(folder, column)
 			return
 		}
 		switch id {
@@ -272,6 +317,10 @@ func (state *State) clickSFTP(id ui.ID) {
 		}
 		return
 	}
+	if column, ok := id.In(hitSFTPColumnList); ok && column < int(sftpColumnCount) && state.sftpColumns.enabled(sftpColumnKey(column)) {
+		state.toggleSFTPSidebarSort(folder, column)
+		return
+	}
 	if id == hitSFTPHeaderMore {
 		folder.headerMenuOpen = true
 		return
@@ -280,11 +329,6 @@ func (state *State) clickSFTP(id ui.ID) {
 		return
 	}
 	if view.local && state.clickSFTPLocal(session, view, id) {
-		return
-	}
-	if view.bookmarksOpen && id != hitSFTPBookmarkList && (id.Scope() != hitSFTPBookmarkItemList) {
-		// Pressing anywhere else closes the list, and does nothing more.
-		view.bookmarksOpen = false
 		return
 	}
 	if state.clickSFTPExtra(session, view, id) {
@@ -303,7 +347,11 @@ func (state *State) clickSFTP(id ui.ID) {
 	}
 	switch {
 	case id == hitSFTPCancel && view.busy:
-		if view.extracting && view.cancelExtract != nil {
+		if view.operation == sftpclient.OperationList && !view.extracting {
+			state.cancelSFTPNavigation(view)
+			view.status = state.messages.SFTPCanceled
+			return
+		} else if view.extracting && view.cancelExtract != nil {
 			view.cancelExtract()
 		} else {
 			view.worker.Cancel()
@@ -353,6 +401,17 @@ func (state *State) clickSFTP(id ui.ID) {
 	}
 }
 
+func (state *State) toggleSFTPSidebarSort(folder *sftpFolder, column int) {
+	if folder.sortChosen {
+		folder.sortOrder.toggle(column)
+	} else {
+		folder.sortOrder = sftpWindowSort{column: column}
+		folder.sortChosen = true
+	}
+	folder.sortRows(folder.sortOrder)
+	folder.scrollOffset = float32(folder.first) * sftpRowHeight
+}
+
 func (state *State) sftpEditor(hit ui.ID) *text.Editor {
 	if state.activeSection != sectionTerminal {
 		return nil
@@ -373,7 +432,7 @@ func (state *State) sftpEditor(hit ui.ID) *text.Editor {
 	if hit == hitSFTPDialogField2 && session.files.dialog == sftpDialogSymlink {
 		return &session.files.dialogEditor2
 	}
-	if hit != hitSFTPDialogField || session.files.dialog == sftpDialogNone || session.files.dialog == sftpDialogDelete || session.files.dialog == sftpDialogDiscardEdit || session.files.dialog == sftpDialogReloadEdit || session.files.dialog == sftpDialogRemoteChanged {
+	if hit != hitSFTPDialogField || session.files.dialog == sftpDialogNone || session.files.dialog == sftpDialogDelete || session.files.dialog == sftpDialogDiscardEdit || session.files.dialog == sftpDialogReloadEdit || session.files.dialog == sftpDialogRemoteChanged || session.files.dialog == sftpDialogBrowseCreateDirectory {
 		return nil
 	}
 	return &session.files.dialogEditor
@@ -404,6 +463,7 @@ func (view *sftpView) active() *sftpFolder {
 // that replaces it can tell its own message from feedback written meanwhile.
 func (view *sftpView) startListingStatus(message string) {
 	view.status, view.listingStatus = message, message
+	view.localListingStatus = false
 }
 
 // setItemCountStatus reports a folder's count in the embedded panel's status
@@ -636,6 +696,10 @@ func (view *sftpView) forgetListings() {
 	clear(view.listings)
 	view.listings = view.listings[:0]
 	view.listingBytes = 0
+	// A listing already being read ahead may have observed the state before the
+	// remote change. Forget its token so its late result cannot repopulate the
+	// cache.
+	clear(view.prefetching)
 }
 
 // openSFTPDirectory goes into a folder. One already read is shown at once and
@@ -643,27 +707,32 @@ func (view *sftpView) forgetListings() {
 // twice; any other is listed.
 func (state *State) openSFTPDirectory(view *sftpView, remotePath string) {
 	key := path.Clean(remotePath)
+	nav := state.beginSFTPNavigation(view, false, key, sftpNavigationPassive, 0)
+	state.openSFTPDirectoryNavigation(view, remotePath, nav)
+}
+
+func (state *State) openSFTPDirectoryNavigation(view *sftpView, remotePath string, nav sftpNavigation) {
+	key := path.Clean(remotePath)
 	if entries, ok := view.listing(key); ok {
-		state.showSFTPListing(view, key, entries)
-		if _, inFlight := view.prefetching[key]; !inFlight && view.worker.Prefetch(key) {
-			view.markPrefetching(key)
-		}
+		state.showSFTPListingNavigation(view, key, entries, nav, 0)
+		state.prefetchSFTPRefresh(view, key)
 		return
 	}
-	if _, inFlight := view.prefetching[key]; inFlight {
+	if id, inFlight := view.prefetching[key]; inFlight {
 		view.busy, view.operation, view.waiting = true, sftpclient.OperationList, key
+		view.waitingID, view.waitingNavigation = id, nav
 		view.startListingStatus(state.messages.SFTPLoading)
 		view.errorText = ""
 		return
 	}
-	state.listSFTP(view, remotePath)
+	state.queueSFTPListing(view, remotePath, nav)
 }
 
-func (view *sftpView) markPrefetching(key string) {
+func (view *sftpView) markPrefetching(key string, id uint64) {
 	if view.prefetching == nil {
-		view.prefetching = make(map[string]struct{}, 4)
+		view.prefetching = make(map[string]uint64, 4)
 	}
-	view.prefetching[key] = struct{}{}
+	view.prefetching[key] = id
 }
 
 // prefetchSFTP reads a folder before it is opened, so that the click that opens
@@ -676,32 +745,100 @@ func (state *State) prefetchSFTP(view *sftpView, remotePath string) {
 	if _, inFlight := view.prefetching[key]; inFlight {
 		return
 	}
-	if view.worker.Prefetch(key) {
-		view.markPrefetching(key)
+	state.prefetchSFTPRefresh(view, key)
+}
+
+func (state *State) prefetchSFTPRefresh(view *sftpView, key string) {
+	if _, ok := view.prefetching[key]; ok || view.worker == nil {
+		return
+	}
+	view.navigationID++
+	id := view.navigationID
+	if view.worker.PrefetchWithID(key, id) {
+		view.markPrefetching(key, id)
+	}
+}
+
+// refreshSFTPAfterRemoteSave refreshes the directory being shown after a
+// successful remote save. If the saved file belongs to another remembered
+// directory, drop the cached listings so that opening it cannot show stale
+// metadata.
+func (state *State) refreshSFTPAfterRemoteSave(view *sftpView, remotePath string) {
+	if view == nil || view.worker == nil {
+		return
+	}
+	directory := path.Dir(remotePath)
+	if view.path == directory {
+		if view.busy && view.navigation.id != 0 && view.navigation.path == directory {
+			// A listing that started before the save is still in flight. Read
+			// the folder again after it lands, or its older metadata would be
+			// what stays on screen.
+			view.refreshAfterListing = directory
+			return
+		}
+		// Force a second read even when a prefetch was already in flight. That
+		// read may have started before the save and must not be allowed to put
+		// the old metadata back into the cache.
+		state.refreshSFTPDirectory(view, directory)
+		return
+	}
+	view.forgetListings()
+}
+
+// refreshSFTPDirectory reads a shown folder again without disturbing the view.
+func (state *State) refreshSFTPDirectory(view *sftpView, directory string) {
+	view.navigationID++
+	id := view.navigationID
+	if view.worker.PrefetchWithID(directory, id) {
+		view.markPrefetching(directory, id)
 	}
 }
 
 // showSFTPListing puts a folder on screen.
 func (state *State) showSFTPListing(view *sftpView, remotePath string, entries []sftpclient.Entry) {
-	if view.deferDraggedListing(false, func() { state.showSFTPListing(view, remotePath, entries) }) {
+	state.showSFTPListingNavigation(view, remotePath, entries, sftpNavigation{}, 0)
+}
+
+func (state *State) showSFTPListingNavigation(view *sftpView, remotePath string, entries []sftpclient.Entry, nav sftpNavigation, listID uint64) {
+	if view.deferDraggedListing(false, func() { state.showSFTPListingNavigation(view, remotePath, entries, nav, listID) }) {
 		return
 	}
-	state.applySFTPListing(view, remotePath, prepareSFTPRows(view.allRows, entries))
+	if nav.id != 0 && nav.id != view.navigation.id {
+		return
+	}
+	state.applySFTPListingNavigation(view, remotePath, prepareSFTPRows(view.allRows, entries), nav, listID)
 }
 
 // applySFTPListing puts prepared rows on screen. It is separate from the row
 // preparation so a large folder can prepare them on a goroutine.
 func (state *State) applySFTPListing(view *sftpView, remotePath string, rows []sftpRow) {
+	state.applySFTPListingNavigation(view, remotePath, rows, sftpNavigation{}, 0)
+}
+
+func (state *State) applySFTPListingNavigation(view *sftpView, remotePath string, rows []sftpRow, nav sftpNavigation, listID uint64) {
 	defer view.invalidateDetached()
-	if view.deferDraggedListing(false, func() { state.applySFTPListing(view, remotePath, rows) }) {
+	if view.deferDraggedListing(false, func() { state.applySFTPListingNavigation(view, remotePath, rows, nav, listID) }) {
 		return
 	}
+	if nav.id != 0 && nav.id != view.navigation.id {
+		return
+	}
+	place, restore := view.sftpFolder.acceptNavigation(remotePath, nav)
+	view.acceptedListID = listID
+	view.preparingID = 0
 	view.remoteSeq++ // a shown listing invalidates an older one still being prepared
 	view.busy = false
 	view.path = remotePath
+	if view.refreshAfterListing == remotePath {
+		// A save landed while this listing was in flight; read the folder again
+		// so the older metadata it brought back is not the last word.
+		view.refreshAfterListing = ""
+		state.refreshSFTPDirectory(view, remotePath)
+	}
 	view.allRows = rows
 	view.crumbs = prepareSFTPCrumbs(view.crumbs, remotePath)
 	state.applySFTPFilter(view, &view.sftpFolder, true)
+	state.finishSFTPNavigation(view, false, place, restore)
 	view.errorText = ""
 	if view.refreshStatus != "" {
 		view.status = view.refreshStatus
@@ -716,20 +853,29 @@ func (state *State) applySFTPListing(view *sftpView, remotePath string, rows []s
 		state.refreshSFTPFilterStatus(view, &view.sftpFolder)
 	}
 	state.syncTerminalDirectory(view)
+	if view.detached != nil {
+		view.detached.browseListingCommitted(false, remotePath)
+	}
 }
 
 // finishSFTPPrefetch takes in a folder read ahead of need: it is remembered, shown
 // if the user has meanwhile asked for it, and, if it is the folder on screen,
 // used to correct what the screen shows from an earlier reading.
 func (state *State) finishSFTPPrefetch(view *sftpView, result sftpclient.Result) {
+	if result.ListID != 0 && view.prefetching[result.Path] != result.ListID {
+		return
+	}
 	delete(view.prefetching, result.Path)
-	waited := view.waiting != "" && view.waiting == result.Path
+	waited := view.waiting != "" && view.waiting == result.Path && (result.ListID == 0 || result.ListID == view.waitingID)
+	nav := view.waitingNavigation
 	if waited {
 		view.waiting = ""
+		view.waitingID, view.waitingNavigation = 0, sftpNavigation{}
 		view.busy = false
 	}
 	if result.Err != nil {
 		if waited {
+			view.navigation = sftpNavigation{}
 			view.terminalPath = ""
 			if errors.Is(result.Err, sftpclient.ErrCanceled) {
 				view.status = state.messages.SFTPCanceled
@@ -742,9 +888,12 @@ func (state *State) finishSFTPPrefetch(view *sftpView, result sftpclient.Result)
 	view.remember(result.Path, result.Entries)
 	switch {
 	case waited:
-		state.showSFTPListing(view, result.Path, result.Entries)
-	case view.path == result.Path && !view.busy && !sameSFTPListing(view.allRows, result.Entries):
-		state.updateSFTPRows(view, result.Entries)
+		state.showSFTPListingNavigation(view, result.Path, result.Entries, nav, result.ListID)
+	case view.path == result.Path && !view.busy:
+		view.acceptedListID = result.ListID
+		if !sameSFTPListing(view.allRows, result.Entries) {
+			state.updateSFTPRows(view, result.Entries)
+		}
 	}
 }
 
@@ -792,17 +941,32 @@ func sameSFTPListing(rows []sftpRow, entries []sftpclient.Entry) bool {
 }
 
 func (state *State) listSFTP(view *sftpView, remotePath string) {
-	if view.worker.List(remotePath) {
+	nav := state.beginSFTPNavigation(view, false, remotePath, sftpNavigationPassive, 0)
+	state.queueSFTPListing(view, remotePath, nav)
+}
+
+func (state *State) queueSFTPListing(view *sftpView, remotePath string, nav sftpNavigation) {
+	if view.worker != nil && view.worker.ListWithID(remotePath, nav.id) {
 		view.busy = true
 		view.operation = sftpclient.OperationList
 		view.startListingStatus(state.messages.SFTPLoading)
 		view.errorText = ""
+	} else {
+		view.navigation = sftpNavigation{}
+		view.busy = false
 	}
 }
 
 func (state *State) downloadSFTP(view *sftpView) {
 	selected := selectedSFTPRows(view)
 	if len(selected) == 0 {
+		return
+	}
+	configuredDirectory := state.sftpDownloadDirectory
+	if directory, ok := state.ensureSFTPDownloadDirectory(view); ok {
+		for index := range selected {
+			state.queueSFTPDownload(view, selected[index].entry, filepath.Join(directory, safeLocalName(selected[index].entry.Name)))
+		}
 		return
 	}
 	if len(selected) == 1 && !selected[0].entry.IsDir() {
@@ -814,6 +978,9 @@ func (state *State) downloadSFTP(view *sftpView) {
 		if state.handleSFTPPickerError(view, err, state.messages.SFTPSaveCanceled) {
 			return
 		}
+		if configuredDirectory != "" {
+			state.rememberSFTPDownloadDirectory(filepath.Dir(localPath))
+		}
 		state.queueSFTPDownload(view, entry, localPath)
 		return
 	}
@@ -821,9 +988,57 @@ func (state *State) downloadSFTP(view *sftpView) {
 	if state.handleSFTPPickerError(view, err, state.messages.SFTPSaveCanceled) {
 		return
 	}
-	for index := range selected {
-		state.queueSFTPDownload(view, selected[index].entry, filepath.Join(localDirectory, selected[index].entry.Name))
+	if configuredDirectory != "" {
+		state.rememberSFTPDownloadDirectory(localDirectory)
 	}
+	for index := range selected {
+		state.queueSFTPDownload(view, selected[index].entry, filepath.Join(localDirectory, safeLocalName(selected[index].entry.Name)))
+	}
+}
+
+func (state *State) ensureSFTPDownloadDirectory(view *sftpView) (string, bool) {
+	directory := state.sftpDownloadDirectory
+	if directory == "" {
+		return "", false
+	}
+	if !validSFTPDownloadDirectory(directory) {
+		state.fileOpenNotice(
+			view.detached,
+			state.messages.Tools.FilesDownloadDirectory,
+			fmt.Sprintf(state.messages.Tools.FilesDownloadDirectoryUnavailableFmt, directory),
+			components.ToastWarning,
+		)
+		return "", false
+	}
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		state.fileOpenNotice(
+			view.detached,
+			state.messages.Tools.FilesDownloadDirectory,
+			fmt.Sprintf(state.messages.Tools.FilesDownloadDirectoryUnavailableFmt, directory),
+			components.ToastWarning,
+		)
+		return "", false
+	}
+	info, err := os.Stat(directory)
+	if err != nil || !info.IsDir() {
+		state.fileOpenNotice(
+			view.detached,
+			state.messages.Tools.FilesDownloadDirectory,
+			fmt.Sprintf(state.messages.Tools.FilesDownloadDirectoryUnavailableFmt, directory),
+			components.ToastWarning,
+		)
+		return "", false
+	}
+	return directory, true
+}
+
+func (state *State) rememberSFTPDownloadDirectory(directory string) {
+	directory = filepath.Clean(directory)
+	if !validSFTPDownloadDirectory(directory) || state.sftpDownloadDirectory == directory {
+		return
+	}
+	state.sftpDownloadDirectory = directory
+	state.save()
 }
 
 func (state *State) handleSFTPPickerError(view *sftpView, err error, canceled string) bool {
@@ -847,6 +1062,7 @@ func (state *State) queueSFTPDownload(view *sftpView, entry sftpclient.Entry, lo
 	view.status = fmt.Sprintf(state.messages.SFTPQueuedFmt, entry.Name)
 	view.errorText = ""
 	state.transfers.open, state.transfers.filter, state.transfers.scroll = true, 0, 0
+	state.transfers.host = nil
 	state.refreshSFTPTransfers(view)
 }
 
@@ -890,6 +1106,7 @@ func (state *State) queueSFTPUploadTo(view *sftpView, localPath string, recursiv
 	view.status = fmt.Sprintf(state.messages.SFTPQueuedFmt, name)
 	view.errorText = ""
 	state.transfers.open, state.transfers.filter, state.transfers.scroll = true, 0, 0
+	state.transfers.host = nil
 	state.refreshSFTPTransfers(view)
 	return id
 }
@@ -921,6 +1138,9 @@ func (state *State) openSFTPDialog(view *sftpView, dialog sftpDialogKind) {
 }
 
 func (state *State) closeSFTPDialog(view *sftpView) {
+	if view.dialog == sftpDialogBrowseCreateDirectory && view.detached != nil {
+		view.detached.cancelBrowseDirectoryPrompt()
+	}
 	view.dialog = sftpDialogNone
 	view.dialogEditor, view.dialogEditor2 = text.Editor{}, text.Editor{}
 	view.dialogEntry = sftpclient.Entry{}
@@ -942,6 +1162,11 @@ func (state *State) submitSFTPDialog(view *sftpView) {
 	operation := sftpclient.Operation(0)
 	status := ""
 	switch view.dialog {
+	case sftpDialogBrowseCreateDirectory:
+		if view.detached != nil {
+			view.detached.createBrowseDirectory()
+		}
+		return
 	case sftpDialogDiscardEdit:
 		state.closeSFTPDialog(view)
 		resetSFTPEditor(view)
@@ -1047,17 +1272,33 @@ func (state *State) pumpSFTP(session *Session) {
 			if !ok {
 				return
 			}
+			if result.Operation == sftpclient.OperationList && !result.Background && !result.FollowUp && result.ListID != 0 && result.ListID != view.navigation.id {
+				if result.Path == view.abandonedPath {
+					view.abandonedPath = ""
+					if view.navigation.id == 0 {
+						view.busy = false
+					}
+				}
+				continue
+			}
 			if result.Operation == sftpclient.OperationList && result.Err == nil {
 				view.approximate = result.Approximate
 			}
 			if result.FollowUp {
+				if result.ListID != 0 {
+					shown := result.ListID == view.acceptedListID && result.Path == view.path && !view.busy
+					preparing := result.ListID == view.preparingID && result.Path == view.preparingPath
+					if !shown && !preparing {
+						continue
+					}
+				}
 				// The links of a listing resolved after it was shown. Refresh the
 				// rows without touching the selection or the scroll position; a
 				// listing already in flight supersedes this one.
 				view.remember(result.Path, result.Entries)
 				if view.path == result.Path && !view.busy {
 					state.updateSFTPRows(view, result.Entries)
-				} else if view.preparingPath == result.Path {
+				} else if view.preparingPath == result.Path && (result.ListID == 0 || result.ListID == view.preparingID) {
 					// The first rows are still being prepared; the follow-up has the
 					// targets and must win over the initial entries.
 					view.followUpPath, view.followUpEntries = result.Path, result.Entries
@@ -1092,8 +1333,11 @@ func (state *State) pumpSFTP(session *Session) {
 				state.refreshSFTPTransfers(view)
 				continue
 			}
+			if view.detached != nil && view.detached.browseDirectoryCreated(result) {
+				continue
+			}
 			view.busy = false
-			if result.Operation == sftpclient.OperationList && view.abandonedPath != "" && result.Path == view.abandonedPath {
+			if result.Operation == sftpclient.OperationList && result.ListID == 0 && view.abandonedPath != "" && result.Path == view.abandonedPath {
 				// The user canceled this navigation: keep the listing they are
 				// looking at, whatever the late result says.
 				view.abandonedPath = ""
@@ -1102,9 +1346,13 @@ func (state *State) pumpSFTP(session *Session) {
 			if result.Operation == sftpclient.OperationList && result.Err != nil && result.Path == view.terminalPath {
 				view.terminalPath = ""
 			}
+			if result.Operation == sftpclient.OperationList && result.Err != nil && view.detached != nil && view.detached.browseListingFailed(false, result.Path, result.Err) {
+				continue
+			}
 			if result.Operation == sftpclient.OperationList && view.pathRequest != "" && result.Path == view.pathRequest {
 				view.pathRequest = ""
 				if result.Err != nil && !errors.Is(result.Err, sftpclient.ErrCanceled) {
+					view.navigation = sftpNavigation{}
 					state.showSFTPPathErrorAt(view, result.Path, result.Err)
 					view.errorText = ""
 					view.setItemCountStatus(state.messages.SFTPItemsFmt, len(view.active().rows))
@@ -1115,6 +1363,9 @@ func (state *State) pumpSFTP(session *Session) {
 				}
 			}
 			if result.Err != nil {
+				if result.Operation == sftpclient.OperationList {
+					view.navigation = sftpNavigation{}
+				}
 				view.refreshStatus = ""
 				if errors.Is(result.Err, sftpclient.ErrCanceled) {
 					view.status = state.messages.SFTPCanceled
@@ -1128,6 +1379,7 @@ func (state *State) pumpSFTP(session *Session) {
 			}
 			switch result.Operation {
 			case sftpclient.OperationList:
+				nav := view.navigation
 				view.remember(result.Path, result.Entries)
 				view.remoteSeq++
 				view.preparingPath, view.followUpPath, view.followUpEntries = "", "", nil
@@ -1135,6 +1387,7 @@ func (state *State) pumpSFTP(session *Session) {
 					view.busy = true // navigation completes only when its prepared rows are published
 					seq, entries := view.remoteSeq, result.Entries
 					view.preparingPath = result.Path
+					view.preparingID = result.ListID
 					view.startListingStatus(state.messages.SFTPLoading)
 					go func() {
 						rows := prepareSFTPRows(nil, entries)
@@ -1146,12 +1399,12 @@ func (state *State) pumpSFTP(session *Session) {
 								rows = prepareSFTPRows(nil, view.followUpEntries)
 							}
 							view.preparingPath, view.followUpPath, view.followUpEntries = "", "", nil
-							state.applySFTPListing(view, result.Path, rows)
+							state.applySFTPListingNavigation(view, result.Path, rows, nav, result.ListID)
 						})
 					}()
 					continue
 				}
-				state.showSFTPListing(view, result.Path, result.Entries)
+				state.showSFTPListingNavigation(view, result.Path, result.Entries, nav, result.ListID)
 			case sftpclient.OperationDownload:
 				view.status = fmt.Sprintf(state.messages.SFTPDownloadedFmt, formatBytes(result.Bytes), result.LocalPath)
 			case sftpclient.OperationUpload:
@@ -1195,6 +1448,8 @@ func (state *State) pumpSFTP(session *Session) {
 				view.editUTF8BOM = result.Document.UTF8BOM
 				view.status = state.messages.SFTPEditSaved
 				view.errorText = ""
+				state.fileOpenNotice(view.detached, view.editName, state.messages.SFTPEditSaved, components.ToastSuccess)
+				state.refreshSFTPAfterRemoteSave(view, result.Path)
 			}
 		default:
 			state.refreshSFTPTransfers(view)
@@ -1281,11 +1536,43 @@ func (state *State) scrollSFTP(view *sftpView, event ui.ScrollEvent) ui.EventRes
 	if view == nil {
 		return ui.EventResult{Handled: true}
 	}
+	if view.bookmarksOpen {
+		return ui.EventResult{Handled: true, Repaint: view.places.scroll.Wheel(event)}
+	}
 	if view.editPath != "" && pointInRect(event.X, event.Y, view.editRect) {
 		view.editLayout.ScrollBy(event.DeltaY)
 		return ui.EventResult{Handled: true, Repaint: true}
 	}
-	return scrollFolder(view.active(), event)
+	folder := view.active()
+	if folder.visibleRows <= 0 || len(folder.rows) <= folder.visibleRows {
+		return ui.EventResult{Handled: true}
+	}
+	// At the edges, continuing to scroll outward is a no-op that must not repaint
+	// or jitter the layout.
+	maxOffset := folder.scroll.MaxOffsetY
+	if maxOffset > 0 && folder.scrollOffset >= maxOffset && event.DeltaY > 0 {
+		folder.wheel = 0
+		return ui.EventResult{Handled: true, Repaint: false}
+	}
+	if folder.first <= 0 && folder.scrollOffset > 0 && event.DeltaY < 0 {
+		// A drag released inside the first row leaves a sub-row offset there;
+		// the wheel moves whole rows, so scrolling up would otherwise stall.
+		folder.wheel = 0
+		folder.scrollOffset = 0
+		return ui.EventResult{Handled: true, Repaint: true}
+	}
+	if folder.scrollOffset <= 0 && folder.first <= 0 && event.DeltaY < 0 {
+		folder.wheel = 0
+		return ui.EventResult{Handled: true, Repaint: false}
+	}
+	result := scrollFolder(folder, event)
+	if result.Repaint {
+		folder.scrollOffset = float32(folder.first) * sftpRowHeight
+		if maxOffset > 0 && folder.scrollOffset > maxOffset {
+			folder.scrollOffset = maxOffset
+		}
+	}
+	return result
 }
 
 // fitSFTP keeps every list's first row inside its rows after the layout moved.
@@ -1299,6 +1586,12 @@ func (state *State) fitSFTP(size ui.Size) {
 }
 
 func (state *State) sftpKey(event ui.KeyEvent) (ui.EventResult, bool) {
+	if result, handled := state.sftpPlacesKey(event); handled {
+		return result, true
+	}
+	if result, handled := state.sftpHistoryKey(event); handled {
+		return result, true
+	}
 	if result, handled := state.sftpPathKey(event); handled {
 		return result, true
 	}

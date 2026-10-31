@@ -22,6 +22,7 @@ const (
 	aboutIssuesURL  = "https://github.com/t8y2/motty/issues"
 	aboutRepoURL    = "https://github.com/t8y2/motty"
 	aboutDocsURL    = "https://motty.page"
+	aboutVivaURL    = "https://vivaui.dev"
 )
 
 var (
@@ -32,6 +33,7 @@ var (
 	hitAboutIssues   = tree.ID(settingsHits, "settings-about-issues")
 	hitAboutRepo     = tree.ID(settingsHits, "settings-about-repo")
 	hitAboutDocs     = tree.ID(settingsHits, "settings-about-docs")
+	hitAboutViva     = tree.ID(settingsHits, "settings-about-viva")
 )
 
 // aboutBuildInfo is what this copy of the program is: its version, the platform
@@ -184,6 +186,27 @@ func (page *settingsPage) linkCard(id ui.ID, icon uint8, label, description stri
 	})
 }
 
+// vivaColophon closes the page with the framework that draws the window. It is
+// not a place to go like the cards above, so it is one centered line below
+// them, and the words and the mark are the whole of its target.
+func (page *settingsPage) vivaColophon() {
+	f, pal := page.f, page.state.pal
+	m := page.state.messages
+	color := pal.muted
+	if f.Canvas().Hovered() == hitAboutViva || f.Canvas().Focused() == hitAboutViva {
+		color = pal.accent
+	}
+	f.Row().FillWidth().Items(flex.Center).Justify(flex.Center).Children(func() {
+		line := f.Row().Items(flex.Center).Gap(5)
+		page.matchAnchor(m.About.Viva, line, 0)
+		page.hitOn(line, hitAboutViva, m.About.Viva, ui.HitOptions{Role: ui.RoleLink, Cursor: ui.PointerCursorHand, Description: m.About.VivaDescription})
+		line.Children(func() {
+			f.Icon(lucideIcons[iconLink]).Size(11, 11).Color(color).Shrink(0)
+			f.Text(m.About.Viva).FontSize(metrics.FontSizeS).Color(color).LineHeight(15)
+		})
+	})
+}
+
 // paintAboutSettings paints the About category: what this copy is, where to
 // report a problem and where the project lives.
 func (state *State) paintAboutSettings(page *settingsPage) {
@@ -243,6 +266,7 @@ func (state *State) paintAboutSettings(page *settingsPage) {
 				})
 			})
 		})
+		page.vivaColophon()
 	})
 }
 
@@ -264,6 +288,8 @@ func (state *State) clickAboutSettings(id ui.ID) bool {
 		state.openExternal(aboutRepoURL)
 	case hitAboutDocs:
 		state.openExternal(aboutDocsURL)
+	case hitAboutViva:
+		state.openExternal(aboutVivaURL)
 	default:
 		return false
 	}

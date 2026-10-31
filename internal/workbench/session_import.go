@@ -75,12 +75,12 @@ func (state *State) importSessions(client sessionimport.Client) {
 		return
 	}
 	if err != nil {
-		state.status = fmt.Sprintf(m.ImportFailedFmt, err)
+		state.showActionFailure(fmt.Sprintf(m.ImportPickerFmt, importClientName(client)), err, state.messages.ActionFeedback.FilePickerFailed)
 		return
 	}
 	result, err := sessionimport.Parse(client, paths)
 	if err != nil {
-		state.status = fmt.Sprintf(m.ImportFailedFmt, err)
+		state.showFileReadFailure(fmt.Sprintf(m.ImportPickerFmt, importClientName(client)), err, fmt.Sprintf(state.messages.ActionFeedback.ImportSessionsFailedFmt, importClientName(client)))
 		return
 	}
 	plan := state.sessionImportPlan(result)
@@ -89,6 +89,9 @@ func (state *State) importSessions(client sessionimport.Client) {
 	}
 	if result.Skipped > 0 {
 		plan.warnings = append(plan.warnings, fmt.Sprintf(m.ImportWarningSkippedFmt, result.Skipped))
+	}
+	if sessionImportHasLoopback(result) {
+		plan.warnings = append(plan.warnings, m.ImportWarningLoopback)
 	}
 	plan.warnings = append(plan.warnings, result.Warnings...)
 	// A file that holds passwords or keys in the clear is a file to delete, not
@@ -201,4 +204,15 @@ func (state *State) planStreamImport(plan *hostImportPlan, entry sessionimport.E
 	}
 	plan.nextHostID++
 	plan.hosts = append(plan.hosts, host)
+}
+
+// sessionImportHasLoopback reports a session aimed at this computer, which is
+// usually a one-shot bastion tunnel rather than a host worth keeping.
+func sessionImportHasLoopback(result sessionimport.Result) bool {
+	for _, entry := range result.Entries {
+		if entry.Protocol == sessionimport.SSH && sessionimport.IsLoopbackHost(entry.Host) {
+			return true
+		}
+	}
+	return false
 }

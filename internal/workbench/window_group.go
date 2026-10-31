@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/vivaui/viva/ui"
+	"motty/internal/completion"
 	layoutcore "motty/internal/workspace"
 )
 
@@ -15,8 +16,10 @@ import (
 
 // Group is the windows of a process.
 type Group struct {
-	mu      sync.Mutex
-	members []*State
+	mu               sync.Mutex
+	members          []*State
+	completionStores map[string]*completion.CatalogStore
+	historyClears    map[string]*historyClearJob
 	// frame is where the process's windows were last seen. It lives here, not
 	// in one window, so any window's save writes the newest place rather than
 	// the one it read at start.
@@ -54,8 +57,21 @@ func (group *Group) sessionCount() int {
 
 func (group *Group) join(state *State) {
 	group.mu.Lock()
-	defer group.mu.Unlock()
 	group.members = append(group.members, state)
+	job := group.historyClears[state.historyPath()]
+	group.mu.Unlock()
+	if job != nil {
+		// Only a clear still running concerns a window that opens now.
+		select {
+		case <-job.done:
+			job = nil
+		default:
+		}
+	}
+	state.history.clear = job
+	if job != nil {
+		job.subscribe(state.options.Invalidate)
+	}
 }
 
 func (group *Group) leave(state *State) {

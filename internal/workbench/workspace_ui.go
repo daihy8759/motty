@@ -28,13 +28,18 @@ func (state *State) workspacePixelBoundsFor(workspaceID layoutcore.WorkspaceID, 
 	bounds := state.baseWorkspacePixelBounds(size)
 	context, ok := state.deck.Context(workspaceID)
 	if ok && context.Open && size.Width >= contextDrawerAt {
-		panel := state.contextPanelExtent(bounds, context.Width) + 1
+		panel := state.contextPanelWidth(bounds, context) + 1
 		if context.Side == layoutcore.ContextLeft {
 			bounds.X += panel
 		}
 		bounds.Width = max(0, bounds.Width-panel)
 	}
 	// The assistant's panel sits on the right, so the panes end before it.
+	monitor := state.independentMonitorReserve(workspaceID, size)
+	if context.MonitorLeft {
+		bounds.X += monitor
+	}
+	bounds.Width = max(0, bounds.Width-monitor)
 	bounds.Width = max(0, bounds.Width-state.aiReserve(workspaceID, size))
 	return bounds
 }
@@ -43,6 +48,11 @@ func (state *State) contextPanelExtent(workspace ui.Rect, preferred float32) flo
 	maximum := min(layoutcore.MaxContextWidth, workspace.Width*0.45)
 	minimum := min(layoutcore.MinContextWidth, maximum)
 	return min(max(preferred, minimum), maximum)
+}
+
+func (state *State) contextPanelWidth(workspace ui.Rect, context layoutcore.ContextState) float32 {
+	width := context.Width
+	return state.contextPanelExtent(workspace, width)
 }
 
 func pixelBounds(frame ui.Rect, bounds FractionBounds) ui.Rect {
@@ -262,7 +272,10 @@ func (state *State) contextSession() *Session {
 
 func (state *State) paintContextPanel(canvas *ui.Canvas, size ui.Size, workspace ui.Rect) {
 	context, ok := state.deck.Context(state.deck.ActiveWorkspace())
-	if !ok || !context.Open || context.Kind != layoutcore.ContextSFTP {
+	if !ok || !context.Open || state.monitorDrawer(size) {
+		return
+	}
+	if context.Kind != layoutcore.ContextSFTP {
 		return
 	}
 	session := state.contextSession()
@@ -474,6 +487,7 @@ func (state *State) dragContextDivider(event ui.PointerEvent) ui.EventResult {
 	}
 	base := state.baseWorkspacePixelBounds(event.Viewport)
 	base.Width -= state.aiReserve(workspaceID, event.Viewport)
+	base.Width -= state.independentMonitorReserve(workspaceID, event.Viewport)
 	resizable := state.sftpPanelResizable(nil, event.Viewport, context)
 	ratio := resizable.FractionAt(event.X)
 	if context.Side == layoutcore.ContextRight {

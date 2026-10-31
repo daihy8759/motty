@@ -31,6 +31,12 @@ type Notification struct {
 // Write and must not block.
 func (t *Terminal) SetNotify(notify func(Notification)) { t.notifyFn = notify }
 
+// SetBell installs the receiver of the bell, BEL (0x07) outside a control
+// string, where it ends the string instead. The callback runs during Write
+// and must not block; a program that rings in a loop calls it for every BEL,
+// so the owner limits how often it sounds.
+func (t *Terminal) SetBell(bell func()) { t.bellFn = bell }
+
 // kittyPending is an OSC 99 notification whose chunks have not all arrived.
 type kittyPending struct {
 	id          string

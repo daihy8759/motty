@@ -11,6 +11,7 @@ import (
 
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/ui"
+	"motty/internal/localshell"
 	"motty/internal/sftpclient"
 	"motty/internal/sshconn"
 )
@@ -128,9 +129,30 @@ type terminalDrop struct {
 
 // FileDrop receives files dragged from the system over the window.
 func (state *State) FileDrop(event ui.FileDropEvent) ui.EventResult {
+	if event.Phase == ui.FileDropLeave {
+		return ui.EventResult{Repaint: state.clearDrop() || state.aiDropHover(false)}
+	}
+	// The assistant panel is a place of its own, over the page beside it: files
+	// dropped on it are attached to the next question.
+	if state.aiDropsOnPanel(event.X, event.Y) {
+		repaint := state.clearDrop()
+		if event.Phase == ui.FileDropOver {
+			return ui.EventResult{Handled: true, Repaint: state.aiDropHover(true) || repaint}
+		}
+		state.aiDropHover(false)
+		state.aiAttachPaths(event.Paths)
+		return ui.EventResult{Handled: len(event.Paths) > 0, Repaint: true}
+	}
+	left := state.aiDropHover(false)
+	result := state.fileDropOnPage(event)
+	result.Repaint = result.Repaint || left
+	return result
+}
+
+// fileDropOnPage is FileDrop for files that are not over the assistant: the file
+// panel and the terminals.
+func (state *State) fileDropOnPage(event ui.FileDropEvent) ui.EventResult {
 	switch event.Phase {
-	case ui.FileDropLeave:
-		return ui.EventResult{Repaint: state.clearDrop()}
 	case ui.FileDropOver:
 		if _, view := state.dropPanel(event.X, event.Y); view != nil {
 			row := state.dropFolderRow(view, event.Target)
@@ -177,7 +199,7 @@ func (state *State) FileDrop(event ui.FileDropEvent) ui.EventResult {
 	}
 	if state.terminalTakesPaths(event.X, event.Y) {
 		session, _ := state.sessionByIDPointer(state.activeSessionID)
-		session.term.send([]byte(quotedPaths(event.Paths) + " "))
+		session.term.send([]byte(quotedPaths(event.Paths, session.wslDistro()) + " "))
 		return ui.EventResult{Handled: true, Repaint: true}
 	}
 	return ui.EventResult{Repaint: repaint}
@@ -382,15 +404,32 @@ func (state *State) clearDropExcept(keep *sftpView) bool {
 	return changed
 }
 
-// quotedPaths makes paths safe to type into the shell of this computer.
-func quotedPaths(paths []string) string {
+// quotedPaths makes paths safe to type into the shell of this computer. A shell
+// in a WSL distribution takes the paths as that distribution names them, quoted
+// for a POSIX shell; one that cannot be named there is typed as it is.
+func quotedPaths(paths []string, distro string) string {
 	quoted := make([]string, len(paths))
 	for index, p := range paths {
-		if runtime.GOOS == "windows" {
+		switch {
+		case distro != "":
+			if linux, ok := localshell.WSLPath(p, distro); ok {
+				p = linux
+			}
+			quoted[index] = shellQuote(p)
+		case runtime.GOOS == "windows":
 			quoted[index] = `"` + strings.ReplaceAll(p, `"`, `""`) + `"`
-		} else {
+		default:
 			quoted[index] = shellQuote(p)
 		}
 	}
 	return strings.Join(quoted, " ")
+}
+
+// wslDistro is the WSL distribution a local session's shell runs in.
+func (session *Session) wslDistro() string {
+	if conn, ok := session.conn.(*localConn); ok {
+		distro, _ := localshell.WSLDistro(conn.shell)
+		return distro
+	}
+	return ""
 }

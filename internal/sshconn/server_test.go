@@ -28,17 +28,24 @@ type testServer struct {
 	question string // accepted keyboard-interactive question; empty disables it
 	// questions asks a whole keyboard-interactive round instead of question;
 	// answers, when set, are the replies it accepts, in order.
-	questions   []string
-	answers     []string
-	authorized  []ssh.PublicKey
-	banner      string
+	questions  []string
+	answers    []string
+	authorized []ssh.PublicKey
+	banner     string
+	version    string // identification string; empty keeps SSH-2.0-GopTest
+	// oneChannel ends the connection when a second channel is opened, the way
+	// a restricted gateway does.
+	oneChannel  bool
 	port        uint16 // fixed port to listen on; zero picks one
 	direct      string // exact direct-tcpip destination; empty refuses forwarding
 	exec        func(string) (string, uint32)
 	remote      bool // permits loopback-only tcpip-forward requests
 	blockDirect bool // leaves direct-tcpip requests unanswered
-	request     func(*ssh.ServerConn, *ssh.Request)
-	connected   func(*ssh.ServerConn)
+	// envFatal ends the connection on an env request, the way a gateway with a
+	// menu it starts itself may when the request is not one it implements.
+	envFatal  bool
+	request   func(*ssh.ServerConn, *ssh.Request)
+	connected func(*ssh.ServerConn)
 	// algorithms, when set, restricts what the server will negotiate, to stand
 	// in for an old device.
 	algorithms *ssh.Config
@@ -90,7 +97,11 @@ func startServer(t *testing.T, configure func(*testServer)) *testServer {
 		t.Fatal(err)
 	}
 	server.listener = listener
-	config := &ssh.ServerConfig{ServerVersion: "SSH-2.0-GopTest"}
+	version := server.version
+	if version == "" {
+		version = "SSH-2.0-GopTest"
+	}
+	config := &ssh.ServerConfig{ServerVersion: version}
 	if server.algorithms != nil {
 		config.Config = *server.algorithms
 	}
@@ -189,7 +200,13 @@ func startServer(t *testing.T, configure func(*testServer)) *testServer {
 					go ssh.DiscardRequests(requests)
 				}
 				go func() {
+					opened := 0
 					for newChannel := range channels {
+						opened++
+						if server.oneChannel && opened > 1 {
+							serverConn.Close()
+							return
+						}
 						switch newChannel.ChannelType() {
 						case "session":
 							if server.shell == nil && server.exec == nil && server.command == nil {
@@ -541,6 +558,10 @@ func serveSession(server *testServer, conn ssh.Conn, channel ssh.Channel, reques
 	for request := range requests {
 		switch request.Type {
 		case "env":
+			if server.envFatal {
+				conn.Close()
+				return
+			}
 			var payload struct{ Name, Value string }
 			ssh.Unmarshal(request.Payload, &payload)
 			shell.mu.Lock()

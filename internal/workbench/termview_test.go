@@ -228,8 +228,8 @@ func TestPaintingAnUnchangedTerminalAllocatesNothing(t *testing.T) {
 		t.Errorf("painting an unchanged terminal allocates %v times", allocs)
 	}
 	state.sessions[0].term.selection.selectRange(
-		term.Position{Row: 0, Column: 0},
-		term.Position{Row: 1, Column: 20},
+		state.sessions[0].term.screen.PointAt(term.Position{Row: 0, Column: 0}),
+		state.sessions[0].term.screen.PointAt(term.Position{Row: 1, Column: 20}),
 	)
 	paint()
 	if allocs := testing.AllocsPerRun(50, paint); allocs != 0 {
@@ -261,8 +261,8 @@ func BenchmarkPaintTerminalSelectionUnchanged(b *testing.B) {
 	}
 	state.Wake()
 	state.sessions[0].term.selection.selectRange(
-		term.Position{Row: 5, Column: 3},
-		term.Position{Row: 30, Column: 70},
+		state.sessions[0].term.screen.PointAt(term.Position{Row: 5, Column: 3}),
+		state.sessions[0].term.screen.PointAt(term.Position{Row: 30, Column: 70}),
 	)
 	var canvas ui.Canvas
 	size := ui.Size{Width: 1400, Height: 900}

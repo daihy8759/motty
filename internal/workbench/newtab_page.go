@@ -12,6 +12,7 @@ var newtabPageHits = tree.Feature("newtab-page")
 // saved hosts, then the full host list. Its hit identities are a block of their own.
 var (
 	hitNewTabLocal    = tree.ID(newtabPageHits, "new-tab-local")
+	hitNewTabShells   = tree.ID(newtabPageHits, "new-tab-shells")
 	hitNewTabHostList = tree.Sub(newtabPageHits, tree.Name("new-tab-host"))
 )
 
@@ -53,10 +54,10 @@ func (state *State) paintNewTabPage(canvas *ui.Canvas, bounds ui.Rect) {
 			f.Stack().Children(func() {
 				f.Row().Fill().Radius(radius.popup).Border(1, pal.line).Background(pal.surface)
 				f.Column().Children(func() {
-					state.newTabRow(f, hitNewTabLocal, local, m.LocalTerminal, local.Address, hosts > 0, width)
+					state.newTabRow(f, hitNewTabLocal, local, m.LocalTerminal, local.Address, hosts > 0, width, localShellSettingVisible())
 					for index := 0; index < hosts; index++ {
 						host := state.hosts[index]
-						state.newTabRow(f, hitNewTabHostList.At(index), host, host.Label, state.sessionAddress(host), index < hosts-1, width)
+						state.newTabRow(f, hitNewTabHostList.At(index), host, host.Label, state.sessionAddress(host), index < hosts-1, width, false)
 					}
 				})
 			})
@@ -76,8 +77,13 @@ func (state *State) paintNewTabPage(canvas *ui.Canvas, bounds ui.Rect) {
 
 // newTabRow declares one place a tab can connect to: its system, its name and,
 // at the far end, where it is. The system's badge is drawn into the slot kept for it.
-func (state *State) newTabRow(f *flex.Frame, id ui.ID, host Host, title, address string, separator bool, width float32) {
-	pal := state.pal
+// A row with shells also has an arrow after the address, which opens the menu of
+// the shells this computer can start; a secondary press on the row does too.
+func (state *State) newTabRow(f *flex.Frame, id ui.ID, host Host, title, address string, separator bool, width float32, shells bool) {
+	pal, m := state.pal, state.messages
+	if shells {
+		state.openLocalShellPickerOn(f.Canvas(), id, true)
+	}
 	var wash ui.Color
 	if f.Canvas().Hovered() == id || f.Canvas().FocusVisible() == id {
 		wash = pal.surfaceSoft
@@ -89,6 +95,19 @@ func (state *State) newTabRow(f *flex.Frame, id ui.ID, host Host, title, address
 			f.Text(title).FontSize(metrics.FontSizeM).Weight(ui.WeightMedium).Color(pal.text).LineHeight(22).Ellipsis()
 			f.Spacer()
 			f.Text(address).FontSize(metrics.FontSizeS).Color(pal.muted).LineHeight(20).Ellipsis().Shrink(0).MaxWidth(width*0.4).MarginSides(0, 0, 0, 12)
+			if shells {
+				var arrowWash ui.Color
+				if f.Canvas().Hovered() == hitNewTabShells || f.Canvas().FocusVisible() == hitNewTabShells {
+					arrowWash = pal.line
+				}
+				f.Stack().Size(28, 28).Shrink(0).MarginSides(0, -8, 0, 0).HitWith(hitNewTabShells, m.LocalShellChoose, ui.HitOptions{Role: ui.RoleButton, Hint: m.LocalShellChoose}).Children(func() {
+					f.Row().Fill().Radius(radius.control).Background(arrowWash)
+					f.Row().Fill().Items(flex.Center).Justify(flex.Center).Children(func() {
+						f.Icon(lucideIcons[iconChevronDown]).Size(14, 14).Color(pal.muted).Shrink(0)
+					})
+					state.chrome.newTabShells = f.Slot().Fill()
+				})
+			}
 		})
 		if separator {
 			f.Column().Fill().Justify(flex.End).Children(func() {
@@ -102,6 +121,10 @@ func (state *State) newTabRow(f *flex.Frame, id ui.ID, host Host, title, address
 func (state *State) clickNewTabPage(id ui.ID) bool {
 	var host Host
 	switch {
+	case id == hitNewTabShells:
+		arrow := state.chrome.newTabShells.Rect()
+		state.openLocalShellPicker(ui.Point{X: arrow.X + arrow.Width - 8, Y: arrow.Y + arrow.Height + 4}, true)
+		return true
 	case id == hitNewTabLocal:
 		state.pendingWorkspace = state.deck.ActiveWorkspace()
 		state.pendingPane = state.deck.ActivePane(state.pendingWorkspace)

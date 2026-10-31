@@ -44,6 +44,8 @@ func (h *sftpNativeHost) OpenWindow(config app.Config, canvas *ui.Canvas, closed
 func (h *sftpNativeHost) AddStatusItem(app.StatusItemConfig) (app.StatusItemControl, error) {
 	return nil, errors.New("not used")
 }
+func (h *sftpNativeHost) SetDockBadge(string) {}
+
 func (h *sftpNativeHost) Quit() {
 	for _, w := range h.windows {
 		w.Close()

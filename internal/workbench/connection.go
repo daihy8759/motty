@@ -76,6 +76,15 @@ type slowShellOpener interface{ opensShellSlowly() }
 
 func (realConn) opensShellSlowly() {}
 
+// pinger is a Connection that can measure its network round-trip time.
+type pinger interface {
+	Ping(context.Context) (time.Duration, error)
+}
+
+func (conn realConn) Ping(ctx context.Context) (time.Duration, error) {
+	return conn.Conn.Ping(ctx)
+}
+
 // Share opens another tab on this connection's authenticated client.
 func (conn realConn) Share(notify func()) (Connection, error) {
 	child, err := conn.Conn.Share(notify)
@@ -146,13 +155,19 @@ type Options struct {
 	// calls it on a page that has no tab to close. Nil leaves that key unbound.
 	CloseWindow func()
 	// Keystore keeps the data key of the saved-passwords vault. Nil uses the
-	// system's own secret store.
+	// system's own secret store, and a key file beside the vault where there is none.
 	Keystore vault.Keystore
 	// Dial starts a connection. Nil dials for real.
 	Dial func(sshconn.Config) Connection
 	// Log holds the program's recent log lines, for the diagnostics report. Nil
 	// leaves the report without any.
 	Log *diag.Log
+	// LogDir is where the program keeps its log and crash reports. The
+	// diagnostics report names it. Empty means the program keeps none.
+	LogDir string
+	// PreviousCrash is the crash report the previous run left, if it ended
+	// abnormally. The window says so once and the diagnostics report carries it.
+	PreviousCrash string
 	// SaveFile chooses a local download destination. Nil uses app.SaveFile.
 	SaveFile func(app.SaveFileOptions) (string, error)
 	// OpenFiles chooses local files for identity/config imports and uploads. Nil
@@ -167,6 +182,10 @@ type Options struct {
 	// StartAtLogin reads and changes starting the program at login. Nil hides
 	// the setting.
 	StartAtLogin *LoginStart
+	// StatusArea reports whether the application has an icon in the status
+	// area, which is what makes "stay there on close" a choice. Nil, or false,
+	// hides the setting.
+	StatusArea func() bool
 	// CheckUpdate asks the release feed for the newest version. Nil asks GitHub.
 	CheckUpdate func() (update.Release, error)
 	// Updater installs a newer release over the running program. Nil, or a nil
@@ -196,6 +215,10 @@ type Options struct {
 	// OpenPath opens a local document with the system's default application. Nil
 	// uses app.OpenPath.
 	OpenPath func(string) error
+	// FileIcon returns the system's icon for a local file or folder at the given
+	// pixel size, as the file panel shows an application bundle with its own icon.
+	// Nil uses app.FileIcon.
+	FileIcon func(path string, pixels int) (ui.Bitmap, error)
 	// EditPollInterval is how often a file open in the system's editor is looked
 	// at for a save. Zero means a second.
 	EditPollInterval time.Duration
@@ -244,6 +267,8 @@ type Options struct {
 	// Notify shows a desktop notification a terminal's program asked for. Nil
 	// uses app.SendNotification.
 	Notify func(app.Notification) error
+	// Bell sounds the terminal bell. Nil plays the system alert sound.
+	Bell func() error
 	// MonoFamilies lists the installed fixed-pitch font families. Nil uses
 	// app.MonospaceFamilies.
 	MonoFamilies func() []string
@@ -280,6 +305,9 @@ func (options Options) withDefaults() Options {
 	if options.OpenPath == nil {
 		options.OpenPath = app.OpenPath
 	}
+	if options.FileIcon == nil {
+		options.FileIcon = app.FileIcon
+	}
 	if options.EditPollInterval <= 0 {
 		options.EditPollInterval = defaultEditPollInterval
 	}
@@ -313,6 +341,9 @@ func (options Options) withDefaults() Options {
 	if options.Notify == nil {
 		options.Notify = app.SendNotification
 	}
+	if options.Bell == nil {
+		options.Bell = playBell
+	}
 	if options.MonoFamilies == nil {
 		options.MonoFamilies = app.MonospaceFamilies
 	}
@@ -345,7 +376,6 @@ const (
 	modalShortcutCapture
 	modalStateNotice
 	modalVaultUnlock
-	modalMasterPassword
 	modalVaultForget
 	modalHighlightRule
 	modalSnippet
@@ -365,7 +395,11 @@ const (
 	modalHistory
 	modalUpdate
 	modalUpdateProgress
+	modalDashboard
+	modalDashboardAdd
 	modalToolbarSettings
+	modalSFTPColumns
+	modalTerminalInput
 )
 
 // tone colors a session's headline.
@@ -389,7 +423,8 @@ func (state *State) startConnection(session *Session, host Host) {
 }
 
 func (state *State) startConnectionMode(session *Session, host Host, automatic bool) {
-	avoidShare := session.avoidShare
+	session.resetLatency()
+	avoidShare := session.avoidShare || loopbackTunnel(host)
 	session.avoidShare = false
 	state.stopSessionForwards(session.ID, false)
 	state.closeSFTP(session)
@@ -417,8 +452,12 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	session.jumpPath = ""
 	if host.ID == localHostID {
 		// A shell on this machine: nothing to dial, so it is connected at once.
-		conn := newLocalConn(state.localShell)
-		conn.dir = localStartupDirectory(session.localDirectory)
+		shell := host.localShell
+		if shell == "" {
+			shell = state.localShell
+		}
+		conn := newLocalConn(shell)
+		conn.dir = localStartupDirectory(session.localDirectory, conn.shell)
 		session.conn = conn
 		state.finishStartingConnection(session, automatic)
 		// There is no goroutine to report that it is connected, so say so now:
@@ -534,6 +573,8 @@ func (state *State) finishStartingConnection(session *Session, automatic bool) {
 		session.term = newTerminalWithScrollback(geometry.cols, geometry.rows, state.terminalScrollback)
 		state.configureTerminal(session)
 	} else {
+		// A reconnect invalidates any list built from the old prompt.
+		state.closeCompletionList()
 		t := session.term
 		t.shell, t.ended, t.live, t.inputSent, t.told = nil, false, false, false, toldNothing
 		t.resetFolderSync()
@@ -552,6 +593,8 @@ func (state *State) finishStartingConnection(session *Session, automatic bool) {
 // nothing for sessions whose status is unchanged and whose shell is quiet.
 func (state *State) Wake() {
 	defer state.flushLocalDirectories()
+	state.adoptHistoryClear()
+	state.adoptCompletion()
 	state.pumpFileWindows()
 	if state.syncPending {
 		state.syncPending = false
@@ -564,6 +607,7 @@ func (state *State) Wake() {
 		state.connectRestoredSessions()
 	}
 	state.advanceReconnects()
+	state.probeLatency()
 	findNow := state.now()
 	for index := range state.sessions {
 		session := &state.sessions[index]
@@ -576,9 +620,19 @@ func (state *State) Wake() {
 		state.pumpRemoteStats(session)
 		state.pumpDesktop(session)
 		state.pump(session)
+		// A session-local charset notice changes the available character grid.
+		// Resize after parsing output, never reentrantly from an OSC callback.
+		state.fitTerminal(session)
 		state.followTerminalDirectory(session)
+		if session.ID == state.activeSessionID && state.activeSection == sectionTerminal && state.monitorShown(state.deck.ActiveWorkspace()) {
+			state.ensureMonitor(session)
+		} else if session.stats != nil && session.stats.panel.worker != nil {
+			session.stats.panel.worker.Close()
+			session.stats.panel.worker = nil
+		}
 		if session.term != nil {
 			session.term.find.refreshIfChanged(session.term.screen, state.messages, findNow)
+			state.stepSelectionScroll(session.term, findNow)
 		}
 	}
 	state.pumpForwards()
@@ -589,6 +643,7 @@ func (state *State) Wake() {
 		state.scheduleUpdateCheck(state.update.firstDelay)
 	}
 	state.pumpSFTPConnections()
+	state.pumpDashboard()
 	state.showNextPrompt()
 	state.drainAI()
 	state.syncSFTPWindows()
@@ -600,7 +655,7 @@ func (state *State) Wake() {
 // lines of its story on the screen.
 func (state *State) apply(session *Session, status sshconn.Status) {
 	if session.autoRestore {
-		if isPromptPhase(status.Phase) && !state.canAutofill(status) {
+		if isPromptPhase(status.Phase) && !state.canAutofill(session, status) {
 			// Restore only connects what needs no one; a question for the user
 			// returns the tab to its page instead of opening a dialog.
 			state.abandonRestoredConnect(session)
@@ -881,6 +936,12 @@ func (state *State) showNextPrompt() {
 	if state.modal != modalNone {
 		return
 	}
+	// A vault still kept by the master password of an earlier version cannot
+	// answer anything until that password has been typed once.
+	if vaultFile := state.secrets.vault; vaultFile != nil && vaultFile.NeedsConversion() && !state.secrets.declined {
+		state.openVaultUnlock(nil, nil)
+		return
+	}
 	for session := range state.connectionSessions() {
 		key := promptKey(session.phase, session.attempt, session.identity, session.endpoint, session.role)
 		if session.conn == nil || key == 0 || key == session.answered {
@@ -891,13 +952,8 @@ func (state *State) showNextPrompt() {
 			// field per question before autofill can answer a single one.
 			state.preparePassword(session)
 		}
-		switch state.autofill(session) {
-		case autofillSent:
+		if state.autofill(session) == autofillSent {
 			continue
-		case autofillNeedsUnlock:
-			state.openVaultUnlock(session, nil)
-			state.raiseSFTPAuthentication(session)
-			return
 		}
 		state.modalSession = session.ID
 		switch session.phase {
@@ -943,8 +999,20 @@ func (state *State) showNextPrompt() {
 }
 
 func (state *State) closeModal() {
+	if state.modal == modalTerminalInput {
+		state.inputConfirmation = terminalInputConfirmation{}
+	}
+	if state.modal == modalDashboard {
+		state.dashboard.editor.order.Cancel()
+	}
+	if state.modal == modalDashboardAdd {
+		state.dashboard.addHosts = nil
+	}
 	if state.modal == modalToolbarSettings {
 		state.toolbarEditor.list.Cancel()
+	}
+	if state.modal == modalSFTPColumns {
+		state.sftpColumnEditor.list.Cancel()
 	}
 	if state.modal == modalRemoteClipboard {
 		state.clipboardRequest = remoteClipboardRequest{}
@@ -954,6 +1022,7 @@ func (state *State) closeModal() {
 	}
 	state.modal = modalNone
 	state.modalSession = 0
+	state.reveal.reset()
 	state.passwordFields = nil
 	state.passwordRects = nil
 	state.passwordBoxes = nil
@@ -961,7 +1030,7 @@ func (state *State) closeModal() {
 	state.passwordError = ""
 	state.keyPassphrase = text.Editor{}
 	state.keyPassphraseError = ""
-	state.secrets.unlock, state.secrets.newPassword, state.secrets.confirmPassword = text.Editor{}, text.Editor{}, text.Editor{}
+	state.secrets.unlock = text.Editor{}
 	state.secrets.dialogError = ""
 	state.form = formDialog{}
 	state.closeAsked = false
@@ -969,6 +1038,11 @@ func (state *State) closeModal() {
 
 // promptSession returns the session the open prompt belongs to.
 func (state *State) promptSession() *Session {
+	for _, source := range state.dashboard.sources {
+		if source.session.ID == state.modalSession {
+			return &source.session
+		}
+	}
 	for index := range state.sessions {
 		if state.sessions[index].ID == state.modalSession {
 			return &state.sessions[index]

@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -122,7 +123,7 @@ func TestFontPickerKeysMoveScrollAndLeaveTheFontAloneOnEscape(t *testing.T) {
 		many[index] = "Family " + string(rune('A'+index/10)) + string(rune('0'+index%10))
 	}
 	state := newTestState(t, fontOptions(t, many))
-	state.openFontPicker()
+	state.openFontPicker(false)
 	waitFor(t, state, func() bool { return !state.fonts.loading })
 	state.refreshFontPicker()
 	if len(state.fonts.filtered) != 42 || state.fonts.selected != 0 {
@@ -151,7 +152,7 @@ func TestFontPickerKeysMoveScrollAndLeaveTheFontAloneOnEscape(t *testing.T) {
 	}
 
 	// Clicking a row chooses it.
-	state.openFontPicker()
+	state.openFontPicker(false)
 	state.Click(hitFontPickerItemList.At(3)) // System, Classic, Family A0, Family A1
 	if state.fonts.family != "Family A1" || state.modal != modalNone {
 		t.Fatalf("family %q modal %d", state.fonts.family, state.modal)
@@ -161,7 +162,7 @@ func TestFontPickerKeysMoveScrollAndLeaveTheFontAloneOnEscape(t *testing.T) {
 func TestTheBuiltInFacesAreChosenFromTheSameList(t *testing.T) {
 	state := newTestState(t, fontOptions(t, testFonts))
 	state.useTerminalFont(fontEntry{family: "Menlo"})
-	state.openFontPicker()
+	state.openFontPicker(false)
 	waitFor(t, state, func() bool { return !state.fonts.loading })
 	state.Click(hitFontPickerItemList.At(1)) // Classic
 	if state.terminalFontFace != ui.MonoClassic || state.fonts.family != "" {
@@ -181,5 +182,99 @@ func TestADamagedFamilyInTheStateFileIsIgnored(t *testing.T) {
 	state := newTestState(t, options)
 	if state.fonts.family != "" || state.terminalFontFace != ui.MonoClassic {
 		t.Fatalf("family %q face %d", state.fonts.family, state.terminalFontFace)
+	}
+}
+
+func TestFallbackFontsAreAddedInOrderKeptAndRestored(t *testing.T) {
+	options := fontOptions(t, testFonts)
+	state := newTestState(t, options)
+	state.useTerminalFont(fontEntry{family: "Menlo"})
+	state.openFontPicker(true)
+	waitFor(t, state, func() bool { return !state.fonts.loading })
+	state.refreshFontPicker()
+	for _, index := range state.fonts.filtered {
+		if state.fonts.entries[index].family == "Menlo" || state.fonts.entries[index].family == "" {
+			t.Fatalf("the picker for a fallback offers %+v", state.fonts.entries[index])
+		}
+	}
+	state.Key(ui.KeyEvent{Key: ui.KeyEnter, Target: hitFontPickerSearch}) // Fira Code
+	state.openFontPicker(true)
+	typeInto(state, hitFontPickerSearch, "iosev")
+	state.Key(ui.KeyEvent{Key: ui.KeyEnter, Target: hitFontPickerSearch})
+	if got := state.fonts.fallbacks; len(got) != 2 || got[0] != "Fira Code" || got[1] != "Iosevka" {
+		t.Fatalf("fallbacks = %q", got)
+	}
+	if got := ui.MonoFallbacks(state.terminalFontFace); len(got) != 2 || ui.MonoFamilyName(state.terminalFontFace) != "Menlo" {
+		t.Fatalf("the terminal draws in %q behind %q", got, ui.MonoFamilyName(state.terminalFontFace))
+	}
+	state.openFontPicker(true)
+	state.refreshFontPicker()
+	for _, index := range state.fonts.filtered {
+		if name := state.fonts.entries[index].family; name == "Fira Code" || name == "Iosevka" {
+			t.Fatalf("%s is offered again", name)
+		}
+	}
+	state.closeModal()
+
+	restored := newTestState(t, options)
+	if got := restored.fonts.fallbacks; len(got) != 2 || got[0] != "Fira Code" || got[1] != "Iosevka" || len(ui.MonoFallbacks(restored.terminalFontFace)) != 2 {
+		t.Fatalf("restored fallbacks = %q", got)
+	}
+	if !restored.clearFallbackFonts() || len(ui.MonoFallbacks(restored.terminalFontFace)) != 0 || restored.fonts.family != "Menlo" {
+		t.Fatal("clearing the fallbacks must leave the font alone")
+	}
+}
+
+func TestFallbackFontsAreLimitedAndNeverRepeatTheFont(t *testing.T) {
+	state := newTestState(t, fontOptions(t, testFonts))
+	state.useTerminalFont(fontEntry{family: "Menlo"})
+	if state.addFallbackFont("Menlo") || state.addFallbackFont("") || state.addFallbackFont("a,b") {
+		t.Fatal("an unusable family was added")
+	}
+	for _, name := range []string{"Fira Code", "Iosevka", "JetBrains Mono"} {
+		if !state.addFallbackFont(name) {
+			t.Fatalf("%s was not added", name)
+		}
+	}
+	if state.addFallbackFont("Another") || len(state.fonts.fallbacks) != maxFallbackFonts {
+		t.Fatalf("fallbacks = %q", state.fonts.fallbacks)
+	}
+	if actions := state.fallbackActions(); len(actions) != 1 || actions[0].ID != hitSettingsFallbackClear {
+		t.Fatalf("a full list offers %d actions: it can only be cleared", len(actions))
+	}
+	// Choosing a fallback as the font takes it out from behind.
+	state.useTerminalFont(fontEntry{family: "Iosevka"})
+	if got := state.fonts.fallbacks; len(got) != 2 || slices.Contains(got, "Iosevka") {
+		t.Fatalf("fallbacks = %q", got)
+	}
+}
+
+func TestFallbackFontsNotInstalledHereAreSkippedButNotForgotten(t *testing.T) {
+	options := fontOptions(t, testFonts)
+	first := newTestState(t, options)
+	first.useTerminalFont(fontEntry{family: "Menlo"})
+	first.addFallbackFont("Fira Code")
+	first.addFallbackFont("Songti Elsewhere") // chosen on another computer
+	first.save()
+
+	other := newTestState(t, options)
+	waitFor(t, other, func() bool { return other.fonts.installed != nil })
+	if got := ui.MonoFallbacks(other.terminalFontFace); len(got) != 1 || got[0] != "Fira Code" {
+		t.Fatalf("the face behind a missing family draws with %q", got)
+	}
+	if len(other.fonts.fallbacks) != 2 || other.snapshot().TerminalFontFallbacks[1] != "Songti Elsewhere" {
+		t.Fatalf("the choice was changed for this computer: %q", other.fonts.fallbacks)
+	}
+}
+
+func TestADamagedFallbackListInTheStateFileIsCleaned(t *testing.T) {
+	options := fontOptions(t, testFonts)
+	saved := savedState{TerminalFontFamily: "Menlo", TerminalFontFallbacks: []string{"Menlo", "a\nb", " Iosevka ", "Iosevka", "A", "B", "C", "D"}}
+	if err := saveState(options.StatePath, saved); err != nil {
+		t.Fatal(err)
+	}
+	state := newTestState(t, options)
+	if got := state.fonts.fallbacks; len(got) != maxFallbackFonts || got[0] != "Iosevka" || got[1] != "A" || got[2] != "B" {
+		t.Fatalf("fallbacks = %q", got)
 	}
 }

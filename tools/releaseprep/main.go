@@ -117,9 +117,12 @@ func prepare(d deps, o options, out io.Writer) error {
 	fmt.Fprintf(out, "== preflight for %s\n", tag)
 
 	notes := filepath.Join(notesDir, o.version+".md")
+	// The optional English notes are written in the same commit as the Chinese
+	// ones, so both may be untracked when the preflight runs.
+	prepared := []string{notes, filepath.Join(notesDir, o.version+".en.md")}
 	if status, err := d.git("status", "--porcelain"); err != nil {
 		return err
-	} else if dirty := dirtyExcept(status, notes); dirty != "" {
+	} else if dirty := dirtyExcept(status, prepared); dirty != "" {
 		return fmt.Errorf("the worktree is not clean (%s); commit or undo those changes first", dirty)
 	}
 	branch, err := d.git("branch", "--show-current")
@@ -365,13 +368,20 @@ func compareVersions(a, b string) int {
 // dirtyExcept reports the first changed path other than the notes file being
 // prepared, which is written before the version bump and stays untracked until
 // the release commit.
-func dirtyExcept(status, allowed string) string {
+func dirtyExcept(status string, allowed []string) string {
 	for _, line := range strings.Split(status, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		if strings.HasSuffix(line, " "+allowed) {
+		keep := false
+		for _, path := range allowed {
+			if strings.HasSuffix(line, " "+path) {
+				keep = true
+				break
+			}
+		}
+		if keep {
 			continue
 		}
 		return line

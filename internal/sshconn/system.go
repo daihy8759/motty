@@ -87,6 +87,19 @@ var osReleaseIDs = map[string]RemoteSystem{
 
 const remoteSystemCommand = `printf 'kernel=%s\n' "$(uname -s 2>/dev/null)"; if [ -r /etc/os-release ]; then . /etc/os-release; printf 'id=%s\n' "$ID"; fi`
 
+// standardImplementation reports whether the server's identification string
+// names an SSH implementation whose optional protocol behavior is safe to use
+// beside an interactive shell. Only these receive the system and shell
+// integration probes, which open a second session, and the locale environment
+// request. A gateway may answer any of those by ending the whole connection,
+// so an unrecognized banner only gets the pty and shell its menu needs.
+func standardImplementation(banner string) bool {
+	banner = strings.ToLower(banner)
+	return strings.Contains(banner, "openssh") ||
+		strings.Contains(banner, "dropbear") ||
+		strings.Contains(banner, "libssh")
+}
+
 // classifyBanner is what the server's identification string alone says. A
 // distribution banner is only a first guess: derivatives share their parent's
 // OpenSSH, so a Linux guess is refined by asking the host.

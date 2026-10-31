@@ -63,7 +63,9 @@ func TestPressingTheWordsOfAControlFocusesOrFlipsIt(t *testing.T) {
 
 	state.Click(hitSettings)
 	state.selectSettingsCategory(settingsTerminal)
-	driver.Resize(1100, 900)
+	// This tests label activation, so keep the cursor row visible below the
+	// learning and completion controls. Scrolling is covered separately.
+	driver.Resize(1100, 1400)
 	steady := state.terminalCursorSteady
 	x, y = labelPoint(t, driver, hitSettingsCursorToggle)
 	if err := driver.Click(x, y); err != nil {

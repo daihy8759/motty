@@ -52,15 +52,19 @@ func integrationCommand(shell string, tokens ...string) string {
 // integrationScript is the sh program that starts shell, taken as its first
 // argument, with reporting; empty when the shell or token is not accepted.
 func integrationScript(shell string, tokens ...string) string {
+	return integrationScriptWith(shell, false, tokens...)
+}
+
+// integrationScriptWith is integrationScript, optionally taking the DEBUG-trap
+// path for command-start reports that only Bash before 4.4 needs, so that it can
+// be tested on a current Bash.
+func integrationScriptWith(shell string, forceTrap bool, tokens ...string) string {
 	suffix := ""
 	if len(tokens) > 0 && tokens[0] != "" {
-		token := tokens[0]
-		if len(token) > 128 || strings.IndexFunc(token, func(r rune) bool {
-			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_')
-		}) >= 0 {
+		if !validIntegrationToken(tokens[0]) {
 			return ""
 		}
-		suffix = ";motty=" + token
+		suffix = ";motty=" + tokens[0]
 	}
 	if !strings.HasPrefix(shell, "/") || strings.IndexFunc(shell, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
 		return ""
@@ -69,6 +73,18 @@ func integrationScript(shell string, tokens ...string) string {
 	if name != "bash" && name != "zsh" {
 		return ""
 	}
+	return startScript(name, directoryReportFunction, suffix, forceTrap)
+}
+
+func validIntegrationToken(token string) bool {
+	return len(token) <= 128 && strings.IndexFunc(token, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_')
+	}) < 0
+}
+
+// startScript starts the shell in $1 ("bash" or "zsh") with a private startup
+// that sources the user's own files and then reports through report.
+func startScript(name, report, suffix string, forceTrap bool) string {
 	script := `_motty_umask=$(umask)
 umask 077
 _motty_dir=$(mktemp -d "${TMPDIR:-/tmp}/motty-shell.XXXXXXXX") || { umask "$_motty_umask"; exec "$1" -l; }
@@ -77,7 +93,7 @@ trap 'exit 129' HUP
 trap 'exit 143' TERM
 `
 	if name == "bash" {
-		script += "cat > \"$_motty_dir/bashrc\" <<'MOTTY_BASH'\n" + bashIntegration + "\nMOTTY_BASH\n" +
+		script += "cat > \"$_motty_dir/bashrc\" <<'MOTTY_BASH'\n" + bashIntegration(report, forceTrap) + "\nMOTTY_BASH\n" +
 			`umask "$_motty_umask"
 MOTTY_SHELL_DIR=$_motty_dir "$1" --rcfile "$_motty_dir/bashrc" -i
 `
@@ -95,6 +111,11 @@ MOTTY_ENV
 for _motty_file in .zprofile .zshrc .zlogin; do
 cat > "$_motty_dir/$_motty_file" <<'MOTTY_START'
 ZDOTDIR=$_motty_user_zdotdir
+# /etc/zshrc can derive HISTFILE from the private ZDOTDIR. Repair that default
+# before the user's startup files choose their own history path.
+if [[ ${HISTFILE-} == "$_motty_runtime/.zsh_history" ]]; then
+    HISTFILE=$ZDOTDIR/.zsh_history
+fi
 MOTTY_START
 printf '[[ -r "$ZDOTDIR/%s" ]] && source "$ZDOTDIR/%s"\n' "$_motty_file" "$_motty_file" >> "$_motty_dir/$_motty_file"
 if [ "$_motty_file" != .zlogin ]; then
@@ -105,7 +126,7 @@ MOTTY_NEXT
 fi
 done
 cat >> "$_motty_dir/.zlogin" <<'MOTTY_ZSH'
-` + zshIntegration + `
+` + zshIntegration(report) + `
 if [[ -z $_motty_user_zdotdir_set && $ZDOTDIR == $HOME ]]; then unset ZDOTDIR; fi
 rm -rf -- "$_motty_runtime"
 unset _motty_runtime _motty_user_zdotdir _motty_user_zdotdir_set
@@ -115,13 +136,93 @@ MOTTY_USER_ZDOTDIR=${ZDOTDIR-$HOME} MOTTY_USER_ZDOTDIR_SET=${ZDOTDIR+x} ZDOTDIR=
 `
 	}
 	script += "_motty_status=$?\nexit \"$_motty_status\"\n"
+	script = strings.ReplaceAll(script, "__MOTTY_INPUT_TOKEN__", strings.TrimPrefix(suffix, ";motty="))
 	return strings.ReplaceAll(script, "__MOTTY_SUFFIX__", suffix)
 }
+
+// WSLIntegrationScript is the sh program a WSL distribution runs to start its
+// user's login shell with folder and prompt reporting. The folder it reports
+// is the Windows path of the shell's folder, which wslpath makes of the Linux
+// one, so a Windows program can open it: Windows Terminal's OSC 9;9, with the
+// prompt markers bound to token. Before starting the shell it changes into the
+// folder named by the environment variable startDirectory, a Linux path or a
+// Windows one, when there is one and it exists. The result is empty for a
+// token or variable name that is not accepted.
+func WSLIntegrationScript(token, startDirectory string) string {
+	if token == "" || !validIntegrationToken(token) || !validVariableName(startDirectory) {
+		return ""
+	}
+	suffix := ";motty=" + token
+	return `_motty_cd=${` + startDirectory + `-}
+unset ` + startDirectory + `
+if [ -n "$_motty_cd" ]; then
+    case $_motty_cd in
+        /*) ;;
+        *) _motty_cd=$(wslpath -u "$_motty_cd" 2>/dev/null) ;;
+    esac
+    if [ -n "$_motty_cd" ]; then cd -- "$_motty_cd" 2>/dev/null; fi
+fi
+unset _motty_cd
+_motty_shell=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f7)
+[ -x "$_motty_shell" ] || _motty_shell=${SHELL-}
+[ -x "$_motty_shell" ] || _motty_shell=/bin/sh
+set -- "$_motty_shell"
+case ${_motty_shell##*/} in
+bash)
+` + startScript("bash", wslReportFunction, suffix, false) + `;;
+zsh)
+` + startScript("zsh", wslReportFunction, suffix, false) + `;;
+*)
+    exec "$_motty_shell" -l
+    ;;
+esac
+`
+}
+
+func validVariableName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !(c >= 'A' && c <= 'Z' || c == '_' || i > 0 && c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// wslReportFunction reports where the prompt is as a Windows path. wslpath is a
+// process, so it runs only when the folder has changed. A path with a control
+// character is not reported at all: it could end the report early and have the
+// rest read as terminal output.
+const wslReportFunction = `__motty_report() {
+    local _motty_status=$?
+    __motty_input_report
+    if [[ $PWD != "${_motty_wsl_pwd-}" ]]; then
+        _motty_wsl_pwd=$PWD
+        _motty_wsl_dir=$(wslpath -w "$PWD" 2>/dev/null)
+        case $_motty_wsl_dir in
+            *[[:cntrl:]]*) _motty_wsl_dir= ;;
+        esac
+    fi
+    printf '\033]133;A__MOTTY_SUFFIX__\007'
+    if [[ -n ${_motty_wsl_dir-} ]]; then
+        printf '\033]9;9;%s\007' "$_motty_wsl_dir"
+    fi
+    case $PS1 in
+        *"$_motty_prompt_marker") ;;
+        *) PS1=$PS1$_motty_prompt_marker ;;
+    esac
+    return "$_motty_status"
+}`
 
 // Encode bytes, not characters: file URI reserved characters and non-ASCII
 // paths must round-trip through the terminal parser without shell evaluation.
 const directoryReportFunction = `__motty_report() {
-    local _motty_status=$? LC_ALL=C _motty_path= _motty_char _motty_hex _motty_i
+    local _motty_status=$?
+    __motty_input_report
+    local LC_ALL=C _motty_path= _motty_char _motty_hex _motty_i
     for ((_motty_i=0; _motty_i<${#PWD}; _motty_i++)); do
         _motty_char=${PWD:_motty_i:1}
         case $_motty_char in
@@ -137,7 +238,15 @@ const directoryReportFunction = `__motty_report() {
     return "$_motty_status"
 }`
 
-const bashIntegration = `_motty_runtime=$MOTTY_SHELL_DIR
+func bashIntegration(report string, forceTrap bool) string {
+	force := "0"
+	if forceTrap {
+		force = "1"
+	}
+	return bashIntegrationHead + inputEnvironmentFunction + report + strings.ReplaceAll(bashIntegrationTail, "__MOTTY_FORCE__", force)
+}
+
+const bashIntegrationHead = `_motty_runtime=$MOTTY_SHELL_DIR
 unset MOTTY_SHELL_DIR
 [[ -r /etc/profile ]] && source /etc/profile
 for _motty_profile in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
@@ -148,20 +257,62 @@ done
 for _motty_bashrc in /etc/bash.bashrc "$HOME/.bashrc"; do
     if [[ -r $_motty_bashrc ]]; then source "$_motty_bashrc"; fi
 done
-` + directoryReportFunction + `
+`
+
+const bashIntegrationTail = `
 _motty_prompt_marker='\[\e]133;B__MOTTY_SUFFIX__\a\]'
 case $(declare -p PROMPT_COMMAND 2>/dev/null) in
     'declare -a '*) PROMPT_COMMAND+=(__motty_report) ;;
     *) PROMPT_COMMAND=${PROMPT_COMMAND:+$PROMPT_COMMAND$'\n'}__motty_report ;;
 esac
-if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
+if (( __MOTTY_FORCE__ == 0 && (BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4)) )); then
     PS0=$'\e]133;C__MOTTY_SUFFIX__\a'${PS0-}
     printf '\033]133;C__MOTTY_SUFFIX__\007'
+else
+    # No PS0 before Bash 4.4: report the start of a command line from a DEBUG
+    # trap, which runs before every simple command. PROMPT_COMMAND ends by
+    # arming it, and the first command after that reports once and disarms.
+    # An empty Enter reruns PROMPT_COMMAND, whose first entry disarms again so
+    # that its own commands never count. An array PROMPT_COMMAND (Bash 5.1+) is
+    # not taken here; those versions have PS0.
+    case $(declare -p PROMPT_COMMAND 2>/dev/null) in
+        'declare -a '*) ;;
+        *)
+            __motty_disarm() { _motty_armed=0; }
+            __motty_arm() { _motty_armed=1; }
+            __motty_debug() {
+                [[ ${_motty_armed-} == 1 && $BASH_COMMAND != __motty_disarm && -z ${COMP_POINT-} ]] || return 0
+                _motty_armed=0
+                printf '\033]133;C__MOTTY_SUFFIX__\007'
+            }
+            _motty_armed=0
+            PROMPT_COMMAND=__motty_disarm$'\n'${PROMPT_COMMAND:+$PROMPT_COMMAND$'\n'}__motty_arm
+            # Keep the user's own DEBUG trap and run it first, so that it sees
+            # the same $?, $_ and BASH_COMMAND as without us. trap -p is read
+            # through a file because a command substitution is a subshell.
+            trap -p DEBUG > "$_motty_runtime/debug-trap"
+            _motty_trap=$(<"$_motty_runtime/debug-trap")
+            __motty_unquote() { eval "set -- ${1#trap -- }"; _motty_trap=$1; }
+            if [[ -n $_motty_trap ]]; then
+                __motty_unquote "$_motty_trap"
+                trap -- "$_motty_trap"$'\n''__motty_debug' DEBUG
+            else
+                trap -- '__motty_debug' DEBUG
+            fi
+            unset -f __motty_unquote
+            unset _motty_trap
+            printf '\033]133;C__MOTTY_SUFFIX__\007'
+            ;;
+    esac
 fi
 rm -rf -- "$_motty_runtime"
 unset _motty_runtime _motty_profile`
 
-const zshIntegration = directoryReportFunction + `
+func zshIntegration(report string) string {
+	return inputEnvironmentFunction + report + zshIntegrationTail
+}
+
+const zshIntegrationTail = `
 _motty_prompt_marker=$'%{\e]133;B__MOTTY_SUFFIX__\a%}'
 typeset -ga precmd_functions
 precmd_functions+=(__motty_report)

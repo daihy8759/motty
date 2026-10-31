@@ -53,6 +53,8 @@ var (
 	hitAISetFormKindClaude    = tree.ID(aiSettingsHits, "ai-set-form-kind-claude")
 	hitAISetFormAuthAPIKey    = tree.ID(aiSettingsHits, "ai-set-form-auth-api-key")
 	hitAISetFormAuthBearer    = tree.ID(aiSettingsHits, "ai-set-form-auth-bearer")
+	hitAISetFormFormatChat    = tree.ID(aiSettingsHits, "ai-set-form-format-chat")
+	hitAISetFormFormatResp    = tree.ID(aiSettingsHits, "ai-set-form-format-responses")
 	hitAISetFormPreset        = tree.ID(aiSettingsHits, "ai-set-form-preset")
 	hitAISetFormPresetDismiss = tree.ID(aiSettingsHits, "ai-set-form-preset-dismiss")
 	hitAISetFormPresetItems   = tree.Sub(aiSettingsHits, tree.Name("ai-set-form-preset-item"))
@@ -160,6 +162,7 @@ type aiSettingsUI struct {
 	cliAutoPath    string
 	cliPathMissing bool
 	authStyle      string // Anthropic only; empty means the API key default
+	apiFormat      string // OpenAI-compatible only; empty means Chat Completions
 	hadKey         bool
 	formErr        string
 	// deleteID is the provider the delete question is about.
@@ -396,6 +399,14 @@ func (state *State) aiDialogClick(id ui.ID) {
 			if cfg.kind == store.KindAnthropic {
 				cfg.authStyle = store.AuthStyleBearer
 			}
+		case hitAISetFormFormatChat:
+			if cfg.kind == store.KindOpenAI {
+				cfg.apiFormat = ""
+			}
+		case hitAISetFormFormatResp:
+			if cfg.kind == store.KindOpenAI {
+				cfg.apiFormat = store.APIFormatResponses
+			}
 		}
 	case aiDialogDelete:
 		switch id {
@@ -478,7 +489,7 @@ func (state *State) aiCloseDialog() {
 	cfg.dialog, cfg.editID, cfg.deleteID, cfg.formErr, cfg.hadKey, cfg.presetOpen = aiDialogNone, "", "", "", false, false
 	cfg.notice = ""
 	cfg.name, cfg.baseURL, cfg.apiKey = text.Editor{}, text.Editor{}, text.Editor{}
-	cfg.cliPath, cfg.authStyle = text.Editor{}, ""
+	cfg.cliPath, cfg.authStyle, cfg.apiFormat = text.Editor{}, "", ""
 	cfg.cliAutoPath, cfg.cliPathMissing = "", false
 	// The import candidates hold credentials in memory; closing the dialog is
 	// also how they are forgotten.
@@ -496,7 +507,7 @@ func (state *State) aiSettingsPointer(event ui.PointerEvent) (ui.EventResult, bo
 
 func (state *State) aiSettingsScroll(event ui.ScrollEvent) (ui.EventResult, bool) {
 	if state.ai.login != nil && state.ai.cfg.dialog == aiDialogCLILogin {
-		state.ai.login.term.screen.Scroll(int(event.DeltaY / max(state.cellHeight, 1)))
+		state.ai.login.term.screen.Scroll(int(event.StepY(state.cellHeight) / max(state.cellHeight, 1)))
 		return ui.EventResult{Handled: true, Repaint: true}, true
 	}
 	return ui.EventResult{}, false
@@ -540,6 +551,7 @@ func (state *State) aiSettingsKey(event ui.KeyEvent) (ui.EventResult, bool) {
 	}
 	var kind [2]components.SegmentOption
 	var auth [2]components.SegmentOption
+	var format [2]components.SegmentOption
 	var risks [3]components.SegmentOption
 	var steps [3]components.SegmentOption
 	var lines [4]components.SegmentOption
@@ -552,6 +564,9 @@ func (state *State) aiSettingsKey(event ui.KeyEvent) (ui.EventResult, bool) {
 	case hitAISetFormAuthAPIKey, hitAISetFormAuthBearer:
 		auth = state.aiAuthOptions()
 		options = auth[:]
+	case hitAISetFormFormatChat, hitAISetFormFormatResp:
+		format = state.aiFormatOptions()
+		options = format[:]
 	case hitAISetRiskLow, hitAISetRiskMedium, hitAISetRiskHigh:
 		risks = state.aiRiskOptions()
 		options = risks[:]
@@ -617,6 +632,16 @@ func (state *State) aiAuthOptions() [2]components.SegmentOption {
 	return [...]components.SegmentOption{
 		{ID: hitAISetFormAuthAPIKey, Label: m.FormAuthAPIKey},
 		{ID: hitAISetFormAuthBearer, Label: m.FormAuthBearer},
+	}
+}
+
+// aiFormatOptions is the OpenAI-compatible protocol choice. It is shown only for
+// OpenAI-compatible providers: an Anthropic provider has a single protocol.
+func (state *State) aiFormatOptions() [2]components.SegmentOption {
+	m := state.messages.AISettings
+	return [...]components.SegmentOption{
+		{ID: hitAISetFormFormatChat, Label: m.FormFormatChat},
+		{ID: hitAISetFormFormatResp, Label: m.FormFormatResponses},
 	}
 }
 
@@ -760,7 +785,7 @@ func (state *State) aiOpenProviderForm(id string) {
 		return
 	}
 	cfg.editID, cfg.kind, cfg.hadKey = provider.ID, provider.Kind, provider.HasKey
-	cfg.authStyle = provider.AuthStyle
+	cfg.authStyle, cfg.apiFormat = provider.AuthStyle, provider.APIFormat
 	cfg.name.Insert(provider.Name)
 	cfg.baseURL.Insert(provider.BaseURL)
 	cfg.cliPath.Insert(provider.CLIPath)
@@ -821,6 +846,8 @@ func (state *State) aiSubmitProvider() {
 		}
 	} else if cfg.kind == store.KindAnthropic {
 		provider.AuthStyle = cfg.authStyle
+	} else {
+		provider.APIFormat = cfg.apiFormat
 	}
 	// A new provider, or one reached differently, has models nobody has listed yet.
 	refetch := cfg.editID == ""
@@ -894,7 +921,7 @@ func (state *State) aiDeleteProvider(id string) {
 			// The key goes first, so a failure leaves the provider whole. A locked
 			// vault is opened and the deletion tried again.
 			switch err = opened.Delete(aiKeySecretName(id)); {
-			case errors.Is(err, vault.ErrLocked):
+			case errors.Is(err, vault.ErrNeedsConversion):
 				state.openVaultUnlock(nil, func() { state.aiDeleteProvider(id) })
 				return
 			case err != nil:

@@ -53,6 +53,8 @@ type ToolsMessages struct {
 	StatusSnippetRemovedFmt   string
 	SnippetAdd                string
 	SnippetEdit               string
+	SnippetSend               string
+	SnippetSendCurrent        string
 	SnippetDelete             string
 	SnippetDialogAddTitle     string
 	SnippetDialogEditTitle    string
@@ -82,22 +84,35 @@ type ToolsMessages struct {
 	CatSecurity   string
 
 	// Terminal zoom and padding.
-	ZoomIn            string
-	ZoomOut           string
-	ZoomReset         string
-	StatusFontSizeFmt string
-	PaddingRow        string
-	PaddingCompact    string
-	PaddingNormal     string
-	PaddingRoomy      string
-	GutterRow         string
-	GutterDescription string
-	GutterOff         string
-	GutterNumbers     string
-	GutterTime        string
-	GutterBoth        string
-	CursorRow         string
-	CursorDescription string
+	ZoomIn                     string
+	ZoomOut                    string
+	ZoomReset                  string
+	StatusFontSizeFmt          string
+	PaddingRow                 string
+	PaddingCompact             string
+	PaddingNormal              string
+	PaddingRoomy               string
+	GutterRow                  string
+	GutterDescription          string
+	GutterOff                  string
+	GutterNumbers              string
+	GutterTime                 string
+	GutterBoth                 string
+	CursorRow                  string
+	CursorDescription          string
+	ScrollbarLabel             string
+	CopyOnSelectRow            string
+	CopyOnSelectDescription    string
+	RightClickPasteRow         string
+	RightClickPasteDescription string
+	LinkPlainClickRow          string
+	LinkPlainClickDescription  string
+	BellRow                    string
+	BellDescription            string
+	TabTitleRow                string
+	TabTitleDescription        string
+	LatencyRow                 string
+	LatencyDescription         string
 
 	// The terminal's font.
 	FontChoose              string
@@ -110,6 +125,14 @@ type ToolsMessages struct {
 	FontPickerEmpty         string
 	FontPickerSample        string
 	FontPickerSampleSymbols string
+
+	// The fonts that draw what the terminal's font lacks.
+	FontFallbackRow         string
+	FontFallbackEmpty       string
+	FontFallbackFmt         string
+	FontFallbackAdd         string
+	FontFallbackClear       string
+	FontFallbackPickerTitle string
 
 	// Notifications.
 	NotifyRow         string
@@ -172,6 +195,7 @@ type ToolsMessages struct {
 	ImportWarningSkippedFmt   string
 	ImportWarningPasswords    string
 	ImportWarningCleartextFmt string // sessions whose file held readable passwords or keys
+	ImportWarningLoopback     string // a session aimed at 127.0.0.1 / localhost
 
 	// Broadcast input.
 	BroadcastStart            string
@@ -243,6 +267,18 @@ type ToolsMessages struct {
 	FilesFilterPlaceholder          string
 	FilesFilterClear                string
 	FilesFilterCountFmt             string
+	FilesBack                       string
+	FilesForward                    string
+	FilesRecent                     string
+	FilesLoadedIncompleteFmt        string
+	FilesLoadedFilterOnly           string
+	FilesLoadedLimitFmt             string
+	FilesLoadedSkippedFmt           string
+	FilesLoadedReadErrorFmt         string
+	FilesLoadedEmpty                string
+	FilesLoadedNoneVisible          string
+	FilesLoadedNoMatches            string
+	FilesLoadedMatchesHidden        string
 	FilesMore                       string
 	FilesShowHidden                 string
 	FilesHideHidden                 string
@@ -253,6 +289,7 @@ type ToolsMessages struct {
 	FilesTerminalFollow             string
 	FilesTerminalFollowDescription  string
 	FilesTerminalFollowSkipped      string
+	FilesTerminalFollowUnsupported  string
 	FilesFollowSetup                string
 	FilesFollowSetupDescription     string
 	FilesFollowSetupCopy            string
@@ -323,8 +360,14 @@ type ToolsMessages struct {
 	LaunchWarning                   string
 	LaunchDescriptionFmt            string
 	LaunchConnect                   string
+	LaunchXshellFailedFmt           string // base name, error
+	LaunchXshellEmptyFmt            string // base name
 	GeneralLogin                    string
 	GeneralLoginDescription         string
+	GeneralClose                    string
+	GeneralCloseDescription         string
+	GeneralCloseTray                string
+	GeneralCloseQuit                string
 	GeneralUpdate                   string
 	GeneralUpdateDescription        string
 	GeneralUpdateCheck              string
@@ -370,6 +413,8 @@ type ToolsMessages struct {
 	DiagnosticsSaveTitle            string
 	DiagnosticsSavedFmt             string
 	DiagnosticsFailedFmt            string
+	PreviousCrashTitle              string
+	PreviousCrashBodyFmt            string
 	CatBackup                       string
 	CatMCP                          string
 	BackupGroupFile                 string
@@ -600,10 +645,8 @@ type ToolsMessages struct {
 	TabMoveBusy                     string
 	OTPField                        string
 	OTPPlaceholder                  string
-	OTPUncheckedPlaceholder         string
 	OTPSavedPlaceholder             string
 	OTPRemovingPlaceholder          string
-	OTPCheck                        string
 	OTPRemove                       string
 	OTPScan                         string
 	OTPPaste                        string
@@ -621,6 +664,12 @@ type ToolsMessages struct {
 	ErrOTPScanReadFmt               string
 	X11Forward                      string
 	X11UnavailableFmt               string
+	X11NoServerFmt                  string
+	X11UnreachableFmt               string
+	X11Refused                      string
+	X11HintMac                      string
+	X11HintWindows                  string
+	X11HintOther                    string
 	AgentForward                    string
 	AgentAccess                     string
 	AgentAccessNote                 string
@@ -649,4 +698,28 @@ type ToolsMessages struct {
 	AlgoNegotiatedFmt               string
 	UpdateFailedFmt                 string
 	LoginFailedFmt                  string
+
+	// The file list's configurable columns and default download destination.
+	FilesColumns                         string
+	FilesColumnsDescription              string
+	FilesColumnsEnabledFmt               string
+	FilesColumnsCustomize                string
+	FilesColumnsTitle                    string
+	FilesColumnsHint                     string
+	FilesColumnDragFmt                   string
+	FilesColumnName                      string
+	FilesColumnSize                      string
+	FilesColumnModified                  string
+	FilesColumnsReset                    string
+	FilesColumnsClose                    string
+	FilesDownloadDirectory               string
+	FilesDownloadAskDescription          string
+	FilesDownloadCurrentFmt              string
+	FilesDownloadChoose                  string
+	FilesDownloadAsk                     string
+	FilesDownloadChooseFailed            string
+	FilesDownloadDirectoryInvalidFmt     string
+	FilesDownloadDirectorySavedFmt       string
+	FilesDownloadAskSaved                string
+	FilesDownloadDirectoryUnavailableFmt string
 }

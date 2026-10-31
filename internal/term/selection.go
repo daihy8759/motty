@@ -10,32 +10,73 @@ type Position struct {
 	Row, Column int
 }
 
+// Point is one cell of the retained buffer. Line counts as LineNumber does, so
+// a Point keeps naming the same text while the view scrolls and while the
+// history drops its oldest lines. Selections use it to stay put under scrolling.
+type Point struct {
+	Line   uint64
+	Column int
+}
+
+// PointAt is the buffer point under a view position.
+func (t *Terminal) PointAt(position Position) Point {
+	return Point{Line: t.LineNumber(position.Row), Column: position.Column}
+}
+
 // SelectedText returns the cells between two inclusive visible positions.
 // Soft-wrapped rows are joined; hard line endings remain newlines.
 func (t *Terminal) SelectedText(anchor, focus Position) string {
-	anchor = t.clampPosition(anchor)
-	focus = t.clampPosition(focus)
-	if positionLess(focus, anchor) {
+	return t.SelectedRange(t.PointAt(t.clampPosition(anchor)), t.PointAt(t.clampPosition(focus)))
+}
+
+// SelectedRange returns the cells between two inclusive buffer points, which
+// may lie outside the view. Points beyond the retained lines clamp to them.
+// Soft-wrapped rows are joined; hard line endings remain newlines.
+func (t *Terminal) SelectedRange(anchor, focus Point) string {
+	base, count := t.lineBase(), uint64(t.bufferLineCount())
+	if count == 0 {
+		return ""
+	}
+	anchor, focus = t.clampPoint(anchor, base, count), t.clampPoint(focus, base, count)
+	if pointLess(focus, anchor) {
 		anchor, focus = focus, anchor
 	}
 
 	var result strings.Builder
-	result.Grow((focus.Row - anchor.Row + 1) * (t.cols + 1))
-	for rowIndex := anchor.Row; rowIndex <= focus.Row; rowIndex++ {
+	result.Grow(int(min(focus.Line-anchor.Line+1, 1<<16)) * (t.cols + 1))
+	for line := anchor.Line; line <= focus.Line; line++ {
 		from, to := 0, t.cols-1
-		if rowIndex == anchor.Row {
+		if line == anchor.Line {
 			from = anchor.Column
 		}
-		if rowIndex == focus.Row {
+		if line == focus.Line {
 			to = focus.Column
 		}
-		row := t.Row(rowIndex)
+		row := t.rowOf(t.bufferLine(int(line - base)))
 		writeSelectedCells(&result, row, from, to)
-		if rowIndex < focus.Row && !row.Wrapped {
+		if line < focus.Line && !row.Wrapped {
 			result.WriteByte('\n')
 		}
 	}
 	return result.String()
+}
+
+// lineBase is the line number of retained-buffer index 0.
+func (t *Terminal) lineBase() uint64 {
+	if t.onAlt {
+		return t.scrolled + 1
+	}
+	return t.scrolled - uint64(t.histCount) + 1
+}
+
+func (t *Terminal) clampPoint(point Point, base, count uint64) Point {
+	point.Line = min(max(point.Line, base), base+count-1)
+	point.Column = clampInt(point.Column, 0, t.cols-1)
+	return point
+}
+
+func pointLess(left, right Point) bool {
+	return left.Line < right.Line || left.Line == right.Line && left.Column < right.Column
 }
 
 // WordBounds returns the inclusive run of like cells around position. Letters,

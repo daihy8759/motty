@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { changelog } from '@/lib/changelog';
+import { latestRelease } from '@/lib/releases';
 import { i18n } from '@/lib/i18n';
 
 /**
@@ -206,10 +206,10 @@ export function softwareApplicationJsonLd(lang: Locale): Record<string, unknown>
     softwareHelp: absolute(localePath(lang, '/docs')),
     license: 'https://www.apache.org/licenses/LICENSE-2.0',
     isAccessibleForFree: true,
-    softwareVersion: changelog[0].version,
+    softwareVersion: latestRelease().version,
     releaseNotes: absolute(localePath(lang, '/changelog')),
     codeRepository: site.github,
-    dateModified: changelog[0].date,
+    dateModified: latestRelease().date,
     offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
     screenshot: absolute('/hero-dark.webp'),
     sameAs: [site.github],

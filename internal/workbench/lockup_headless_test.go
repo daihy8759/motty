@@ -9,7 +9,6 @@ import (
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/headless"
 	"github.com/vivaui/viva/ui"
-	"motty/internal/buildinfo"
 )
 
 func TestStartupUploadsSidebarLockupWithoutNavigation(test *testing.T) {
@@ -38,12 +37,6 @@ func TestStartupUploadsSidebarLockupWithoutNavigation(test *testing.T) {
 			bitmap := lockupLight()
 			if mode == "dark" {
 				bitmap = lockupDark()
-			}
-			if buildinfo.Development {
-				bitmap = lockupMarkLight()
-				if mode == "dark" {
-					bitmap = lockupMarkDark()
-				}
 			}
 			found := false
 			for _, label := range session.Snapshot().Labels {

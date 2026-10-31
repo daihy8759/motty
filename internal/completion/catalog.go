@@ -1,0 +1,531 @@
+// Package completion holds an offline catalog of command syntax: commands,
+// subcommands, options and a small set of literal option values. It is plain
+// data, built from a pinned Carapace release, and never runs anything from the
+// source it was imported from.
+//
+// The catalog is deliberately independent of the workbench: it answers "what
+// could this command line continue into?" without knowing about sessions,
+// history or the screen. The workbench decides whether a question may be asked
+// at all and merges the answer with what the user typed before.
+package completion
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// FormatVersion is the layout of the encoded catalog. A cache written by an
+// older reader is ignored rather than guessed at.
+const FormatVersion = 1
+
+// Flag is one option of a command. Long and Short may both be set; at least one
+// is non-empty. Value reports whether the option consumes a value, and Optional
+// whether that value may be omitted (Carapace's '?' modifier).
+type Flag struct {
+	Long       string
+	Short      string
+	Value      bool
+	Optional   bool
+	Repeatable bool
+	Required   bool
+	Desc       string
+	// Values are literal values accepted for the option, in source order.
+	// Dynamic completions (paths, branches, containers) are never imported.
+	Values []Value
+}
+
+// Token is the option as it should be typed, preferring the long form.
+func (f Flag) Token() string {
+	if f.Long != "" {
+		return "--" + f.Long
+	}
+	return "-" + f.Short
+}
+
+// ShortToken is the short form, or "" when the option has none.
+func (f Flag) ShortToken() string {
+	if f.Short == "" {
+		return ""
+	}
+	return "-" + f.Short
+}
+
+// Value is one literal option value with its optional description.
+type Value struct {
+	Text string
+	Desc string
+}
+
+// Node is one command or subcommand. Children are sorted by token; aliases are
+// additional tokens that reach the same node.
+type Node struct {
+	Token      string
+	Aliases    []string
+	Desc       string
+	Hidden     bool
+	Flags      []Flag
+	Persistent []Flag
+	Children   []*Node
+
+	parent *Node
+}
+
+// Path returns the tokens from the root command to this node.
+func (n *Node) Path() []string {
+	depth := 0
+	for p := n; p != nil; p = p.parent {
+		depth++
+	}
+	path := make([]string, depth)
+	for p := n; p != nil; p = p.parent {
+		depth--
+		path[depth] = p.Token
+	}
+	return path
+}
+
+// Parent returns the parent node, or nil for a root command.
+func (n *Node) Parent() *Node { return n.parent }
+
+// Catalog is an immutable, validated command-syntax snapshot.
+type Catalog struct {
+	Source  string
+	Release string
+	Commit  string
+	License string
+
+	roots []*Node
+	index map[string]*Node
+
+	nodeCount  int
+	flagCount  int
+	valueCount int
+}
+
+// NewCatalog assembles a catalog from root nodes and derives the lookup index.
+// It is used by the importer and the cache loader; the result must not be
+// mutated afterwards.
+func NewCatalog(source, release, commit, license string, roots []*Node) (*Catalog, error) {
+	c := &Catalog{
+		Source:  source,
+		Release: release,
+		Commit:  commit,
+		License: license,
+		index:   make(map[string]*Node, 8192),
+	}
+	sortNodes(roots)
+	for _, root := range roots {
+		if err := c.indexTree(root, nil); err != nil {
+			return nil, err
+		}
+	}
+	if len(c.roots) == 0 {
+		return nil, errors.New("completion: catalog has no root commands")
+	}
+	c.count()
+	return c, nil
+}
+
+func sortNodes(nodes []*Node) {
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Token < nodes[j].Token })
+	for _, n := range nodes {
+		sort.Strings(n.Aliases)
+		n.Aliases = compactStrings(n.Aliases)
+		sort.Slice(n.Flags, func(i, j int) bool { return n.Flags[i].Token() < n.Flags[j].Token() })
+		sort.Slice(n.Persistent, func(i, j int) bool { return n.Persistent[i].Token() < n.Persistent[j].Token() })
+		sortNodes(n.Children)
+	}
+}
+
+func compactStrings(in []string) []string {
+	out := in[:0]
+	var last string
+	for i, s := range in {
+		if s == "" || (i > 0 && s == last) {
+			continue
+		}
+		out = append(out, s)
+		last = s
+	}
+	return out
+}
+
+func (c *Catalog) indexTree(n *Node, parent *Node) error {
+	if n.Token == "" || strings.ContainsAny(n.Token, " \t\r\n") {
+		return fmt.Errorf("completion: invalid command token %q", n.Token)
+	}
+	n.parent = parent
+	key := nodeKey(n.Path())
+	if _, ok := c.index[key]; ok {
+		return fmt.Errorf("completion: duplicate command path %q", strings.Join(n.Path(), " "))
+	}
+	c.index[key] = n
+	if parent == nil {
+		c.roots = append(c.roots, n)
+	}
+	for _, child := range n.Children {
+		if err := c.indexTree(child, n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) count() {
+	c.nodeCount, c.flagCount, c.valueCount = 0, 0, 0
+	for _, root := range c.roots {
+		walk(root, func(n *Node) {
+			c.nodeCount++
+			c.flagCount += len(n.Flags) + len(n.Persistent)
+			for _, f := range n.Flags {
+				c.valueCount += len(f.Values)
+			}
+			for _, f := range n.Persistent {
+				c.valueCount += len(f.Values)
+			}
+		})
+	}
+}
+
+func nodeKey(path []string) string { return strings.Join(path, "\x00") }
+
+// NodeCount reports how many commands and subcommands the catalog holds.
+func (c *Catalog) NodeCount() int { return c.nodeCount }
+
+// RootCount reports how many root commands were validated during import. This
+// is the number shown to the user, never a file or directory count.
+func (c *Catalog) RootCount() int { return len(c.roots) }
+
+// FlagCount is how many options the catalog carries.
+func (c *Catalog) FlagCount() int { return c.flagCount }
+
+// ValueCount reports how many literal option values are available.
+func (c *Catalog) ValueCount() int { return c.valueCount }
+
+// Roots returns the root commands in name order.
+func (c *Catalog) Roots() []*Node { return c.roots }
+
+// Lookup returns the node at path, or nil.
+func (c *Catalog) Lookup(path []string) *Node {
+	if len(path) == 0 {
+		return nil
+	}
+	return c.index[nodeKey(path)]
+}
+
+// Root resolves a root command token or alias.
+func (c *Catalog) Root(token string) *Node {
+	for _, n := range c.roots {
+		if n.Token == token {
+			return n
+		}
+		for _, alias := range n.Aliases {
+			if alias == token {
+				return n
+			}
+		}
+	}
+	return nil
+}
+
+// VisibleFlags returns the options of a node including persistent options
+// inherited from its ancestors, in a stable order and without duplicates.
+func (c *Catalog) VisibleFlags(node *Node) []Flag {
+	if node == nil {
+		return nil
+	}
+	var chain []*Node
+	for n := node; n != nil; n = n.parent {
+		chain = append(chain, n)
+	}
+	seen := make(map[string]bool)
+	var flags []Flag
+	add := func(f Flag) {
+		key := f.Token()
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		flags = append(flags, f)
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		for _, f := range chain[i].Persistent {
+			add(f)
+		}
+	}
+	for _, f := range node.Flags {
+		add(f)
+	}
+	for _, f := range node.Persistent {
+		add(f)
+	}
+	sort.SliceStable(flags, func(i, j int) bool { return flags[i].Token() < flags[j].Token() })
+	return flags
+}
+
+// FindFlag resolves a typed option token ("--long", "-s", without a value part)
+// among the options visible at node.
+func (c *Catalog) FindFlag(node *Node, token string) (Flag, bool) {
+	for _, f := range c.VisibleFlags(node) {
+		if f.Long != "" && token == "--"+f.Long {
+			return f, true
+		}
+		if f.Short != "" && token == "-"+f.Short {
+			return f, true
+		}
+	}
+	return Flag{}, false
+}
+
+// Encode serializes the catalog. The result is deterministic for the same
+// catalog, so generation can be checked byte for byte.
+func (c *Catalog) Encode() []byte {
+	var body strings.Builder
+	for _, root := range c.roots {
+		encodeNode(&body, root, 0)
+	}
+	bodyBytes := []byte(body.String())
+	sum := sha256.Sum256(bodyBytes)
+
+	var out strings.Builder
+	fmt.Fprintf(&out, "motty-completion\t%d\n", FormatVersion)
+	fmt.Fprintf(&out, "source\t%s\n", c.Source)
+	fmt.Fprintf(&out, "release\t%s\n", c.Release)
+	fmt.Fprintf(&out, "commit\t%s\n", c.Commit)
+	fmt.Fprintf(&out, "license\t%s\n", c.License)
+	fmt.Fprintf(&out, "roots\t%d\n", len(c.roots))
+	fmt.Fprintf(&out, "nodes\t%d\n", c.nodeCount)
+	fmt.Fprintf(&out, "flags\t%d\n", c.flagCount)
+	fmt.Fprintf(&out, "values\t%d\n", c.valueCount)
+	fmt.Fprintf(&out, "digest\t%s\n\n", hex.EncodeToString(sum[:]))
+	out.Write(bodyBytes)
+	return []byte(out.String())
+}
+
+func encodeNode(b *strings.Builder, n *Node, depth int) {
+	fmt.Fprintf(b, "N\t%d\t%s\t%s\t%d\t%s\n", depth, n.Token, strings.Join(n.Aliases, ","), boolInt(n.Hidden), n.Desc)
+	for _, f := range n.Flags {
+		encodeFlag(b, "f", f)
+	}
+	for _, f := range n.Persistent {
+		encodeFlag(b, "p", f)
+	}
+	for _, child := range n.Children {
+		encodeNode(b, child, depth+1)
+	}
+}
+
+func encodeFlag(b *strings.Builder, kind string, f Flag) {
+	mods := ""
+	if f.Value {
+		mods += "v"
+	}
+	if f.Optional {
+		mods += "o"
+	}
+	if f.Repeatable {
+		mods += "r"
+	}
+	if f.Required {
+		mods += "q"
+	}
+	values := make([]string, len(f.Values))
+	for i, v := range f.Values {
+		values[i] = v.Text + "\x02" + v.Desc
+	}
+	fmt.Fprintf(b, "F\t%s\t%s\t%s\t%s\t%s\t%s\n", kind, f.Long, f.Short, mods, f.Desc, strings.Join(values, "\x1f"))
+}
+
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+// Decode parses and validates an encoded catalog. Every bound is enforced here
+// as well as in the importer: a cache file is untrusted input.
+func Decode(data []byte) (*Catalog, error) {
+	headerEnd := strings.Index(string(data), "\n\n")
+	if headerEnd < 0 {
+		return nil, errors.New("completion: truncated catalog header")
+	}
+	header := string(data[:headerEnd])
+	body := data[headerEnd+2:]
+
+	meta := make(map[string]string, 10)
+	for _, line := range strings.Split(header, "\n") {
+		key, value, ok := strings.Cut(line, "\t")
+		if !ok {
+			return nil, fmt.Errorf("completion: malformed catalog header line %q", line)
+		}
+		if _, dup := meta[key]; dup {
+			return nil, fmt.Errorf("completion: duplicate catalog header %q", key)
+		}
+		meta[key] = value
+	}
+	if meta["motty-completion"] != strconv.Itoa(FormatVersion) {
+		return nil, fmt.Errorf("completion: unsupported catalog format %q", meta["motty-completion"])
+	}
+	want := make(map[string]int, 4)
+	for _, key := range []string{"roots", "nodes", "flags", "values"} {
+		n, err := strconv.Atoi(meta[key])
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("completion: invalid catalog %s count %q", key, meta[key])
+		}
+		want[key] = n
+	}
+	sum := sha256.Sum256(body)
+	if meta["digest"] != hex.EncodeToString(sum[:]) {
+		return nil, errors.New("completion: catalog checksum mismatch")
+	}
+	if meta["source"] == "" || meta["commit"] == "" || meta["license"] == "" {
+		return nil, errors.New("completion: catalog metadata is incomplete")
+	}
+
+	c := &Catalog{
+		Source:  meta["source"],
+		Release: meta["release"],
+		Commit:  meta["commit"],
+		License: meta["license"],
+		index:   make(map[string]*Node, 8192),
+	}
+	var stack []*Node
+	var last *Node
+	var nodes, flags, values int
+	lines := strings.Split(string(body), "\n")
+	for number, line := range lines {
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		switch fields[0] {
+		case "N":
+			if len(fields) != 6 {
+				return nil, fmt.Errorf("completion: malformed node line %d", number+1)
+			}
+			depth, err := strconv.Atoi(fields[1])
+			if err != nil || depth < 0 || depth > maxDepth {
+				return nil, fmt.Errorf("completion: invalid node depth on line %d", number+1)
+			}
+			n := &Node{
+				Token:   fields[2],
+				Aliases: nil,
+				Hidden:  fields[4] == "1",
+				Desc:    fields[5],
+			}
+			if fields[3] != "" {
+				n.Aliases = strings.Split(fields[3], ",")
+			}
+			// The digest only detects damage; a node name is typed into the
+			// shell, so it must be as plain as the importer insists.
+			if !validTokenPart(n.Token) {
+				return nil, fmt.Errorf("completion: command name on line %d is not a plain token", number+1)
+			}
+			for _, alias := range n.Aliases {
+				if !validTokenPart(alias) {
+					return nil, fmt.Errorf("completion: command alias on line %d is not a plain token", number+1)
+				}
+			}
+			if depth > len(stack) {
+				return nil, fmt.Errorf("completion: inconsistent node depth on line %d", number+1)
+			}
+			stack = stack[:depth]
+			if depth == 0 {
+				c.roots = append(c.roots, n)
+			} else {
+				parent := stack[depth-1]
+				parent.Children = append(parent.Children, n)
+			}
+			stack = append(stack, n)
+			last = n
+			nodes++
+		case "F":
+			if len(fields) != 7 || last == nil || stack[len(stack)-1] != last {
+				return nil, fmt.Errorf("completion: malformed flag line %d", number+1)
+			}
+			f, err := decodeFlag(fields[2], fields[3], fields[4], fields[5], fields[6])
+			if err != nil {
+				return nil, fmt.Errorf("completion: line %d: %w", number+1, err)
+			}
+			switch fields[1] {
+			case "f":
+				last.Flags = append(last.Flags, f)
+			case "p":
+				last.Persistent = append(last.Persistent, f)
+			default:
+				return nil, fmt.Errorf("completion: unknown flag kind %q on line %d", fields[1], number+1)
+			}
+			flags++
+			values += len(f.Values)
+		default:
+			return nil, fmt.Errorf("completion: unknown catalog record %q on line %d", fields[0], number+1)
+		}
+	}
+	if nodes != want["nodes"] || len(c.roots) != want["roots"] || flags != want["flags"] || values != want["values"] {
+		return nil, errors.New("completion: catalog counts do not match the header")
+	}
+	if len(c.roots) == 0 {
+		return nil, errors.New("completion: catalog has no root commands")
+	}
+	// Rebuild the index from the decoded tree, which also validates paths and
+	// rejects duplicates a corrupt body might hide; count() then re-derives the
+	// totals so a tampered body cannot keep a wrong header alive.
+	decodedRoots := c.roots
+	c.roots = nil
+	for _, root := range decodedRoots {
+		if err := c.indexTree(root, nil); err != nil {
+			return nil, err
+		}
+	}
+	c.count()
+	if c.nodeCount != nodes || c.flagCount != flags || c.valueCount != values {
+		return nil, errors.New("completion: catalog counts are inconsistent")
+	}
+	return c, nil
+}
+
+func decodeFlag(long, short, mods, desc, encodedValues string) (Flag, error) {
+	f := Flag{Long: long, Short: short, Desc: desc}
+	if f.Long == "" && f.Short == "" {
+		return Flag{}, errors.New("flag has neither a long nor a short name")
+	}
+	if (f.Long != "" && !validTokenPart(f.Long)) || (f.Short != "" && !validTokenPart(f.Short)) {
+		return Flag{}, errors.New("flag name is not a plain token")
+	}
+	for _, mod := range mods {
+		switch mod {
+		case 'v':
+			f.Value = true
+		case 'o':
+			f.Optional = true
+		case 'r':
+			f.Repeatable = true
+		case 'q':
+			f.Required = true
+		default:
+			return Flag{}, fmt.Errorf("unknown flag modifier %q", mod)
+		}
+	}
+	if f.Optional {
+		f.Value = true
+	}
+	if encodedValues != "" {
+		for _, part := range strings.Split(encodedValues, "\x1f") {
+			text, valueDesc, _ := strings.Cut(part, "\x02")
+			if !SafeValue(text) {
+				return Flag{}, fmt.Errorf("unsafe option value %q", text)
+			}
+			f.Values = append(f.Values, Value{Text: text, Desc: valueDesc})
+		}
+		if len(f.Values) > maxValuesPerFlag {
+			return Flag{}, errors.New("too many option values")
+		}
+	}
+	return f, nil
+}

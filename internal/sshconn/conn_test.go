@@ -374,6 +374,7 @@ func TestSkippingEncryptedIdentityFallsBackToPassword(t *testing.T) {
 func TestConnectedStatusDetectsRemoteSystemOnASeparateSession(t *testing.T) {
 	server := startServer(t, func(server *testServer) {
 		server.password = "pw"
+		server.version = "SSH-2.0-OpenSSH_9.6" // probes run only on known implementations
 		server.exec = func(command string) (string, uint32) {
 			if !strings.Contains(command, "/etc/os-release") {
 				t.Fatalf("system command = %q", command)

@@ -25,26 +25,12 @@ import (
 // shell draws itself.
 
 // commandGhostEntries is the candidates for a session's host, newest first,
-// read from the history file the first time and kept in step with it after.
+// prepared in the background and kept coherent with history changes.
 func (state *State) commandGhostEntries(session *Session) []cmdhistory.Entry {
-	h := &state.history
-	key := historyKey(session)
-	if entries, ok := h.ghost[key]; ok {
-		return entries
-	}
-	store := state.historyStore()
-	if store == nil {
+	if session == nil || state.historyClearing() {
 		return nil
 	}
-	entries, err := store.List(key)
-	if err != nil {
-		return nil
-	}
-	if h.ghost == nil {
-		h.ghost = map[string][]cmdhistory.Entry{}
-	}
-	h.ghost[key] = entries
-	return entries
+	return state.history.ghost[historyKey(session)]
 }
 
 // noteGhostCommand puts a command just remembered at the front of the cache.
@@ -65,18 +51,22 @@ func (state *State) noteGhostCommand(key, command string) {
 	state.history.ghost[key] = append([]cmdhistory.Entry{{Command: command, Count: 1}}, entries...)
 }
 
-// forgetGhostEntries drops the cache after commands were deleted.
-func (state *State) forgetGhostEntries() { state.history.ghost = nil }
-
 // commandGhost is the rest of the command the line being typed in the session
-// continues into, when one is to be offered.
+// continues into, when one is to be offered. The host's history comes first;
+// when it has no match, a single catalog candidate is offered instead, so a
+// host with learning off still gets public completions.
 func (state *State) commandGhost(session *Session) (string, bool) {
 	h := &state.history
-	if !h.on || h.suggestOff || session == nil || session.term == nil || session.term.shell == nil {
+	if h.suggestOff || h.inlineOff || session == nil || session.term == nil || session.term.shell == nil {
+		return "", false
+	}
+	// Accepting is checked against one terminal's prompt and never typed into
+	// several at once, so a suggestion that could not be accepted is not shown.
+	if state.broadcast != 0 {
 		return "", false
 	}
 	t := session.term
-	if !state.historyAvailable(session) || session.host.NoHistory || t.preedit.Composing || !t.screen.Cursor().Visible {
+	if t.suggestionPending != nil || t.preedit.Composing || !t.screen.Cursor().Visible {
 		return "", false
 	}
 	if _, _, _, predicting := t.prediction.overlay(); predicting {
@@ -86,7 +76,12 @@ func (state *State) commandGhost(session *Session) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return cmdhistory.Suggest(state.commandGhostEntries(session), line)
+	if h.on && state.historyAvailable(session) && !session.host.NoHistory {
+		if rest, ok := cmdhistory.Suggest(state.commandGhostEntries(session), line); ok {
+			return rest, true
+		}
+	}
+	return state.staticGhost(session, line)
 }
 
 // acceptGhost types the offered text, or its first word, into the shell. It
@@ -96,10 +91,24 @@ func (state *State) acceptGhost(session *Session, word bool) bool {
 	if !ok {
 		return false
 	}
+	line, ok := session.term.recorder.Line(cmdhistory.TermScreen{Term: session.term.screen})
+	if !ok {
+		return true
+	}
+	snapshot := state.captureSuggestion(session, line)
+	current := state.suggestionOwner(snapshot)
+	if current == nil {
+		return true
+	}
+	// Unlike the initial paint, this lookup sees all output already queued.
+	// A rejected acceptance is consumed; it must not become a program key.
+	if now, ok := state.commandGhost(current); !ok || now != rest {
+		return true
+	}
 	if word {
 		rest = firstWord(rest)
 	}
-	state.typed(session, []byte(rest))
+	state.sendSuggestion(current, rest)
 	return true
 }
 

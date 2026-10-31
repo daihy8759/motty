@@ -37,7 +37,6 @@ var (
 	hitHistoryScopeAll       = tree.ID(historyHits, "history-scope-all")
 	hitHistoryItems          = tree.Sub(historyHits, tree.Name("history-items"))
 	hitSettingsHistoryToggle = tree.ID(historyHits, "settings-history")
-	hitSettingsSuggestToggle = tree.ID(historyHits, "settings-history-suggest")
 	hitSettingsHistoryClear  = tree.ID(historyHits, "settings-history-clear")
 )
 
@@ -53,9 +52,15 @@ const (
 type historyUI struct {
 	on bool
 
-	// suggestOff turns off the inline suggestions the history offers while a
-	// command is typed; they are on by default but need the history itself.
+	// clear carries the result of a background Clear; nil when none is running.
+	clear     *historyClearJob
+	lastClear *historyClearJob
+
+	// suggestOff and inlineOff together are the completion mode (see
+	// completionMode): suggestOff turns off the list and the inline suggestion,
+	// inlineOff keeps the list and hides the inline suggestion.
 	suggestOff bool
+	inlineOff  bool
 	// ghost is the candidates of each host for those suggestions, newest first.
 	ghost map[string][]cmdhistory.Entry
 
@@ -102,7 +107,7 @@ func (state *State) attachHistory(session *Session) {
 	}
 	sessionID := session.ID
 	t.historyOn = func() bool {
-		if !state.history.on {
+		if !state.history.on || state.historyClearing() {
 			return false
 		}
 		session, ok := state.sessionByIDPointer(sessionID)
@@ -141,7 +146,34 @@ func (state *State) historyStore() *cmdhistory.Queue {
 	return h.store
 }
 
+// adoptHistoryClear reports a background Clear once it finishes. It runs from
+// Wake, never from Paint.
+func (state *State) adoptHistoryClear() {
+	h := &state.history
+	// Only a clear this window took part in is reported here; the group keeps
+	// finished jobs, which a window opened later must not announce again.
+	job := h.clear
+	if job == nil || job == h.lastClear {
+		return
+	}
+	select {
+	case <-job.done:
+		h.clear = nil
+		h.lastClear = job
+		state.resetHistorySuggestions()
+		if job.err != nil {
+			state.status = fmt.Sprintf(state.messages.History.StatusClearFailedFmt, job.err)
+		} else {
+			state.status = state.messages.History.StatusCleared
+		}
+	default:
+	}
+}
+
 func (state *State) closeHistory() {
+	if job := state.historyClearJob(); job != nil {
+		<-job.done
+	}
 	if state.history.store != nil {
 		_ = state.history.store.Close()
 		state.history.store = nil
@@ -151,7 +183,7 @@ func (state *State) closeHistory() {
 // rememberCommand stores a line the recorder judged safe.
 func (state *State) rememberCommand(sessionID uint32, command string) {
 	session, ok := state.sessionByIDPointer(sessionID)
-	if !ok || !state.history.on || !state.historyAvailable(session) || session.host.NoHistory {
+	if !ok || !state.history.on || state.historyClearing() || !state.historyAvailable(session) || session.host.NoHistory {
 		return
 	}
 	if store := state.historyStore(); store != nil {
@@ -159,7 +191,7 @@ func (state *State) rememberCommand(sessionID uint32, command string) {
 		if err := store.Record(key, command, time.Now()); err != nil {
 			state.status = fmt.Sprintf(state.messages.History.StatusUnavailableFmt, err)
 		} else {
-			state.noteGhostCommand(key, command)
+			state.historyChanged(key, command)
 			if err := store.Error(); err != nil {
 				state.status = fmt.Sprintf(state.messages.History.StatusUnavailableFmt, err)
 			}
@@ -172,15 +204,20 @@ func (state *State) toggleHistory() {
 	state.history.on = !state.history.on
 	for index := range state.sessions {
 		if t := state.sessions[index].term; t != nil {
+			t.suggestionPending = nil
 			t.recorder.Reset() // a line half seen is not finished under the new setting
 		}
 	}
-	state.save()
-}
-
-// toggleSuggestions flips the inline suggestions switch.
-func (state *State) toggleSuggestions() {
-	state.history.suggestOff = !state.history.suggestOff
+	if state.history.on {
+		if session, ok := state.sessionByIDPointer(state.activeSessionID); ok {
+			state.completionHistory(session)
+		}
+	} else {
+		// Turning learning off stops reads as well as writes: drop what the list
+		// would have shown and anything still loading.
+		state.forgetCompletionHistory()
+		state.closeCompletionList()
+	}
 	state.save()
 }
 
@@ -194,11 +231,7 @@ func (state *State) askClearHistory() {
 			if store == nil {
 				return fmt.Sprintf(m.StatusUnavailableFmt, state.history.err)
 			}
-			if err := store.Clear(); err != nil {
-				return fmt.Sprintf(m.StatusClearFailedFmt, err)
-			}
-			state.forgetGhostEntries()
-			state.status = m.StatusCleared
+			state.startHistoryClear(store)
 			return ""
 		},
 	})
@@ -211,16 +244,20 @@ func (state *State) askClearHistory() {
 func (state *State) openHistoryActive() {
 	session, ok := state.sessionByIDPointer(state.activeSessionID)
 	if !ok {
-		state.status = state.messages.History.StatusNoTerminal
+		state.showActionWarning(state.messages.History.Title, state.messages.History.StatusNoTerminal)
 		return
 	}
 	state.openHistory(session)
 }
 
 func (state *State) openHistory(session *Session) {
+	if state.historyClearing() {
+		state.status = state.messages.History.StatusClearing
+		return
+	}
 	h := &state.history
 	if session == nil || session.term == nil {
-		state.status = state.messages.History.StatusNoTerminal
+		state.showActionWarning(state.messages.History.Title, state.messages.History.StatusNoTerminal)
 		return
 	}
 	h.sessionID, h.host = session.ID, historyKey(session)
@@ -338,7 +375,7 @@ func (state *State) chooseHistory(run bool) {
 	key := h.host
 	state.closeHistoryPicker()
 	if !found || session.term == nil {
-		state.status = m.StatusNoTerminal
+		state.showActionWarning(m.Title, m.StatusNoTerminal)
 		return
 	}
 	input := make([]byte, 0, len(entry.Command)+1)
@@ -347,7 +384,7 @@ func (state *State) chooseHistory(run bool) {
 		input = append(input, '\r')
 	}
 	if !state.typed(session, input) {
-		state.status = m.StatusNotConnected
+		state.showActionWarning(m.Title, m.StatusNotConnected)
 		return
 	}
 	if run && state.history.on && !session.host.NoHistory {
@@ -355,8 +392,9 @@ func (state *State) chooseHistory(run bool) {
 		// run from the picker is counted here. It came from the history, which
 		// only holds lines that were already cleared.
 		if store := state.historyStore(); store != nil {
-			_ = store.Record(key, entry.Command, time.Now())
-			state.noteGhostCommand(key, entry.Command)
+			if err := store.Record(key, entry.Command, time.Now()); err == nil {
+				state.historyChanged(key, entry.Command)
+			}
 		}
 	}
 }
@@ -382,7 +420,7 @@ func (state *State) deleteHistorySelection() {
 		state.status = fmt.Sprintf(m.StatusRemoveFailedFmt, err)
 		return
 	}
-	state.forgetGhostEntries()
+	state.historyChanged("", "")
 	selected, top := h.selected, h.top
 	state.loadHistory()
 	state.rankHistory()

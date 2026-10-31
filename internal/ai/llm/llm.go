@@ -7,6 +7,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,11 +39,44 @@ type ToolCall struct {
 	Arguments string
 }
 
+// Image is a picture sent with a user message. MediaType is one of the four
+// formats every vision endpoint accepts; DetectImage finds it from the bytes.
+type Image struct {
+	MediaType string
+	Data      []byte
+}
+
+// Media types an Image can carry.
+const (
+	ImagePNG  = "image/png"
+	ImageJPEG = "image/jpeg"
+	ImageGIF  = "image/gif"
+	ImageWebP = "image/webp"
+)
+
+// DetectImage names the format of data from its signature, never from a file
+// name, or returns "" when it is none of the supported ones.
+func DetectImage(data []byte) string {
+	switch {
+	case bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n")):
+		return ImagePNG
+	case bytes.HasPrefix(data, []byte("\xff\xd8\xff")):
+		return ImageJPEG
+	case bytes.HasPrefix(data, []byte("GIF87a")), bytes.HasPrefix(data, []byte("GIF89a")):
+		return ImageGIF
+	case len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")):
+		return ImageWebP
+	}
+	return ""
+}
+
 // Message is one conversation turn. RoleTool messages carry the result text
-// of the call named by ToolCallID.
+// of the call named by ToolCallID. Images belong to user messages only; they
+// stay out of the JSON form, which the CLI backends embed in their prompt.
 type Message struct {
 	Role       Role
 	Text       string
+	Images     []Image `json:"-"`
 	ToolCalls  []ToolCall
 	ToolCallID string
 }
@@ -319,7 +353,22 @@ func validateRequest(req Request) error {
 			return errors.New("llm: tool without a name")
 		}
 	}
+	for _, m := range req.Messages {
+		if len(m.Images) > 0 && m.Role != RoleUser {
+			return errors.New("llm: only user messages carry images")
+		}
+		for _, image := range m.Images {
+			if len(image.Data) == 0 || image.MediaType == "" || DetectImage(image.Data) != image.MediaType {
+				return errors.New("llm: image is empty or not in its declared format")
+			}
+		}
+	}
 	return nil
+}
+
+// dataURL is an image as the data: URL the OpenAI APIs take.
+func (i Image) dataURL() string {
+	return "data:" + i.MediaType + ";base64," + base64.StdEncoding.EncodeToString(i.Data)
 }
 
 func sortedUnique(ids []string) []string {

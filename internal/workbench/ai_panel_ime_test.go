@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/vivaui/viva/app"
+	"github.com/vivaui/viva/ui"
 )
 
 // Exercise the real composer/provider/placement path. Windows' preservation
@@ -60,4 +61,57 @@ func TestAIComposerPreeditCommitAndSend(t *testing.T) {
 		t.Fatal("Enter did not send the committed message")
 	}
 	pumpWindow(t, state, func() bool { return state.ai.run == nil })
+}
+
+// Option moves and deletes by word and Command goes to the ends of the line in the
+// composer, as in any macOS text field: Viva turns them into text commands before
+// the application sees a key, so the composer needs no key handling of its own.
+func TestAIComposerOptionAndCommandKeysEditByWordAndLine(t *testing.T) {
+	state, _ := panelState(t, nil)
+	state.Click(hitAIToggle)
+	canvas, _ := paintAt(state, panelWide)
+	box := panelHit(t, canvas, hitAIInput).Bounds
+	driver, err := app.NewDriver(app.Config{
+		Title: "assistant word editing", Width: int(panelWide.Width), Height: int(panelWide.Height), Tree: Tree(),
+		Paint:     state.Paint,
+		TextInput: func(context app.TextInputContext) *app.TextInput { return state.AIPanelInput(context) },
+		OnPointer: state.Pointer, OnKey: state.Key, OnShortcut: state.Shortcut,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	if err := driver.Click(box.X+box.Width/2, box.Y+box.Height/2); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Type("alpha beta/gamma"); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Key(ui.KeyLeft, ui.ModifierAlt); err != nil {
+		t.Fatal(err)
+	}
+	if caret := state.ai.input.Caret(); caret != 11 {
+		t.Fatalf("Option+Left moved the caret to %d, want 11", caret)
+	}
+	if err := driver.Key(ui.KeyRight, ui.ModifierAlt|ui.ModifierShift); err != nil {
+		t.Fatal(err)
+	}
+	if selection := state.ai.input.Selection(); selection.Start != 11 || selection.End != 16 {
+		t.Fatalf("Option+Shift+Right selected %+v, want 11:16", selection)
+	}
+	if err := driver.Key(ui.KeyBackspace, ui.ModifierAlt); err != nil {
+		t.Fatal(err)
+	}
+	if got := state.ai.input.String(); got != "alpha beta/" {
+		t.Fatalf("Option+Backspace left %q", got)
+	}
+	if err := driver.Type("\n第二行"); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Key(ui.KeyBackspace, ui.ModifierMeta); err != nil {
+		t.Fatal(err)
+	}
+	if got := state.ai.input.String(); got != "alpha beta/\n" {
+		t.Fatalf("Command+Backspace left %q, want the second line removed", got)
+	}
 }

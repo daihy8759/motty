@@ -66,10 +66,14 @@ func (state *State) toggleSFTPPanelSide() {
 // right edge, so a right-docked files panel ends before the AI panel's divider.
 func (state *State) sftpPanelResizable(canvas *ui.Canvas, size ui.Size, context layoutcore.ContextState) components.Resizable {
 	base := state.baseWorkspacePixelBounds(size)
-	width := state.contextPanelExtent(base, context.Width)
+	width := state.contextPanelWidth(base, context)
 	minimum := state.contextPanelExtent(base, layoutcore.MinContextWidth)
 	maximum := state.contextPanelExtent(base, layoutcore.MaxContextWidth)
 	base.Width -= state.aiReserve(state.deck.ActiveWorkspace(), size)
+	base.Width -= state.independentMonitorReserve(state.deck.ActiveWorkspace(), size)
+	if context.MonitorLeft {
+		base.X += state.independentMonitorReserve(state.deck.ActiveWorkspace(), size)
+	}
 	usable := max(base.Width-1, 1)
 	fraction, least, most := width/usable, minimum/usable, maximum/usable
 	if context.Side == layoutcore.ContextRight {

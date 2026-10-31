@@ -42,6 +42,9 @@ type Host struct {
 	// NoHistory keeps what is typed in this host's terminals out of the command
 	// history, whatever the global switch says.
 	NoHistory bool
+	// tunnel marks the ephemeral host of a .xsh bastion tunnel opened on this
+	// computer. It is never saved, so only that launch gets the relaxed policy.
+	tunnel bool
 	// Transfer is the file protocol of the host's file panel.
 	Transfer transferMode
 	// Proxy overrides the global outbound proxy for this host. Nil inherits the
@@ -55,6 +58,12 @@ type Host struct {
 	ViaSSH    bool
 	Clipboard bool
 	Console   bool
+
+	// localShell is the shell a local terminal was opened with: a program path,
+	// or a WSL distribution as localshell.WSLShell names it. Empty starts the
+	// default shell of the settings. Only the local host has one, and it is
+	// never saved with the catalog.
+	localShell string
 
 	// target is how the address column shows the destination: the host name,
 	// plus the port when it is not the default. Built once, not per paint.
@@ -102,6 +111,9 @@ type Session struct {
 	// notified is when this terminal last had a notification shown.
 	notified  time.Duration
 	didNotify bool
+	// belled is when this terminal last rang the bell.
+	belled  time.Duration
+	didBell bool
 	// filledSecret is the saved secret the last question was answered with, to be
 	// forgotten if the server refuses it. pendingSecret* is what the user asked
 	// to save, kept until the server accepts it.
@@ -124,12 +136,27 @@ type Session struct {
 	questions []sshconn.Question
 	identity  string
 	files     *sftpView
+
+	// Idle pane history lives with this session, not its worker.
+	fileHistory [2]sftpSavedHistory
 	// pastingImage is set while a pasted image is on its way to the server.
 	pastingImage bool
 	// relay is where this session's background goroutines report progress. It
 	// points at the window the session is in, and moves with the session.
 	relay *notifyRelay
 	stats *remoteStatsView
+
+	// rttMs holds the latest measured round-trip time in milliseconds,
+	// rttAvailable is 1 when rttMs is valid, rttMeasuring is 1 while a ping is
+	// in flight, rttBroken stops probing after a failed request, rttGeneration
+	// invalidates results from a previous connection, and rttLastPing records
+	// the last probe.
+	rttMs         int64
+	rttAvailable  int32
+	rttMeasuring  int32
+	rttBroken     int32
+	rttGeneration uint32
+	rttLastPing   time.Time
 
 	// The connection page. stage is the furthest step the connection reached
 	// (see stageConnect...), since and finished bound the elapsed time (finished

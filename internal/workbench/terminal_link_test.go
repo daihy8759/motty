@@ -32,6 +32,7 @@ func TestOSC8TerminalLinkUsesVifPublicOpenURL(t *testing.T) {
 	defer driver.Close()
 
 	state, session, geometry := selectionState()
+	state.terminalLinkPlainClick = true
 	state.messages = i18n.For(i18n.English)
 	state.options.OpenURL = app.OpenURL
 	session.term.openLink = state.openTerminalLink
@@ -47,6 +48,7 @@ func TestOSC8TerminalLinkUsesVifPublicOpenURL(t *testing.T) {
 
 func TestTerminalLinkHitHoverPaintAndClick(t *testing.T) {
 	state, session, geometry := selectionState()
+	state.terminalLinkPlainClick = true
 	session.term.write([]byte("go https://example.test/a now"))
 	var opened []string
 	session.term.openLink = func(target string) { opened = append(opened, target) }
@@ -110,6 +112,7 @@ func TestTerminalLinkHitHoverPaintAndClick(t *testing.T) {
 
 func TestTerminalLinkHoverChecksTheNextLineAfterALinklessOne(t *testing.T) {
 	state, session, geometry := selectionState()
+	state.terminalLinkPlainClick = true
 	session.term.write([]byte("no links here\r\nsee https://example.test/x now"))
 	hit := hitTerminalList.At(int(session.ID))
 
@@ -197,4 +200,40 @@ func hasTerminalLinkUnderline(rectangles []ui.Rectangle, bounds ui.Rect, color u
 		}
 	}
 	return false
+}
+
+func TestTerminalLinkOpensOnlyWithTheModifierUnlessPlainClicksAreChosen(t *testing.T) {
+	modifier := defaultShortcutModifier()
+	tests := []struct {
+		name      string
+		plain     bool
+		modifiers ui.Modifiers
+		wantOpen  bool
+	}{
+		{name: "a plain click only selects", modifiers: 0},
+		{name: "the modifier opens", modifiers: modifier, wantOpen: true},
+		{name: "shift keeps selecting", modifiers: modifier | ui.ModifierShift},
+		{name: "plain clicks chosen", plain: true, modifiers: 0, wantOpen: true},
+		{name: "plain clicks chosen, modifier too", plain: true, modifiers: modifier, wantOpen: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state, session, geometry := selectionState()
+			state.terminalLinkPlainClick = test.plain
+			session.term.write([]byte("go https://example.test/a now"))
+			opened := ""
+			session.term.openLink = func(target string) { opened = target }
+			hit := hitTerminalList.At(int(session.ID))
+			x, y := cellPoint(geometry, 0, 5, state.cellWidth, state.cellHeight)
+
+			state.Pointer(ui.PointerEvent{Kind: ui.PointerMove, Target: hit, Modifiers: test.modifiers, X: x, Y: y, Viewport: state.viewport})
+			_, hovered := session.term.links.hoveredLink(session.term.screen)
+			state.Pointer(ui.PointerEvent{Kind: ui.PointerDown, Button: ui.PointerButtonPrimary, Target: hit, Modifiers: test.modifiers, X: x, Y: y, Viewport: state.viewport})
+			state.Pointer(ui.PointerEvent{Kind: ui.PointerUp, Button: ui.PointerButtonPrimary, Target: hit, Modifiers: test.modifiers, Captured: true, X: x, Y: y, Viewport: state.viewport})
+
+			if (opened != "") != test.wantOpen || hovered != test.wantOpen {
+				t.Fatalf("opened = %q, hover underline = %t; want open = %t", opened, hovered, test.wantOpen)
+			}
+		})
+	}
 }

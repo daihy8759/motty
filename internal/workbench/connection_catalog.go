@@ -89,6 +89,23 @@ func (catalog *hostCatalog) hostByConnection(address, user string, port uint16) 
 	return Host{}, false
 }
 
+// secretOwner is the catalog ID of the host that the secrets of a connection
+// prompt belong to: the host that was opened, or, for a prompt of a jump host
+// along the way, the saved host that is that jump host. A jump host nobody saved
+// gets the ID a host with its address, login and port would have been given.
+func (catalog *hostCatalog) secretOwner(target Host, endpoint sshconn.Endpoint, role sshconn.EndpointRole) string {
+	if role == sshconn.EndpointTarget {
+		if target.CatalogID == "" {
+			return catalogIDFor(target)
+		}
+		return target.CatalogID
+	}
+	if jump, ok := catalog.hostByConnection(endpoint.Host, endpoint.User, endpoint.Port); ok {
+		return jump.CatalogID
+	}
+	return catalogIDFor(Host{Protocol: protocolSSH, Address: endpoint.Host, User: endpoint.User, Port: endpoint.Port})
+}
+
 func (catalog *hostCatalog) identityPaths() []string {
 	paths := make([]string, 0, len(catalog.identities))
 	for _, identity := range catalog.identities {
@@ -233,7 +250,7 @@ func (catalog *hostCatalog) proxyWithPassword(saved outboundProxy, passwordSecre
 	if saved.user != "" && env.Passwords != nil {
 		password, found, err := env.Passwords.Get(passwordSecret)
 		switch {
-		case errors.Is(err, vault.ErrLocked):
+		case errors.Is(err, vault.ErrNeedsConversion):
 			proxy.Err = env.ProxyLocked
 		case err == nil && found:
 			proxy.Password = password
@@ -281,6 +298,7 @@ func (catalog *hostCatalog) sshConfigFor(host, proxyHost Host, env connectEnv) (
 	}
 	chain, valid := catalog.proxyChainFor(host)
 	config.Algorithms = catalog.algorithmsFor(host, chain)
+	disableKeepAliveForTunnel(host, &config)
 	if !valid {
 		config.Host = ""
 	} else if len(chain) > 0 {

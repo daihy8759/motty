@@ -24,6 +24,8 @@ The terminal resource-monitor fixture accepts only the fixed
 network counters, a reading every 200 ms until the client closes the session; arbitrary exec requests are rejected unless the server is started with `E2E_ALLOW_EXEC=1`, which runs them with `/bin/sh -c` (for checking features that run a command on the server).
 This permits one instance to act as a jump host for another local fixture:
 
+With `E2E_ALLOW_EXEC=1` a command requested together with a terminal runs on a pty, as sshd does, which is how Motty starts its folder-reporting shell. `E2E_LOGIN_SHELL=/path/to/bash` makes that shell the account's login shell: `$SHELL` names it for the client's probe, and a plain shell request starts it too. Use it to check Bash versions older than the system's.
+
 `E2E_NO_SFTP=1` makes it a server without an SFTP subsystem: the subsystem request is refused and the only commands accepted are the `scp -f`/`scp -t` source and sink and the fixed listing, `mkdir`, `rm`, `rmdir`, `mv`, `chmod` and `ln` commands of Motty's SCP backend, matched by exact shape, run without a shell and confined to the fixture root (see `tools/e2e/scp_e2e.txt`).
 
 `E2E_SFTP_ONLY=1` makes it an account restricted to SFTP: a shell request is accepted, prints `This service allows sftp connections only.` and ends with exit status 1, while the SFTP subsystem keeps working (see `tools/e2e/sftp_only_e2e.txt`).
@@ -52,3 +54,7 @@ instead of a password: it asks `Password: ` and `Verification code: ` together
 and accepts `secret` and `123456`. Password authentication is refused, so a
 client that answers only one question cannot get in. Run it on a port of its
 own (`E2ESSHD_KBI=1 /tmp/e2esshd 2223`) to drive the multi-factor login path.
+
+With `E2ESSHD_KBI=password` the only keyboard-interactive question is `Password: `
+(accepting `secret`), which is how a default OpenSSH with PAM takes the password;
+the plain password method stays refused (see `tools/e2e/vault_kbi_e2e.txt`).

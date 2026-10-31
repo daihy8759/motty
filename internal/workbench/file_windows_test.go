@@ -290,6 +290,8 @@ func (h *documentTestHost) OpenWindow(config app.Config, _ *ui.Canvas, closed fu
 func (h *documentTestHost) AddStatusItem(app.StatusItemConfig) (app.StatusItemControl, error) {
 	return nil, errors.New("not used")
 }
+func (h *documentTestHost) SetDockBadge(string) {}
+
 func (h *documentTestHost) Quit() {
 	for _, w := range h.windows {
 		w.Close()
@@ -335,6 +337,7 @@ func TestDocumentWindowSaveStaysOnCapturedConnectionAfterTabSwitch(t *testing.T)
 		state.activeSessionID = 0
 		app.TextEvent{Kind: app.TextCommandEvent, Command: app.TextSelectAll}.Apply(&document.editor)
 		document.editor.Insert("updated original host\n")
+		readsBefore := remote.readCount("/home/test")
 		document.save(false)
 		until(func() bool { return !document.busy })
 		remote.mu.Lock()
@@ -343,6 +346,10 @@ func TestDocumentWindowSaveStaysOnCapturedConnectionAfterTabSwitch(t *testing.T)
 		if actual != "updated original host\n" || document.dirty() {
 			t.Fatal("save lost source binding", actual, document.problem)
 		}
+		if len(document.notices.items) == 0 || document.notices.items[len(document.notices.items)-1].kind != components.ToastSuccess {
+			t.Fatalf("save did not report success: %+v", document.notices.items)
+		}
+		until(func() bool { return remote.readCount("/home/test") > readsBefore })
 		document.editor.Insert("unsaved")
 		allow := false
 		if !state.ConfirmDocumentClose(func() { allow = true }) || allow {

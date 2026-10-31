@@ -537,7 +537,8 @@ func (conn *Conn) connect() error {
 		status.Method = method
 		status.System = classifyBanner(serverVersion)
 	})
-	if system := conn.Status().System; system == SystemUnknown || system == SystemUbuntu || system == SystemDebian {
+	if system := conn.Status().System; standardImplementation(serverVersion) &&
+		(system == SystemUnknown || system == SystemUbuntu || system == SystemDebian) {
 		go conn.detectSystem(client, serverVersion)
 	}
 	return nil

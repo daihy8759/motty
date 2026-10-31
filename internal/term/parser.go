@@ -1,7 +1,6 @@
 package term
 
 import (
-	"bytes"
 	"strconv"
 )
 
@@ -100,13 +99,11 @@ func (t *Terminal) stringRun(p []byte) int {
 	limit, overflow := maxOSC, false
 	switch t.state {
 	case stOSC:
-		// The image limit applies only when the string starts with 1337;File=,
+		// A longer limit applies only when the string starts with its prefix,
 		// so the first bytes still go through the per-byte path.
-		if len(t.osc) < len("1337;File=") {
+		var decided bool
+		if limit, decided = oscLimit(t.osc); !decided {
 			return 0
-		}
-		if bytes.HasPrefix(t.osc, []byte("1337;File=")) {
-			limit = maxImageSequence
 		}
 		dst, overflow = &t.osc, t.oscOverflow
 	case stDCS:
@@ -214,6 +211,10 @@ func (t *Terminal) ground(b byte) {
 // control executes a C0 control character.
 func (t *Terminal) control(b byte) {
 	switch b {
+	case 0x07: // BEL
+		if t.bellFn != nil {
+			t.bellFn()
+		}
 	case 0x08: // BS
 		t.pend = false
 		if t.cx > 0 {
@@ -379,16 +380,42 @@ func (t *Terminal) oscByte(b byte) {
 		t.state = stGround
 	case b < 0x20:
 	default:
-		limit := maxOSC
-		if bytes.HasPrefix(t.osc, []byte("1337;File=")) || len(t.osc) < len("1337;File=") && bytes.HasPrefix([]byte("1337;File="), t.osc) {
-			limit = maxImageSequence
-		}
+		limit, _ := oscLimit(t.osc)
 		if len(t.osc) < limit {
 			t.osc = append(t.osc, b)
 		} else {
 			t.oscOverflow = true
 		}
 	}
+}
+
+// oscPrefixLimits are the OSC strings that may run past maxOSC, by their first
+// bytes: an inline picture, and a clipboard write, which carries a whole
+// selection (a page of output, or a table whose box drawing is three bytes a
+// character).
+var oscPrefixLimits = [...]struct {
+	prefix string
+	limit  int
+}{
+	{"1337;File=", maxImageSequence},
+	{"52;", maxClipboardSequence},
+}
+
+// oscLimit is the byte limit of an OSC string that begins with osc, and
+// whether those bytes decide it: false while osc could still grow into one of
+// the oscPrefixLimits prefixes.
+func oscLimit(osc []byte) (limit int, decided bool) {
+	decided = true
+	for _, rule := range oscPrefixLimits {
+		if len(osc) >= len(rule.prefix) {
+			if string(osc[:len(rule.prefix)]) == rule.prefix {
+				return rule.limit, true
+			}
+		} else if string(osc) == rule.prefix[:len(osc)] {
+			decided = false
+		}
+	}
+	return maxOSC, decided
 }
 
 // endOSC runs a completed operating-system command.
@@ -434,6 +461,7 @@ func (t *Terminal) endOSC() {
 			t.commandStartFn()
 		}
 	case 777:
+		t.inputEnvironmentReport(text)
 		t.osc777(text)
 	case 10, 11:
 		if len(text) == 1 && text[0] == '?' && t.haveDefaults {

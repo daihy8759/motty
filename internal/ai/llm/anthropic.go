@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,8 +63,16 @@ type anBlock struct {
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
+	Source    *anImage        `json:"source,omitempty"`
 	// CacheControl marks the end of a cacheable prefix.
 	CacheControl *anCacheControl `json:"cache_control,omitempty"`
+}
+
+// anImage is the base64 source of an image block.
+type anImage struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 // anCacheControl is a prompt-cache breakpoint: the provider caches the whole
@@ -126,6 +135,11 @@ func (p *anthropic) buildBody(req Request) ([]byte, error) {
 				system = append(system, m.Text)
 			}
 		case RoleUser:
+			// Pictures go ahead of the words about them, which is how the API
+			// documents getting the best reading of both.
+			for _, image := range m.Images {
+				addUser(anBlock{Type: "image", Source: &anImage{Type: "base64", MediaType: image.MediaType, Data: base64.StdEncoding.EncodeToString(image.Data)}})
+			}
 			if m.Text != "" {
 				addUser(anBlock{Type: "text", Text: m.Text})
 			}

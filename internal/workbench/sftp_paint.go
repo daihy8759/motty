@@ -2,8 +2,8 @@ package workbench
 
 import (
 	"fmt"
+	"math"
 	"os"
-	"path"
 	"time"
 
 	"github.com/vivaui/viva/components"
@@ -17,10 +17,11 @@ import (
 // of icon buttons, the path, a list of rows (type icon, name, date) and a
 // status line. Nothing in it assumes the width of a page.
 const (
-	sftpPad       = float32(12)
-	sftpRowHeight = float32(30)
-	sftpIconSize  = float32(16)
-	sftpButton    = float32(28)
+	sftpPad              = float32(12)
+	sftpRowHeight        = float32(30)
+	sftpIconSize         = float32(16)
+	sftpButton           = float32(28)
+	sftpListHeaderHeight = float32(28)
 	// The title row is as tall as the terminal's info bar and its buttons are that
 	// bar's size, so the two rows share a center line across the window.
 	sftpHeaderButton = float32(24)
@@ -70,10 +71,11 @@ func (state *State) paintSFTPPage(canvas *ui.Canvas, size ui.Size, session *Sess
 	// actions are as tall as what they hold; the list takes what they leave.
 	selectedCount, selected := selectedSFTP(view)
 	one := selectedCount == 1
-	starred := !local && state.bookmarked(session, path.Clean(view.path))
-	starIcon, starHint := uint8(iconStar), messages.Tools.BookmarkAdd
+	places := sftpPlaceBrowser{owner: state, session: session, view: view}
+	starred := places.directoryFavorite(local)
+	starIcon, starHint := uint8(iconStar), messages.SFTPWindow.FavoriteAdd
 	if starred {
-		starIcon, starHint = iconStarSolid, messages.Tools.BookmarkRemove
+		starIcon, starHint = iconStarSolid, messages.SFTPWindow.FavoriteRemove
 	}
 	paneIcon, paneHint := uint8(iconHardDrive), messages.Tools.PaneLocal
 	if local {
@@ -112,7 +114,7 @@ func (state *State) paintSFTPPage(canvas *ui.Canvas, size ui.Size, session *Sess
 	addHeader(hitSFTPClose, iconClose, messages.TipSFTPClose, false)
 	headerTools = state.orderToolbarTools(toolbarSFTP, headerTools, false)
 	buttonCount, headerButtonCount := 0, 0
-	var header, crumbs, filterSlot, popupTop, listSlot, spinnerSlot, moreButton flex.Box
+	var header, crumbs, filterSlot, listSlot, spinnerSlot, moreButton flex.Box
 
 	f := state.filesLayout.Begin(canvas, state.Theme(), ui.Rect{Y: windowBarHeight, Width: size.Width, Height: max(0, size.Height-windowBarHeight)})
 	// icon declares an icon button where it goes; it is painted after End.
@@ -151,18 +153,18 @@ func (state *State) paintSFTPPage(canvas *ui.Canvas, size ui.Size, session *Sess
 				height = sftpButton
 			}
 			crumbs = f.Slot().Grow(1).Height(height)
-			if !local {
-				f.Row().Gap(2).Shrink(0).Children(func() {
-					icon(sftpButton, hitSFTPBookmarkList, iconChevronDown, messages.Tools.Bookmarks, false, iconButtonQuiet)
-					icon(sftpButton, hitSFTPBookmarkToggle, starIcon, starHint, view.busy || view.path == "", iconButtonQuiet)
-				})
+			listID, starID, hint := hitSFTPBookmarkList, hitSFTPBookmarkToggle, messages.SFTPWindow.DirectoryFavorites
+			if local {
+				listID, starID, hint = hitSFTPLocalPlaces, hitSFTPLocalStar, messages.SFTPWindow.LocalPlaces
 			}
+			f.Row().Gap(2).Shrink(0).Children(func() {
+				icon(sftpButton, listID, iconChevronDown, hint, false, iconButtonQuiet)
+				icon(sftpButton, starID, starIcon, starHint, folder.path == "" || !local && (view.busy || !places.connected() || session.host.CatalogID == ""), iconButtonQuiet)
+			})
 		})
 		if folder.filterOpen {
 			filterSlot = f.Slot().Height(32).Shrink(0).MarginSides(5, 0, 4, 0)
 		}
-		// The bookmark list opens just under the path row.
-		popupTop = f.Slot().Height(0).MarginSides(4, 0, -4, 0)
 		f.Divider().Background(pal.line).MarginSides(2, 0, 3, 0)
 
 		listSlot = f.Slot().Grow(1)
@@ -215,6 +217,9 @@ func (state *State) paintSFTPPage(canvas *ui.Canvas, size ui.Size, session *Sess
 			})
 		}
 
+		if local {
+			state.declareLocalCoverage(f, folder, hitSFTPCoverage)
+		}
 		// What is happening.
 		f.Row().Height(28).Shrink(0).Gap(8).Items(flex.Center).MarginSides(6, 0, 0, 0).Children(func() {
 			if view.busy {
@@ -240,8 +245,8 @@ func (state *State) paintSFTPPage(canvas *ui.Canvas, size ui.Size, session *Sess
 		buttons[i].behind = headerBackground
 	}
 	state.paintSFTPIconButtons(canvas, buttons[:buttonCount])
-	if folder.headerMenuOpen {
-		state.paintSFTPHeaderMenu(canvas, ui.Size{Width: size.Width, Height: size.Height}, moreButton.Rect(), folder)
+	if folder.headerMenuOpen && state.sftpHeaderMenuAvailable(view) {
+		state.paintSFTPHeaderMenu(canvas, ui.Size{Width: size.Width, Height: size.Height}, moreButton.Rect(), folder, view)
 	}
 	if folder.filterOpen {
 		state.paintSFTPFilter(canvas, filterSlot.Rect(), folder)
@@ -252,8 +257,9 @@ func (state *State) paintSFTPPage(canvas *ui.Canvas, size ui.Size, session *Sess
 		state.paintSFTPBreadcrumbs(canvas, crumbs.Rect(), folder.crumbs)
 	}
 	state.paintSFTPList(canvas, size, listSlot.Rect(), session, view)
-	if view.bookmarksOpen && !local {
-		state.paintSFTPBookmarkPopup(canvas, popupTop.Rect().Y, size, session, view)
+	view.places.anchors[sideIndex(local)] = crumbs.Rect()
+	if view.bookmarksOpen {
+		places.paintDirectoryPlaces(canvas, ui.Rect{Y: windowBarHeight, Width: size.Width, Height: max(0, size.Height-windowBarHeight)})
 	}
 	if view.busy {
 		components.PaintSpinner(canvas, state.Theme(), spinnerSlot.Rect(), components.SpinnerPhase(canvas.Now()/(125*time.Millisecond)))
@@ -268,74 +274,157 @@ func (state *State) paintSFTPPage(canvas *ui.Canvas, size ui.Size, session *Sess
 func (state *State) paintSFTPList(canvas *ui.Canvas, size ui.Size, list ui.Rect, session *Session, view *sftpView) {
 	pal := state.pal
 	folder, local := view.active(), view.local
-	visibleRows := max(0, int(list.Height/sftpRowHeight))
-	folder.visibleRows = visibleRows
-	first := min(folder.first, max(0, len(folder.rows)-visibleRows))
-	folder.first = first
-	end := min(len(folder.rows), first+visibleRows)
-	showDate := list.Width >= 280
-	fullDate := list.Width >= 340
+	headerHeight := min(sftpListHeaderHeight, max(list.Height, 0))
+	body := ui.Rect{X: list.X, Y: list.Y + headerHeight, Width: list.Width, Height: max(list.Height-headerHeight, 0)}
+	visibleRows := max(0, int(body.Height/sftpRowHeight))
 	scrolls := len(folder.rows) > visibleRows && visibleRows > 0
+	rowWidth := body.Width
+	if scrolls {
+		rowWidth = max(rowWidth-10, 0)
+	}
+	sizeWidth, modifiedWidth := sftpColumnWidths(rowWidth)
 	empty := len(folder.rows) == 0 && (!view.busy || local) && view.errorText == ""
 	loading := len(folder.rows) == 0 && view.busy && !local && view.operation == sftpclient.OperationList && view.errorText == ""
 	boxes := state.filesRowBoxes[:0]
-	var column, track, spinner flex.Box
+	var dropColumn flex.Box
 
-	// The frame spans the panel so the scroll bar can sit in its margin.
-	f := state.filesList.Begin(canvas, state.Theme(), ui.Rect{Y: list.Y, Width: size.Width, Height: list.Height})
-	f.Row().Fill().PadSides(0, sftpPad, 0, sftpPad).Children(func() {
-		column = f.Column().Grow(1).Clip()
-		if empty || loading {
-			column.Center()
+	state.paintSFTPColumnHeader(canvas, ui.Rect{X: list.X, Y: list.Y, Width: list.Width, Height: headerHeight}, folder, sizeWidth, modifiedWidth, scrolls)
+
+	if !view.scrollDrag {
+		if folder.scroll.MaxOffsetY <= 0 || folder.scrollOffset > folder.scroll.MaxOffsetY || int(folder.scrollOffset/sftpRowHeight) != folder.first {
+			folder.scrollOffset = float32(folder.first) * sftpRowHeight
 		}
-		column.Children(func() {
-			if loading {
-				f.Row().Gap(8).Items(flex.Center).Children(func() {
-					spinner = f.Slot().Size(16, 16)
-					f.Text(state.messages.SFTPLoading).FontSize(metrics.FontSizeM).Color(pal.muted)
-				})
-				return
-			}
-			if empty {
-				f.Text(state.messages.SFTPEmpty).FontSize(metrics.FontSizeM).Color(pal.muted)
-				return
-			}
-			for index := first; index < end; index++ {
-				boxes = append(boxes, state.declareSFTPRow(f, &folder.rows[index], hitSFTPEntryList.At(index-first), showDate, fullDate))
+	}
+	area := components.BeginScrollArea(canvas, state.Theme(), body, ui.Size{Width: body.Width, Height: float32(len(folder.rows)) * sftpRowHeight}).
+		Offset(0, folder.scrollOffset).
+		VerticalScrollbar(hitSFTPListScrollbar, state.messages.SFTPFiles, "")
+	geometry := area.BeginContent()
+	folder.scroll = geometry
+	folder.scrollOffset = geometry.OffsetY
+	first := min(int(geometry.OffsetY/sftpRowHeight), max(0, len(folder.rows)-max(visibleRows, 1)))
+	folder.first = first
+	last := min(len(folder.rows), first+int(math.Ceil(float64(body.Height/sftpRowHeight)))+2)
+	f := state.filesList.Begin(canvas, state.Theme(), ui.Rect{
+		X: body.X, Y: body.Y - geometry.OffsetY + float32(first)*sftpRowHeight,
+		Width: rowWidth, Height: float32(last-first) * sftpRowHeight,
+	})
+	f.Column().FillWidth().Children(func() {
+		dropColumn = f.Column().Grow(1)
+		dropColumn.Children(func() {
+			for index := first; index < last; index++ {
+				boxes = append(boxes, state.declareSFTPRow(
+					f, &folder.rows[index], hitSFTPEntryList.At(index-first), sizeWidth, modifiedWidth,
+				))
 			}
 		})
-		if scrolls {
-			// Beside the list, in the margin the panel keeps to its right.
-			track = f.Slot().Width(3).MarginSides(0, -10, 0, 7)
-		}
 	})
 	f.End()
+	area.EndContent()
+
+	folder.visibleRows = visibleRows
 	state.filesRowBoxes = boxes
 	if loading {
-		components.PaintSpinner(canvas, state.Theme(), spinner.Rect(), components.SpinnerPhase(canvas.Now()/(125*time.Millisecond)))
+		spinnerSize := float32(16)
+		spinner := ui.Rect{
+			X: body.X + (body.Width-spinnerSize)/2, Y: body.Y + (body.Height-spinnerSize)/2,
+			Width: spinnerSize, Height: spinnerSize,
+		}
+		components.PaintSpinner(canvas, state.Theme(), spinner, components.SpinnerPhase(canvas.Now()/(125*time.Millisecond)))
+		canvas.LabelCenter(state.messages.SFTPLoading, ui.Rect{
+			X: body.X, Y: body.Y + body.Height/2 + 14, Width: body.Width, Height: 22,
+		}, ui.TextStyle{Size: metrics.FontSizeM, Color: pal.muted})
+	} else if empty {
+		label := state.messages.SFTPEmpty
+		if local && folder.coverageEmpty != "" {
+			label = folder.coverageEmpty
+		}
+		canvas.LabelCenter(label, body, ui.TextStyle{Size: metrics.FontSizeM, Color: pal.muted})
 	}
 
 	if view.dropping && !local {
 		// Where dropped files would go: the folder row they are over, or the folder.
-		target := column.Rect()
-		if row := view.dropRow; row >= first && row < end {
+		target := dropColumn.Rect()
+		if row := view.dropRow; row >= first && row < last {
 			target = boxes[row-first].Rect()
 		}
 		state.paintSFTPDropOverlay(canvas, target, state.messages.Tools.DropUploadHint)
 	}
-	if scrolls {
-		track := track.Rect()
-		thumb := track
-		thumb.Height = max(track.Height*float32(visibleRows)/float32(len(folder.rows)), 24)
-		thumb.Y += (track.Height - thumb.Height) * float32(first) / float32(len(folder.rows)-visibleRows)
-		canvas.Rounded(thumb, 1.5, withAlpha(pal.muted, 0.35))
+}
+
+func sftpColumnWidths(width float32) (size, modified float32) {
+	modified = 82
+	if width >= 360 {
+		modified = 108
 	}
+	size = 54
+	if width >= 360 {
+		size = 64
+	}
+	return
+}
+
+func (state *State) paintSFTPColumnHeader(canvas *ui.Canvas, bounds ui.Rect, folder *sftpFolder, sizeWidth, modifiedWidth float32, scrolls bool) {
+	if bounds.Height <= 0 {
+		return
+	}
+	width := bounds.Width
+	if scrolls {
+		width = max(width-10, 0)
+	}
+	f := state.filesHeader.Begin(canvas, state.Theme(), ui.Rect{X: bounds.X, Y: bounds.Y, Width: width, Height: bounds.Height})
+	f.Row().Fill().PadX(8).Items(flex.Center).Children(func() {
+		state.declareSFTPColumnHeader(f, folder, 0, state.messages.SFTPWindow.Name, 0, true)
+		for _, entry := range state.sftpColumns.entries[1:] {
+			if !entry.Enabled {
+				continue
+			}
+			label, width := state.messages.SFTPWindow.Size, sizeWidth
+			if entry.Key == sftpColumnModified {
+				label, width = state.messages.SFTPWindow.Modified, modifiedWidth
+			}
+			state.declareSFTPColumnHeader(f, folder, int(entry.Key), label, width, false)
+		}
+	})
+	f.End()
+	canvas.Fill(ui.Rect{X: bounds.X, Y: bounds.Y + bounds.Height - 1, Width: width, Height: 1}, withAlpha(state.pal.muted, 0.18))
+}
+
+func (state *State) declareSFTPColumnHeader(f *flex.Frame, folder *sftpFolder, column int, label string, width float32, grow bool) {
+	id := hitSFTPColumnList.At(column)
+	active := folder.sortChosen && folder.sortOrder.column == column
+	text := label
+	if active {
+		if folder.sortOrder.descending {
+			text += " ↓"
+		} else {
+			text += " ↑"
+		}
+	}
+	box := f.Row().Height(sftpListHeaderHeight).Shrink(0)
+	if grow {
+		box = box.Grow(1)
+	} else {
+		box = box.Width(width)
+	}
+	box = box.Items(flex.Center).HitWith(id, text, ui.HitOptions{Role: ui.RoleButton, Selected: active, Hint: label})
+	box.Children(func() {
+		color := state.pal.muted
+		if active {
+			color = state.pal.accent
+		}
+		textBox := f.Text(text).FontSize(metrics.FontSizeS).Color(color).LineHeight(sftpListHeaderHeight).Ellipsis()
+		if grow {
+			textBox = textBox.Grow(1)
+		} else {
+			textBox = textBox.Width(width - 4).TextEnd()
+		}
+	})
 }
 
 // declareSFTPRow declares one entry: its type icon, its name, which takes the
 // room and ends with an ellipsis, and, when there is room, its modification
 // time. A selected row is tinted; the pointer lightens one. It returns the row.
-func (state *State) declareSFTPRow(f *flex.Frame, row *sftpRow, id ui.ID, showDate, fullDate bool) flex.Box {
+func (state *State) declareSFTPRow(f *flex.Frame, row *sftpRow, id ui.ID, sizeWidth, modifiedWidth float32) flex.Box {
 	pal, canvas := state.pal, f.Canvas()
 	name := row.cells[1]
 	if row.entry.IsLink() && row.entry.LinkTarget != "" {
@@ -361,7 +450,7 @@ func (state *State) declareSFTPRow(f *flex.Frame, row *sftpRow, id ui.ID, showDa
 	}
 	box := f.Row().Height(sftpRowHeight).Shrink(0).Items(flex.Center).HitWith(id, row.cells[1], ui.HitOptions{Role: ui.RoleButton, Selected: row.selected})
 	contents := func() {
-		f.Icon(*row.icon).Color(tint)
+		declareSFTPRowIcon(f, row, tint)
 		label := f.Row().Grow(1).Clip().Items(flex.Center).MarginSides(0, 0, 0, 8)
 		label.Children(func() {
 			if row.matchEnd > row.matchStart && row.matchEnd <= len(row.entry.Name) {
@@ -378,13 +467,21 @@ func (state *State) declareSFTPRow(f *flex.Frame, row *sftpRow, id ui.ID, showDa
 			}
 			f.Text(name).FontSize(metrics.FontSizeM).Color(nameColor).Ellipsis().Grow(1)
 		})
-		if showDate {
-			date := row.cells[3]
-			if !fullDate && len(date) > 5 {
-				date = date[5:] // drop the year
+		for _, entry := range state.sftpColumns.entries[1:] {
+			if !entry.Enabled {
+				continue
 			}
-			label.MarginSides(0, 10, 0, 8)
-			f.Text(date).FontSize(metrics.FontSizeS).Color(pal.muted).Shrink(0)
+			if entry.Key == sftpColumnSize {
+				f.Text(row.cells[2]).FontSize(metrics.FontSizeS).Color(pal.muted).Width(sizeWidth).TextEnd().Shrink(0)
+				continue
+			}
+			if entry.Key == sftpColumnModified {
+				date := row.cells[3]
+				if modifiedWidth < 100 && len(date) > 5 {
+					date = date[5:] // drop the year
+				}
+				f.Text(date).FontSize(metrics.FontSizeS).Color(pal.muted).Width(modifiedWidth).TextEnd().Shrink(0)
+			}
 		}
 	}
 	if background.Alpha == 0 && canvas.FocusVisible() != id {
@@ -508,9 +605,22 @@ func (state *State) paintSFTPDialog(canvas *ui.Canvas, viewport ui.Rect, view *s
 	description := ""
 	fieldLabel := ""
 	submitLabel := ""
+	cancelLabel := messages.Cancel
 	initialFocus := hitSFTPDialogField
 	submitVariant := components.ButtonDefault
 	switch view.dialog {
+	case sftpDialogBrowseCreateDirectory:
+		m := messages.SFTPWindow
+		title, submitLabel, cancelLabel = m.BrowseCreateTitle, m.BrowseCreateConfirm, m.BrowsePause
+		initialFocus = hitSFTPDialogCancel
+		if w := view.detached; w != nil && w.browse.pending != nil {
+			request := w.browse.pending
+			side := m.Remote
+			if request.side == 0 {
+				side = m.Local
+			}
+			description = fmt.Sprintf(m.BrowseCreateDescriptionFmt, side, request.paths[request.side])
+		}
 	case sftpDialogCreateDirectory:
 		title = messages.SFTPNewDirectoryTitle
 		fieldLabel = messages.SFTPDirectoryName
@@ -634,7 +744,7 @@ func (state *State) paintSFTPDialog(canvas *ui.Canvas, viewport ui.Rect, view *s
 		}
 	}
 	dialog.Actions(layout,
-		components.ButtonAction{ID: hitSFTPDialogCancel, Label: messages.Cancel, Variant: components.ButtonSecondary},
+		components.ButtonAction{ID: hitSFTPDialogCancel, Label: cancelLabel, Variant: components.ButtonSecondary},
 		components.ButtonAction{ID: hitSFTPDialogSubmit, Label: submitLabel, Variant: submitVariant},
 	)
 	dialog.End()

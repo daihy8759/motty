@@ -21,6 +21,9 @@ const (
 	DefaultContextWidth = float32(340)
 	MinContextWidth     = float32(280)
 	MaxContextWidth     = float32(480)
+	DefaultMonitorWidth = float32(320)
+	MinMonitorWidth     = float32(280)
+	MaxMonitorWidth     = float32(640)
 )
 
 // ContextKind identifies the one shared panel attached to a workspace.
@@ -46,10 +49,13 @@ const (
 // ContextState is workspace-owned panel presentation state. Session-specific
 // content remains with the session selected by ActivePane.
 type ContextState struct {
-	Kind  ContextKind
-	Open  bool
-	Width float32
-	Side  ContextSide
+	MonitorOpen  bool    // independent monitor, alongside the shared context panel
+	MonitorWidth float32 // zero uses DefaultMonitorWidth
+	MonitorLeft  bool    // false preserves the original right-docked monitor
+	Kind         ContextKind
+	Open         bool
+	Width        float32
+	Side         ContextSide
 }
 
 var (
@@ -68,9 +74,12 @@ type Pane struct {
 
 // WorkspaceInfo is the stable metadata needed to paint workspace tabs.
 type WorkspaceInfo struct {
-	ID         WorkspaceID
-	Title      string
-	Locked     bool
+	ID     WorkspaceID
+	Title  string
+	Locked bool
+	// Named is set once the user chose Title; a title the terminal reports then
+	// no longer takes its place on the tab.
+	Named      bool
 	ActivePane PaneID
 	PaneCount  int
 }
@@ -79,6 +88,7 @@ type workspaceRecord struct {
 	id         WorkspaceID
 	title      string
 	locked     bool
+	named      bool
 	layout     Layout
 	panes      []Pane
 	activePane PaneID
@@ -120,7 +130,7 @@ func (deck *Deck) Workspaces(dst []WorkspaceInfo) []WorkspaceInfo {
 	for index := range deck.workspaces {
 		workspace := &deck.workspaces[index]
 		dst = append(dst, WorkspaceInfo{
-			ID: workspace.id, Title: workspace.title, Locked: workspace.locked,
+			ID: workspace.id, Title: workspace.title, Locked: workspace.locked, Named: workspace.named,
 			ActivePane: workspace.activePane, PaneCount: len(workspace.panes),
 		})
 	}
@@ -143,6 +153,16 @@ func (deck *Deck) SetLocked(id WorkspaceID, locked bool) error {
 		return ErrWorkspaceNotFound
 	}
 	workspace.locked = locked
+	return nil
+}
+
+// SetNamed records whether the user chose this workspace's title.
+func (deck *Deck) SetNamed(id WorkspaceID, named bool) error {
+	workspace, ok := deck.workspace(id)
+	if !ok {
+		return ErrWorkspaceNotFound
+	}
+	workspace.named = named
 	return nil
 }
 
@@ -535,12 +555,21 @@ func normalizeContext(context ContextState) ContextState {
 	if context.Width == 0 {
 		context.Width = DefaultContextWidth
 	}
+	// Migrate the experimental shared monitor to an independent panel. Files
+	// retain their own defaults on a cold restore, without an extra tab header.
+	if context.Kind == ContextMonitor {
+		context.MonitorOpen = context.MonitorOpen || context.Open
+		context.Kind, context.Open = ContextSFTP, false
+	}
 	return context
 }
 
 func validateContext(context ContextState) error {
 	if context.Kind > ContextSessionDetails || context.Side > ContextRight || context.Open && context.Kind == ContextNone ||
 		context.Width != context.Width || context.Width != 0 && (context.Width < MinContextWidth || context.Width > MaxContextWidth) {
+		return ErrInvalidLayout
+	}
+	if context.MonitorWidth != context.MonitorWidth || context.MonitorWidth != 0 && (context.MonitorWidth < MinMonitorWidth || context.MonitorWidth > MaxMonitorWidth) {
 		return ErrInvalidLayout
 	}
 	return nil

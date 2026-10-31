@@ -19,17 +19,26 @@ type hostEditor struct {
 	label   text.Editor
 	address text.Editor
 	user    text.Editor
-	// password is only the value typed in this dialog. It is never loaded from
-	// the vault or copied into Host; a successful submit stores it separately.
-	password    text.Editor
-	group       text.Editor
-	groupPicker hostGroupPicker
-	tags        text.Editor
-	tagPicker   hostTagPicker
-	icon        hostIcon
-	color       text.Editor
-	colorPicker hostColorPicker
-	form        hostFormScroll
+	// password is the value shown in this dialog: what was typed, or the saved one
+	// read back from the vault. It is never copied into Host; a successful submit
+	// stores it separately.
+	password text.Editor
+	// passphrase unlocks the private key the host is pinned to; it is kept in
+	// the vault under the key, never in the host.
+	passphrase text.Editor
+	// passphraseFor is the key whose saved passphrase the form last looked up.
+	passphraseFor string
+	// passwordSaved says the password field was filled from the vault when the
+	// dialog opened, so that emptying it means taking the password away.
+	passwordSaved bool
+	group         text.Editor
+	groupPicker   hostGroupPicker
+	tags          text.Editor
+	tagPicker     hostTagPicker
+	icon          hostIcon
+	color         text.Editor
+	colorPicker   hostColorPicker
+	form          hostFormScroll
 	// system is the system the host was last detected to run, whose badge the
 	// automatic icon shows.
 	system sshconn.RemoteSystem
@@ -64,10 +73,9 @@ type hostEditor struct {
 	proxy         *outboundProxy
 	proxyPassword string
 	// otp is a new one-time code secret to save with the host. A saved one is
-	// never shown again. Existing hosts stay unchecked while the vault is closed,
-	// so merely opening their editor does not ask the system secret store for its key.
-	otp                             text.Editor
-	otpChecked, otpSaved, otpRemove bool
+	// never shown again; otpSaved only says there is one.
+	otp                 text.Editor
+	otpSaved, otpRemove bool
 	// advancedOpen is the SSH form's Advanced section being open: the algorithm
 	// choice, the one-time code secret and the two switches. It opens by itself
 	// for a host that sets any of them and for a value that fails validation.
@@ -96,6 +104,7 @@ const (
 	fieldColor
 	fieldAlgorithms
 	fieldOTP
+	fieldPassphrase
 	fieldCount
 )
 
@@ -120,6 +129,8 @@ func (editor *hostEditor) field(field hostField) *text.Editor {
 		return &editor.algorithms
 	case fieldOTP:
 		return &editor.otp
+	case fieldPassphrase:
+		return &editor.passphrase
 	default:
 		return &editor.port
 	}
@@ -209,7 +220,7 @@ func (editor *hostEditor) load(host Host) {
 	editor.label = text.Editor{}
 	editor.address = text.Editor{}
 	editor.user = text.Editor{}
-	editor.password = text.Editor{}
+	editor.password, editor.passphrase, editor.passphraseFor, editor.passwordSaved = text.Editor{}, text.Editor{}, "", false
 	editor.group = text.Editor{}
 	editor.tags = text.Editor{}
 	editor.tagPicker = hostTagPicker{}
@@ -217,7 +228,7 @@ func (editor *hostEditor) load(host Host) {
 	editor.icon, editor.iconOpen = hostIconAuto, false
 	editor.port = text.Editor{}
 	editor.algorithms = text.Editor{}
-	editor.otp, editor.otpChecked, editor.otpSaved, editor.otpRemove = text.Editor{}, true, false, false
+	editor.otp, editor.otpSaved, editor.otpRemove = text.Editor{}, false, false
 	editor.algoMode = host.algoMode()
 	editor.auth, editor.identity = host.Auth, host.Identity
 	editor.authOpen, editor.identityOpen = false, false
@@ -305,7 +316,7 @@ func (editor *hostEditor) reset() {
 	editor.label = text.Editor{}
 	editor.address = text.Editor{}
 	editor.user = text.Editor{}
-	editor.password = text.Editor{}
+	editor.password, editor.passphrase, editor.passphraseFor, editor.passwordSaved = text.Editor{}, text.Editor{}, "", false
 	editor.group = text.Editor{}
 	editor.tags = text.Editor{}
 	editor.tagPicker = hostTagPicker{}
@@ -313,7 +324,7 @@ func (editor *hostEditor) reset() {
 	editor.icon, editor.system, editor.iconOpen = hostIconAuto, sshconn.SystemUnknown, false
 	editor.port = text.Editor{}
 	editor.algorithms = text.Editor{}
-	editor.otp, editor.otpChecked, editor.otpSaved, editor.otpRemove = text.Editor{}, true, false, false
+	editor.otp, editor.otpSaved, editor.otpRemove = text.Editor{}, false, false
 	editor.algoMode, editor.auth, editor.identity = algoDefault, authAutomatic, ""
 	editor.authOpen, editor.identityOpen = false, false
 	editor.forwardX11, editor.agentForward, editor.noHistory, editor.transfer = false, false, false, transferAuto
@@ -342,7 +353,7 @@ func (editor *hostEditor) setProtocol(protocol hostProtocol) {
 		return
 	}
 	// A password typed for one protocol's account is not another's.
-	editor.password = text.Editor{}
+	editor.password, editor.passphrase = text.Editor{}, text.Editor{}
 	previous := defaultPortText(editor.protocol)
 	if value := editor.value(fieldPort); value == "" || value == previous {
 		editor.port = text.Editor{}

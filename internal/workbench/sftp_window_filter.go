@@ -19,7 +19,17 @@ func (w *sftpWindow) closeHeaderMenu() {
 }
 
 func (w *sftpWindow) targetSide(id ui.ID) (bool, bool) {
+	for side := range 2 {
+		if _, ok := id.In(sftpWindowRecentHits[side]); ok {
+			return side == 0, true
+		}
+		if id == sftpWindowHistoryBack[side] || id == sftpWindowHistoryForward[side] {
+			return side == 0, true
+		}
+	}
 	switch id {
+	case hitSFTPLocationProfiles, hitSFTPBrowseSync, hitSFTPLocalPlaces, hitSFTPLocalStar:
+		return true, true
 	case hitSFTPBookmarkList, hitSFTPBookmarkToggle, hitSFTPNewLink, hitSFTPWindowUpload, hitSFTPWindowDownload:
 		return false, true
 	}
@@ -63,6 +73,9 @@ func (w *sftpWindow) clickFilterControl(id ui.ID) bool {
 	}
 	for side := range 2 {
 		folder, local := w.folder(side == 0), side == 0
+		if w.owner.clickSFTPHistory(w.view, local, id, sftpWindowHistoryBack[side], sftpWindowHistoryForward[side], sftpWindowRecentHits[side]) {
+			return true
+		}
 		switch id {
 		case sftpWindowMore[side]:
 			w.cancelDrag()
@@ -117,7 +130,7 @@ func (w *sftpWindow) filterEscape(event ui.KeyEvent) (ui.EventResult, bool) {
 func (w *sftpWindow) paintHeaderMenu(canvas *ui.Canvas, side int) {
 	m, folder, local := w.owner.messages, w.folder(side == 0), side == 0
 	anchor := w.ui.headerAnchor[side]
-	count := 3
+	count := 6 + len(folder.history.recent)
 	if !local {
 		count++
 	}
@@ -127,13 +140,14 @@ func (w *sftpWindow) paintHeaderMenu(canvas *ui.Canvas, side int) {
 	}
 	bounds := ui.Rect{X: anchor.X + anchor.Width - 224, Y: anchor.Y + anchor.Height + 4, Width: 224, Height: float32(count*32 + 8)}
 	menu := components.BeginDropdownMenu(canvas, w.owner.Theme(), bounds, components.DropdownMenuOptions{Layer: popupLayer, Scope: hitSFTPWindowHeaderDismiss, DismissID: hitSFTPWindowHeaderDismiss, Viewport: ui.Rect{Width: w.ui.size.Width, Height: w.ui.size.Height}, Scroll: &w.ui.headerScroll})
+	w.owner.paintSFTPHistoryMenu(&menu, w.view, local, sftpWindowHistoryBack[side], sftpWindowHistoryForward[side], sftpWindowRecentHits[side])
 	menu.AddItem(components.DropdownMenuItem{ID: sftpWindowFilterToggle[side], Label: m.Tools.FilesFilterLabel, Icon: lucideIcons[iconSearch], Selected: folder.filterOpen || folder.filterInputEditor().String() != ""})
 	hiddenIcon, hiddenLabel := uint8(iconEyeOff), m.Tools.FilesShowHidden
 	if folder.showHidden {
 		hiddenIcon, hiddenLabel = iconEye, m.Tools.FilesHideHidden
 	}
 	menu.AddItem(components.DropdownMenuItem{ID: sftpWindowHeaderHidden[side], Label: hiddenLabel, Icon: lucideIcons[hiddenIcon], Selected: folder.showHidden})
-	busy := local && w.pendingLocal != "" || !local && (w.view.busy || !w.connected())
+	busy := w.browse.pending != nil || local && w.pendingLocal != "" || !local && (w.view.busy || !w.connected())
 	menu.AddItem(components.DropdownMenuItem{ID: sftpWindowNewFolder[side], Label: m.SFTPNewDirectory, Icon: lucideIcons[iconFolderPlus], Disabled: busy})
 	if !local {
 		menu.AddItem(components.DropdownMenuItem{ID: hitSFTPNewLink, Label: m.Tools.TipNewLink, Icon: lucideIcons[iconLink], Disabled: busy})

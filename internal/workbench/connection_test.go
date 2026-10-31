@@ -508,6 +508,39 @@ func TestPasswordDialogMasksSubmitsOnEnterAndAsksAgainAfterARefusal(t *testing.T
 	}
 }
 
+func TestThePasswordDialogHintAndErrorLinesDoNotOverlap(t *testing.T) {
+	world, options := newWorld(t)
+	state := newTestState(t, options)
+	fake := connect(t, state, world)
+	askForPassword(state, fake, 2) // a refused password, with no vault to save into
+	state.secrets.canSave = false
+	if state.modal != modalPassword || state.passwordError == "" {
+		t.Fatalf("modal %d, error %q", state.modal, state.passwordError)
+	}
+
+	canvas, texts := paintedTexts(state)
+	if !contains(texts, state.messages.PasswordRetry) || !contains(texts, state.messages.PasswordHintUnsaved) {
+		t.Fatalf("the dialog does not show both lines: %v", texts)
+	}
+	var hint, problem ui.Rect
+	for _, text := range canvas.Texts() {
+		switch text.Value {
+		case state.messages.PasswordHintUnsaved:
+			hint = text.Bounds
+		case state.messages.PasswordRetry:
+			problem = text.Bounds
+		}
+	}
+	overlap := hint.Y < problem.Bottom() && problem.Y < hint.Bottom() &&
+		hint.X < problem.Right() && problem.X < hint.Right()
+	if overlap {
+		t.Fatalf("the hint line %v overlaps the error line %v", hint, problem)
+	}
+	if height := state.passwordBodyHeight(); height < 66+18+18 {
+		t.Fatalf("body height %v does not reserve the hint and error lines", height)
+	}
+}
+
 func TestEnterOutsideThePasswordFieldDoesNotSubmit(t *testing.T) {
 	world, options := newWorld(t)
 	state := newTestState(t, options)
@@ -854,11 +887,11 @@ func TestMultiQuestionDialogFillsThePasswordAndTheCurrentCode(t *testing.T) {
 	if state.secrets.vault == nil {
 		t.Fatal("the test vault did not open")
 	}
-	if err := state.secrets.vault.Set(passwordSecretName(endpoint), "hunter2"); err != nil {
+	if err := state.secrets.vault.Set(prodPasswordName, "hunter2"); err != nil {
 		t.Fatal(err)
 	}
 	seed := "otpauth://totp/Prod:deploy?secret=" + testOTPSeed + "&issuer=Prod"
-	if err := state.secrets.vault.Set(otpSecretName(endpoint), seed); err != nil {
+	if err := state.secrets.vault.Set(prodOTPName, seed); err != nil {
 		t.Fatal(err)
 	}
 	fake.set(func(s *sshconn.Status) {
@@ -877,5 +910,28 @@ func TestMultiQuestionDialogFillsThePasswordAndTheCurrentCode(t *testing.T) {
 	}
 	if code := state.passwordFields[1].String(); len(code) != 6 {
 		t.Fatalf("code field = %q, want a six-digit code", code)
+	}
+}
+
+// A round that still asks for a one-time code must not claim the password was
+// refused: the server may have rejected either factor, and the saved password
+// has to survive.
+func TestARepeatedSecondFactorRoundDoesNotBlameThePassword(t *testing.T) {
+	world, options := newWorld(t)
+	state := newTestState(t, options)
+	fake := connect(t, state, world)
+	session := &state.sessions[0]
+	session.filledSecret = state.passwordName(session)
+	fake.set(func(status *sshconn.Status) {
+		status.Phase, status.Attempt = sshconn.PhasePasswordPrompt, 2
+		status.Questions = []sshconn.Question{{Secret: true, Text: "Password: "}, {Secret: true, Text: "Verification code: "}}
+		status.Endpoint = sshconn.Endpoint{Host: "prod.example.com", Port: 22, User: "deploy"}
+	})
+	state.Wake()
+	if state.modal != modalPassword || state.passwordError != state.messages.PasswordRetryFactor {
+		t.Fatalf("modal %d error %q", state.modal, state.passwordError)
+	}
+	if session.filledSecret == "" {
+		t.Fatal("a second-factor round forgot the saved password")
 	}
 }

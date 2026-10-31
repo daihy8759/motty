@@ -118,6 +118,7 @@ func (state *State) rebuildCommandPalette() {
 			palette.add(messages.Tools.RemoteMenu, hitRemoteToolsOpen)
 		}
 		palette.add(messages.History.Title, hitHistoryOpen)
+		palette.add(messages.Completion.Title, hitCompletionOpen)
 		palette.add(messages.ConnRetry, hitConnRetry)
 		palette.add(messages.ConnExportLog, hitConnExport)
 		if state.paneInSplit(state.activeSessionID) {

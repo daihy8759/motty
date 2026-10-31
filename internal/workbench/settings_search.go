@@ -130,6 +130,9 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	if state.options.StartAtLogin != nil {
 		row(settingsGeneral, tools.GeneralLogin, tools.GeneralLoginDescription)
 	}
+	if state.closeActionVisible() {
+		row(settingsGeneral, tools.GeneralClose, tools.GeneralCloseDescription)
+	}
 	for _, label := range []string{m.Toolbars.Window, m.Toolbars.Terminal, m.Toolbars.SFTP} {
 		row(settingsGeneral, label, m.Toolbars.Description)
 	}
@@ -139,19 +142,27 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	row(settingsTerminal, m.SettingsTerminalOption, m.SettingsTerminalOptionDescription)
 	row(settingsTerminal, m.SettingsTerminalFontSize, m.SettingsTerminalFontSizeDescription)
 	row(settingsTerminal, m.SettingsTerminalFontFamily, tools.FontPickerDescription)
+	row(settingsTerminal, tools.FontFallbackRow, tools.FontFallbackEmpty)
 	row(settingsTerminal, tools.PaddingRow, "")
 	row(settingsTerminal, tools.GutterRow, tools.GutterDescription)
 	row(settingsTerminal, tools.CursorRow, tools.CursorDescription)
 	row(settingsTerminal, m.SettingsTerminalScrollback, m.SettingsTerminalScrollbackDescription)
 	row(settingsTerminal, m.SettingsTerminalClipboard, m.SettingsTerminalClipboardDescription)
+	row(settingsTerminal, tools.CopyOnSelectRow, tools.CopyOnSelectDescription)
+	row(settingsTerminal, tools.RightClickPasteRow, tools.RightClickPasteDescription)
+	row(settingsTerminal, tools.LinkPlainClickRow, tools.LinkPlainClickDescription)
+	row(settingsTerminal, tools.BellRow, tools.BellDescription)
+	row(settingsTerminal, tools.TabTitleRow, tools.TabTitleDescription)
 	row(settingsTerminal, tools.PasteImageRow, tools.PasteImageDescription)
 	row(settingsTerminal, tools.NotifyRow, tools.NotifyDescription)
-	row(settingsTerminal, state.messages.History.SettingsRow, state.messages.History.SettingsDescription)
+	group(settingsTerminal, m.Completion.Group, m.Completion.Group, "")
+	row(settingsTerminal, m.Completion.CatalogRow, "")
 	row(settingsTerminal, state.messages.History.SuggestRow, state.messages.History.SuggestDescription)
+	row(settingsTerminal, state.messages.History.SettingsRow, state.messages.History.SettingsDescription)
+	row(settingsTerminal, state.messages.History.ClearRow, state.messages.History.ClearDescription)
 	if localShellSettingVisible() {
 		row(settingsTerminal, m.SettingsLocalShell, m.SettingsLocalShellDescription)
 	}
-	row(settingsTerminal, state.messages.History.ClearRow, state.messages.History.ClearDescription)
 	group(settingsTerminal, tools.SchemeGroup, tools.SchemeGroup, tools.SchemeDescription)
 	row(settingsTerminal, tools.HighlightBuiltin, tools.HighlightBuiltinDescription)
 	row(settingsTerminal, tools.HighlightCustom, tools.HighlightCustomDescription)
@@ -174,13 +185,14 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	row(settingsFiles, tools.FilesPanelPosition, tools.FilesPanelPositionDescription)
 	row(settingsFiles, tools.FilesPathStyle, tools.FilesPathDescription)
 	row(settingsFiles, tools.FilesParallel, "")
+	row(settingsFiles, tools.FilesColumns, tools.FilesColumnsDescription)
+	row(settingsFiles, tools.FilesDownloadDirectory, tools.FilesDownloadAskDescription)
 	row(settingsFiles, tools.FilesKeepTimes, tools.FilesKeepTimesDescription)
 	row(settingsFiles, tools.FilesFollow, tools.FilesFollowDescription)
 	row(settingsFiles, tools.FilesTerminalFollow, tools.FilesTerminalFollowDescription)
 	row(settingsFiles, tools.FilesFollowSetup, tools.FilesFollowSetupDescription)
 
 	row(settingsSecurity, m.SettingsVault, m.SettingsVaultEmpty)
-	row(settingsSecurity, m.SettingsMasterPassword, m.SettingsMasterPasswordDescription)
 
 	row(settingsBackup, tools.BackupExportRow, tools.BackupExportDescription)
 	row(settingsBackup, tools.SyncRow, tools.SyncRowNone)
@@ -210,6 +222,9 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	for action := shortcutAction(1); action < shortcutActionCount; action++ {
 		row(settingsShortcuts, state.shortcutActionLabel(action), state.shortcuts.labels[action])
 	}
+	for _, help := range state.completionKeys() {
+		row(settingsShortcuts, help.label, help.keys+" "+help.description)
+	}
 
 	about := m.About
 	facts := aboutFacts()
@@ -224,6 +239,7 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	row(settingsAbout, about.Issues, about.IssuesDescription)
 	row(settingsAbout, about.Repo, about.RepoDescription)
 	row(settingsAbout, about.Docs, about.DocsDescription)
+	row(settingsAbout, about.Viva, about.VivaDescription)
 }
 
 // openSettingsResult leaves the search and opens the category of a result,

@@ -55,10 +55,28 @@ with Shift or Alt, so that terminal keys such as Ctrl+R keep working. It sends
 the snippet to the active terminal while the terminal page is showing, and
 shortcuts are kept per device because the free modifier differs by platform.
 
+A snippet does not need a shortcut. On the Snippets page, select it and choose
+**Send to terminal**, double-click its row, or right-click the row for a menu with
+Send, Edit and Delete. With one terminal open it is sent there; with several
+(tabs or split panes) a list of them opens so you choose the target, the active
+one marked "Current", and the chosen terminal is shown after sending. The status
+line names the terminal it went to. A **↵** keycap in the command column marks snippets that press
+Enter after sending.
+
 ## Command history
 
 **Command+Shift+H** (**Control+Shift+H** elsewhere) opens the commands you have
-typed into terminals. Optional inline command suggestions can be turned on.
+typed into terminals.
+
+## Command completion
+
+**Command+Shift+J** (**Control+Shift+J** elsewhere) opens a list of commands,
+subcommands, options and fixed option values that can continue the line you are
+typing, from a catalog built into Motty. Enter inserts only the missing text and
+never runs it. In Settings > Terminal choose **Off**, **List**, or **List +
+inline**, which also shows the suggestion in gray while you type. Completion
+works without remembering commands, and **Check for updates** refreshes the
+catalog on request.
 
 ## Appearance
 

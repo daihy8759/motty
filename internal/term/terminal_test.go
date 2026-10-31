@@ -171,6 +171,59 @@ func TestScrollbackCollectsLinesThatLeaveTheTop(t *testing.T) {
 	}
 }
 
+func TestClearScreenKeepsThePromptLineAndDropsEverythingAboveIt(t *testing.T) {
+	terminal := New(16, 4, 20)
+	for i := 0; i < 8; i++ {
+		feed(terminal, fmt.Sprintf("old%d\r\n", i))
+	}
+	feed(terminal, "prompt$ ls -l")
+	if terminal.Scrollback() == 0 {
+		t.Fatal("the test needs history to clear")
+	}
+	terminal.Scroll(2)
+	if !terminal.ClearScreen() {
+		t.Fatal("ClearScreen refused the main screen")
+	}
+	if terminal.Scrollback() != 0 || terminal.ViewOffset() != 0 {
+		t.Fatalf("history = %d, view = %d after a clear", terminal.Scrollback(), terminal.ViewOffset())
+	}
+	if got, want := terminal.RowText(0), "prompt$ ls -l"; got != want {
+		t.Fatalf("first row = %q, want the cursor's line %q", got, want)
+	}
+	for row := 1; row < 4; row++ {
+		if got := terminal.RowText(row); got != "" {
+			t.Fatalf("row %d = %q, want it cleared", row, got)
+		}
+	}
+	cursor := terminal.Cursor()
+	if cursor.X != len("prompt$ ls -l") || cursor.Y != 0 || !cursor.Visible {
+		t.Fatalf("cursor = %+v, want column %d of the first row", cursor, len("prompt$ ls -l"))
+	}
+	// The shell keeps writing where it was: its next prompt lands under the one
+	// it left, on the row after it rather than on a cleared screen's top.
+	feed(terminal, "\r\nnext")
+	if got, want := terminal.RowText(1), "next"; got != want {
+		t.Fatalf("row after the prompt = %q, want %q", got, want)
+	}
+}
+
+func TestClearScreenLeavesTheAlternateScreenToItsProgram(t *testing.T) {
+	terminal := New(30, 3, 20)
+	feed(terminal, "kept on the main screen\r\n")
+	feed(terminal, "\x1b[?1049h\x1b[Hfull screen")
+	before := terminal.Text()
+	if terminal.ClearScreen() {
+		t.Fatal("ClearScreen cleared the screen of a full-screen program")
+	}
+	if got := terminal.Text(); got != before {
+		t.Fatalf("alternate screen = %q, want it untouched: %q", got, before)
+	}
+	feed(terminal, "\x1b[?1049l")
+	if got := terminal.RowText(0); !strings.Contains(got, "kept on the main screen") {
+		t.Fatalf("main screen = %q after leaving the alternate one", got)
+	}
+}
+
 func TestAppendRetainedTextIncludesHistoryAndJoinsSoftWraps(t *testing.T) {
 	terminal := New(5, 2, 8)
 	terminal.Write([]byte("first\r\nwide界\r\ne\u0301nd"))

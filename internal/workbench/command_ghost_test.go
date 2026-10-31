@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/vivaui/viva/ui"
+	"motty/internal/cmdhistory"
 )
 
 // ghostWorld is a history world whose host already has some commands.
@@ -19,6 +20,14 @@ func ghostWorld(t *testing.T, commands ...string) *historyWorld {
 			t.Fatal(err)
 		}
 	}
+	entries, err := store.List(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed the fixture's prepared cache; real windows fill it off the UI thread.
+	h.state.forgetCompletionHistory()
+	h.state.history.ghost = map[string][]cmdhistory.Entry{key: entries}
+
 	return h
 }
 
@@ -86,11 +95,11 @@ func TestNothingIsSuggestedWhereTheHistoryDoesNotApply(t *testing.T) {
 	h := ghostWorld(t, "git status")
 	h.prompt("$ ")
 	h.type_("git s")
-	h.state.toggleSuggestions()
+	h.state.setCompletionMode(completionOff)
 	if rest, ok := h.ghost(); ok {
 		t.Fatalf("suggestions are off but %q is offered", rest)
 	}
-	h.state.toggleSuggestions()
+	h.state.setCompletionMode(completionBoth)
 	h.state.history.on = false
 	if rest, ok := h.ghost(); ok {
 		t.Fatalf("the history is off but %q is offered", rest)
@@ -133,10 +142,25 @@ func TestACommandJustRunIsSuggestedWithoutReloadingTheHistory(t *testing.T) {
 func TestTheSuggestionSettingSurvivesARestart(t *testing.T) {
 	options := testOptions(t)
 	state := newTestState(t, options)
-	state.toggleSuggestions()
+	state.setCompletionMode(completionOff)
 	state.save()
 	again := newTestState(t, options)
 	if !again.history.suggestOff {
 		t.Fatal("turning the suggestions off was forgotten")
+	}
+}
+
+func TestNoSuggestionIsOfferedWhileBroadcasting(t *testing.T) {
+	// Accepting is never typed into several terminals, so showing a suggestion
+	// the key could not accept would leave the key doing nothing.
+	h := ghostWorld(t, "git status")
+	h.prompt("$ ")
+	h.type_("git s")
+	if _, ok := h.ghost(); !ok {
+		t.Fatal("no suggestion before broadcasting")
+	}
+	h.state.broadcast = h.state.deck.ActiveWorkspace()
+	if rest, ok := h.ghost(); ok {
+		t.Fatalf("a broadcasting tab is offered %q", rest)
 	}
 }
