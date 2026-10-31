@@ -470,6 +470,25 @@ func (t *terminal) sendSecret(p []byte) bool {
 	return accepted
 }
 
+// sendLoginReply writes one login rule's reply to the shell exactly as it was
+// saved. The reply is data, not a command line and not a terminal protocol
+// message: no layer splits, quotes or trims it, so a colon, a space or any
+// other character reaches the remote byte for byte. It is recorded as input
+// and counts as a write to the shell, but it is not fed to the command history
+// or the autofill watcher, which follow the user's own keys only.
+func (t *terminal) sendLoginReply(p []byte) bool {
+	if t.shell == nil || len(p) == 0 {
+		return false
+	}
+	accepted := t.shell.Write(p)
+	if accepted {
+		t.inputSent = true
+		t.recording.append(t.recordingNow(), terminalRecordingInput, p)
+		t.noteShellInput(p)
+	}
+	return accepted
+}
+
 func (t *terminal) noteShellInput(p []byte) {
 	t.inputGuard.observe(p)
 	atPrompt := t.promptReady
@@ -644,6 +663,7 @@ func (state *State) shellOpened(session *Session, shell Shell, err error) {
 	t.screen.SetReply(func(reply []byte) {
 		t.sendProtocol(reply)
 	})
+	state.startLoginExpect(session)
 	state.describe(session)
 }
 
@@ -713,6 +733,12 @@ func (state *State) pump(session *Session) {
 		}
 		state.goLive(session)
 	}
+	if session.loginExpect != nil {
+		if len(data) > 0 {
+			session.loginExpect.Feed(data)
+		}
+		state.driveLoginExpect(session, state.loginExpectNow())
+	}
 	if state.autofillRules.armed {
 		state.scanAutofill(session)
 	}
@@ -747,6 +773,7 @@ func (state *State) shellEnded(session *Session) {
 	if state.completion.list.active && state.completion.list.sessionID == session.ID {
 		state.closeCompletionList()
 	}
+	state.stopLoginExpect(session)
 	t := session.term
 	state.goLive(session) // whatever it said, and that it ended, is the terminal's to show
 	err := t.shell.Err()

@@ -81,6 +81,7 @@ func savedHostFromHost(host Host) savedHost {
 		ID: host.CatalogID, Label: host.Label, Group: host.Group,
 		Tags: splitHostTags(host), Icon: host.Icon.String(), Color: host.Color,
 		Address: host.Address, User: host.User, Port: host.Port, System: host.System.String(),
+		LoginExpect:    encodeLoginExpect(host.LoginExpect),
 		savedTransport: host.transport(),
 	}
 }
@@ -198,6 +199,7 @@ func (state *State) hostFromCatalogEntry(entry savedHost) (Host, bool) {
 	host.CatalogID, host.Label, host.Group, host.Icon = entry.ID, entry.Label, strings.TrimSpace(entry.Group), icon
 	host.Color = color
 	host.Address, host.User, host.Port, host.System = entry.Address, entry.User, entry.Port, sshconn.ParseRemoteSystem(entry.System)
+	host.LoginExpect = decodeLoginExpect(entry.LoginExpect)
 	host.normalizeEndpoint()
 	setHostTags(&host, tags)
 	host.finish()

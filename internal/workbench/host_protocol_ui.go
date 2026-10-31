@@ -359,6 +359,9 @@ func (state *State) hostFormHeight() float32 {
 	if state.editor.protocol != protocolSerial {
 		height += hostFormRowHeight
 	}
+	if state.editor.protocol != protocolVNC && state.editor.protocol != protocolRDP {
+		height += state.loginExpectSectionHeight()
+	}
 	if state.dialogError != "" {
 		height += 32
 	}

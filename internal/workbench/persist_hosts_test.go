@@ -42,6 +42,11 @@ func cloneSavedHost(host savedHost) savedHost {
 		proxy := *host.Proxy
 		clone.Proxy = &proxy
 	}
+	if host.LoginExpect != nil {
+		login := *host.LoginExpect
+		login.Steps = slices.Clone(host.LoginExpect.Steps)
+		clone.LoginExpect = &login
+	}
 	return clone
 }
 
@@ -102,7 +107,14 @@ func TestSameSavedHostNoticesEveryField(t *testing.T) {
 		case reflect.Slice:
 			last.Set(reflect.ValueOf([]string{"other"}))
 		case reflect.Ptr:
-			last.Set(reflect.ValueOf(&savedOutboundProxy{Kind: "other"}))
+			switch last.Type() {
+			case reflect.TypeOf(&savedOutboundProxy{}):
+				last.Set(reflect.ValueOf(&savedOutboundProxy{Kind: "other"}))
+			case reflect.TypeOf(&savedLoginExpect{}):
+				last.Set(reflect.ValueOf(&savedLoginExpect{Enabled: true}))
+			default:
+				t.Fatalf("%s: unsupported pointer type %s", leaf.name, last.Type())
+			}
 		default:
 			t.Fatalf("%s: unsupported field kind %s", leaf.name, last.Kind())
 		}

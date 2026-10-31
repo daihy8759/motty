@@ -302,6 +302,10 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintHistory(canvas, viewport)
 	case modalShortcutCapture:
 		state.paintShortcutCaptureDialog(canvas, viewport)
+	case modalLoginExpectSecret:
+		state.paintLoginExpectSecretDialog(canvas, viewport)
+	case modalLoginExpectStep:
+		state.paintLoginExpectStepDialog(canvas, viewport)
 	}
 	if state.knownHosts.action != knownHostsActionNone {
 		state.paintKnownHostsDialog(canvas, viewport)
@@ -318,6 +322,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	state.endMenus()
 	state.requestReconnectFrames(canvas)
 	state.requestAutofillFrames(canvas)
+	state.requestLoginExpectFrames(canvas)
 	// Last, so a tooltip is never covered by what it describes.
 	state.tooltip.Paint(canvas, state.Theme(), viewport, components.TooltipOptions{Layer: tooltipLayer, SideOffset: tooltipGap}, components.HoverTooltipDelay)
 	state.fileNotices.paint(canvas, state.Theme(), ui.Rect{Y: windowBarHeight, Width: size.Width, Height: max(size.Height-windowBarHeight, 0)})
@@ -1659,7 +1664,7 @@ func (state *State) paintHostDialog(canvas *ui.Canvas, viewport ui.Rect) {
 	ssh := sshHost
 	vncHost := state.editor.protocol == protocolVNC || state.editor.protocol == protocolRDP
 	var vncRows flex.Box
-	var protocol, label, endpoint, group, tags, iconField, colorField, transfer, proxy, advanced flex.Box
+	var protocol, label, endpoint, group, tags, iconField, colorField, transfer, proxy, advanced, loginScript flex.Box
 	form := &state.editor.form
 	form.count = 0
 	if form.lastError != state.dialogError {
@@ -1705,6 +1710,9 @@ func (state *State) paintHostDialog(canvas *ui.Canvas, viewport ui.Rect) {
 		if ssh {
 			advanced = f.Slot().Height(state.advancedSectionHeight())
 		}
+		if !vncHost {
+			loginScript = f.Slot().Height(state.loginExpectSectionHeight())
+		}
 		if vncHost {
 			vncRows = f.Slot().Height(state.desktopRowsHeight())
 		}
@@ -1730,6 +1738,9 @@ func (state *State) paintHostDialog(canvas *ui.Canvas, viewport ui.Rect) {
 	if ssh {
 		state.paintTransferChoice(canvas, transfer.Rect())
 		state.paintAdvancedSection(canvas, advanced.Rect())
+	}
+	if !vncHost {
+		state.paintLoginExpectSection(canvas, loginScript.Rect())
 	}
 
 	area.EndContent()

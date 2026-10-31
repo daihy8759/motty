@@ -161,6 +161,8 @@ type savedHost struct {
 	User    string   `json:"user,omitempty"`
 	Port    uint16   `json:"port,omitempty"`
 	System  string   `json:"system,omitempty"`
+	// LoginExpect is the host's ordered Expect/Send rules; absent when unused.
+	LoginExpect *savedLoginExpect `json:"login_expect,omitempty"`
 	savedTransport
 }
 
@@ -453,6 +455,7 @@ func (state *State) snapshot() savedState {
 		saved.Hosts = append(saved.Hosts, savedHost{
 			ID: host.CatalogID, Label: host.Label, Group: host.Group, Tags: splitHostTags(host), Icon: host.Icon.String(), Color: host.Color,
 			Address: host.Address, User: host.User, Port: host.Port, System: host.System.String(),
+			LoginExpect:    encodeLoginExpect(host.LoginExpect),
 			savedTransport: host.transport(),
 		})
 	}

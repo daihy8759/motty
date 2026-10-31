@@ -45,6 +45,8 @@ type Messages struct {
 	TerminalInput TerminalInputMessages
 	// Autofill holds the autofill rules' texts; see autofill.go.
 	Autofill AutofillMessages
+	// LoginExpect holds a host's Expect/Send rules' texts; see login_expect.go.
+	LoginExpect LoginExpectMessages
 	// History holds the command history's texts; see history.go.
 	History HistoryMessages
 	// Completion holds the command completion's texts; see completion.go.
@@ -797,6 +799,7 @@ func For(language Language) Messages {
 		messages.AIPanel, messages.AISettings, messages.Tools = chineseAIPanel, chineseAISettings, chineseTools
 		messages.Toolbars = chineseToolbars
 		messages.Autofill = chineseAutofill
+		messages.LoginExpect = chineseLoginExpect
 		messages.History = chineseHistory
 		messages.Completion = chineseCompletion
 		messages.SSHSync = chineseSSHSync
@@ -808,6 +811,7 @@ func For(language Language) Messages {
 		messages.AIPanel, messages.AISettings, messages.Tools = englishAIPanel, englishAISettings, englishTools
 		messages.Toolbars = englishToolbars
 		messages.Autofill = englishAutofill
+		messages.LoginExpect = englishLoginExpect
 		messages.History = englishHistory
 		messages.Completion = englishCompletion
 		messages.SSHSync = englishSSHSync

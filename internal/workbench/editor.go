@@ -8,6 +8,7 @@ import (
 
 	"github.com/vivaui/viva/text"
 	"motty/internal/i18n"
+	"motty/internal/loginexpect"
 	"motty/internal/otp"
 	"motty/internal/serial"
 	"motty/internal/sshconn"
@@ -67,6 +68,10 @@ type hostEditor struct {
 	agentAccess bool
 	// noHistory is the host's "Don't record commands" switch.
 	noHistory bool
+	// loginExpect is the draft of the host's ordered Expect/Send rules.
+	// loginExpectOpen is whether the section shows its rules.
+	loginExpect     loginexpect.Config
+	loginExpectOpen bool
 	// proxy is nil to inherit the global proxy, ProxyNone to force a direct
 	// connection, or a dedicated proxy. proxyPassword is staged until the outer
 	// host form is saved.
@@ -235,6 +240,11 @@ func (editor *hostEditor) load(host Host) {
 	editor.forwardX11 = host.ForwardX11
 	editor.agentForward = host.AgentForward
 	editor.noHistory = host.NoHistory
+	editor.loginExpect = loginexpect.Config{}
+	if host.LoginExpect != nil {
+		editor.loginExpect = host.LoginExpect.Clone()
+	}
+	editor.loginExpectOpen = editor.loginExpect.Enabled || len(editor.loginExpect.Steps) > 0
 	editor.proxy, editor.proxyPassword = cloneOutboundProxy(host.Proxy), ""
 	editor.transfer = host.Transfer
 	editor.advancedOpen = host.isSSH() && (host.Algo != nil || host.ForwardX11 || host.AgentForward || host.NoHistory)
@@ -302,6 +312,10 @@ func (editor *hostEditor) host(id uint32) Host {
 	if editor.protocol != protocolSerial {
 		host.Proxy = cloneOutboundProxy(editor.proxy)
 	}
+	host.LoginExpect = nil
+	if cfg := loginexpect.Normalize(editor.loginExpect); cfg.Enabled || len(cfg.Steps) > 0 {
+		host.LoginExpect = &cfg
+	}
 	host.normalizeEndpoint()
 	setHostTags(&host, tags)
 	host.finish()
@@ -328,6 +342,7 @@ func (editor *hostEditor) reset() {
 	editor.algoMode, editor.auth, editor.identity = algoDefault, authAutomatic, ""
 	editor.authOpen, editor.identityOpen = false, false
 	editor.forwardX11, editor.agentForward, editor.noHistory, editor.transfer = false, false, false, transferAuto
+	editor.loginExpect, editor.loginExpectOpen = loginexpect.Config{}, false
 	editor.agentAccess = false
 	editor.proxy, editor.proxyPassword = nil, ""
 	editor.advancedOpen = false

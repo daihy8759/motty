@@ -123,6 +123,31 @@ var (
 	hitStateNoticeDismiss      = tree.ID(shellHits, "state-notice-dismiss")
 	hitStateNoticeClose        = tree.ID(shellHits, "state-notice-close")
 	hitStateNoticeOK           = tree.ID(shellHits, "state-notice-ok")
+
+	// Login Expect/Send: the section in the host dialog, the per-rule controls
+	// and the two dialogs (a sensitive response, and one rule's editor).
+	hitDialogLoginExpectHeader     = tree.ID(shellHits, "dialog-login-expect-header")
+	hitDialogLoginExpectEnable     = tree.ID(shellHits, "dialog-login-expect-enable")
+	hitDialogLoginExpectAdd        = tree.ID(shellHits, "dialog-login-expect-add")
+	hitDialogLoginExpectEditList   = tree.Sub(shellHits, tree.Name("dialog-login-expect-edit"))
+	hitDialogLoginExpectUpList     = tree.Sub(shellHits, tree.Name("dialog-login-expect-up"))
+	hitDialogLoginExpectDownList   = tree.Sub(shellHits, tree.Name("dialog-login-expect-down"))
+	hitDialogLoginExpectDeleteList = tree.Sub(shellHits, tree.Name("dialog-login-expect-delete"))
+	hitLoginExpectField            = tree.ID(shellHits, "login-expect-field")
+	hitLoginExpectSubmit           = tree.ID(shellHits, "login-expect-submit")
+	hitLoginExpectCancel           = tree.ID(shellHits, "login-expect-cancel")
+	hitLoginExpectClose            = tree.ID(shellHits, "login-expect-close")
+	hitLoginExpectDismiss          = tree.ID(shellHits, "login-expect-dismiss")
+	hitLoginExpectStepExpect       = tree.ID(shellHits, "login-expect-step-expect")
+	hitLoginExpectStepSend         = tree.ID(shellHits, "login-expect-step-send")
+	hitLoginExpectStepTimeout      = tree.ID(shellHits, "login-expect-step-timeout")
+	hitLoginExpectStepDelay        = tree.ID(shellHits, "login-expect-step-delay")
+	hitLoginExpectStepEnter        = tree.ID(shellHits, "login-expect-step-enter")
+	hitLoginExpectStepSensitive    = tree.ID(shellHits, "login-expect-step-sensitive")
+	hitLoginExpectStepSubmit       = tree.ID(shellHits, "login-expect-step-submit")
+	hitLoginExpectStepCancel       = tree.ID(shellHits, "login-expect-step-cancel")
+	hitLoginExpectStepClose        = tree.ID(shellHits, "login-expect-step-close")
+	hitLoginExpectStepDismiss      = tree.ID(shellHits, "login-expect-step-dismiss")
 )
 
 // Lists whose items are numbered by a database or session number: a host row, a
@@ -719,6 +744,7 @@ type State struct {
 	keyPassphraseDescription string
 	clipboardRequest         remoteClipboardRequest
 	autofillRules            autofillUI
+	loginExpectStep          loginExpectStepState
 	commandPalette           commandPalette
 	// ai is the built-in assistant; see ai_state.go.
 	ai aiState
@@ -1057,6 +1083,23 @@ func (state *State) EditorFor(hit ui.ID) *text.Editor {
 		}
 	case modalForm:
 		return state.formEditor(hit)
+	case modalLoginExpectSecret:
+		if hit == hitLoginExpectField {
+			if session := state.loginExpectAskSession(); session != nil && session.loginExpectAsk != nil {
+				return &session.loginExpectAsk.editor
+			}
+		}
+	case modalLoginExpectStep:
+		switch hit {
+		case hitLoginExpectStepExpect:
+			return &state.loginExpectStep.expect
+		case hitLoginExpectStepSend:
+			return &state.loginExpectStep.send
+		case hitLoginExpectStepTimeout:
+			return &state.loginExpectStep.timeout
+		case hitLoginExpectStepDelay:
+			return &state.loginExpectStep.delay
+		}
 	case modalAutofillRule:
 		switch hit {
 		case hitAutofillName:
@@ -1253,6 +1296,12 @@ func (state *State) Click(id ui.ID) {
 		return
 	case modalShortcutCapture:
 		state.clickShortcutCapture(id)
+		return
+	case modalLoginExpectSecret:
+		state.clickLoginExpectSecret(id)
+		return
+	case modalLoginExpectStep:
+		state.clickLoginExpectStep(id)
 		return
 	}
 	if state.clickTerminalMenu(id) || state.clickTabMenu(id) || state.clickHostMenu(id) || state.clickLocalShellPicker(id) || state.clickSnippetMenu(id) || state.clickSFTPMenu(id) {
@@ -1453,6 +1502,7 @@ func (state *State) closeSession(id uint32) {
 	}
 	defer state.save()
 	session := &state.sessions[index]
+	state.stopLoginExpect(session)
 	state.cancelReconnect(session)
 	state.stopSessionForwards(session.ID, false)
 	if session.term != nil && session.term.shell != nil {
@@ -1594,6 +1644,9 @@ func (state *State) clickHostDialog(id ui.ID) {
 		return
 	}
 	if state.editor.colorPicker.open {
+		return
+	}
+	if state.clickLoginExpect(id) {
 		return
 	}
 	switch id {
@@ -2149,6 +2202,15 @@ func (state *State) key(event ui.KeyEvent) ui.EventResult {
 	}
 	if state.modal == modalKeyPassphrase && event.Key == ui.KeyEnter && event.Target == hitKeyPassphraseField && !event.Repeat {
 		state.submitKeyPassphrase()
+		return ui.EventResult{Handled: true, Repaint: true}
+	}
+	if state.modal == modalLoginExpectSecret && event.Key == ui.KeyEnter && event.Target == hitLoginExpectField && !event.Repeat {
+		state.clickLoginExpectSecret(hitLoginExpectSubmit)
+		return ui.EventResult{Handled: true, Repaint: true}
+	}
+	if state.modal == modalLoginExpectStep && event.Key == ui.KeyEnter && !event.Repeat &&
+		(event.Target == hitLoginExpectStepExpect || event.Target == hitLoginExpectStepSend || event.Target == hitLoginExpectStepTimeout || event.Target == hitLoginExpectStepDelay) {
+		state.saveLoginExpectStep()
 		return ui.EventResult{Handled: true, Repaint: true}
 	}
 	if event.Target.Scope() != hitTabList {

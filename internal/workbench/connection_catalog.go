@@ -350,6 +350,7 @@ func decodeHosts(saved []savedHost, known map[string]uint32, next uint32) (hosts
 		}
 		host.Icon, _ = parseHostIcon(entry.Icon)
 		host.Color, _ = normalizeHostColor(entry.Color)
+		host.LoginExpect = decodeLoginExpect(entry.LoginExpect)
 		if tags, ok := normalizeHostTags(entry.Tags); ok {
 			setHostTags(&host, tags)
 		}

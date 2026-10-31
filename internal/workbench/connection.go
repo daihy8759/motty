@@ -400,6 +400,8 @@ const (
 	modalToolbarSettings
 	modalSFTPColumns
 	modalTerminalInput
+	modalLoginExpectSecret
+	modalLoginExpectStep
 )
 
 // tone colors a session's headline.
@@ -554,6 +556,7 @@ func (state *State) shareFrom(session *Session, host Host) (Connection, *Session
 // finishStartingConnection resets what the connection page shows for a
 // connection that has just been created, and gives the session its screen.
 func (state *State) finishStartingConnection(session *Session, automatic bool) {
+	state.stopLoginExpect(session)
 	session.version = 0
 	session.phase = sshconn.PhaseConnecting
 	session.answered, session.otpSent = 0, false
@@ -788,6 +791,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 }
 
 func (state *State) closeDisconnectedShell(session *Session) {
+	state.stopLoginExpect(session)
 	terminal := session.term
 	if terminal == nil || terminal.shell == nil {
 		return
@@ -940,6 +944,11 @@ func (state *State) showNextPrompt() {
 	// answer anything until that password has been typed once.
 	if vaultFile := state.secrets.vault; vaultFile != nil && vaultFile.NeedsConversion() && !state.secrets.declined {
 		state.openVaultUnlock(nil, nil)
+		return
+	}
+	if session := state.nextLoginExpectAsk(); session != nil {
+		state.modal = modalLoginExpectSecret
+		state.modalSession = session.ID
 		return
 	}
 	for session := range state.connectionSessions() {

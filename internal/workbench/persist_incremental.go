@@ -232,6 +232,7 @@ func sameSavedHost(left, right savedHost) bool {
 		left.Group == right.Group && slices.Equal(left.Tags, right.Tags) && left.Icon == right.Icon &&
 		left.Address == right.Address && left.User == right.User && left.Port == right.Port &&
 		left.System == right.System &&
+		sameSavedLoginExpect(left.LoginExpect, right.LoginExpect) &&
 		left.Protocol == right.Protocol && left.Line == right.Line && left.Flow == right.Flow &&
 		sameSavedProxy(left.Proxy, right.Proxy) &&
 		left.Algorithms == right.Algorithms && left.AlgorithmList == right.AlgorithmList &&

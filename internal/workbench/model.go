@@ -3,6 +3,7 @@ package workbench
 import (
 	"time"
 
+	"motty/internal/loginexpect"
 	"motty/internal/serial"
 	"motty/internal/sshconn"
 )
@@ -45,6 +46,10 @@ type Host struct {
 	// tunnel marks the ephemeral host of a .xsh bastion tunnel opened on this
 	// computer. It is never saved, so only that launch gets the relaxed policy.
 	tunnel bool
+	// LoginExpect runs ordered Expect/Send rules once this host's shell opens.
+	// It is nil unless the user turned it on; a sensitive rule asks for its
+	// response at runtime and never saves it. A pointer keeps Host comparable.
+	LoginExpect *loginexpect.Config
 	// Transfer is the file protocol of the host's file panel.
 	Transfer transferMode
 	// Proxy overrides the global outbound proxy for this host. Nil inherits the
@@ -121,6 +126,14 @@ type Session struct {
 	pendingSecretName  string
 	pendingSecretValue string
 	term               *terminal
+	// loginExpect is this shell's progress through the host's Expect/Send rules.
+	// It starts with the shell and is dropped with it, so a reconnect runs the
+	// rules again against the new shell.
+	loginExpect *loginexpect.Runner
+	// loginExpectAsk is this session's pending sensitive rule, with whatever the
+	// user has typed so far. It belongs to the session so a request from another
+	// shell can never replace the dialog and editor already on screen.
+	loginExpectAsk *loginExpectAsk
 	// desk is the remote desktop a VNC tab shows; nil for every other kind.
 	desk     *desktopView
 	version  uint64
