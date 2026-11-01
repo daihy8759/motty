@@ -76,6 +76,7 @@ type savedState struct {
 	SFTPPanelSide              string              `json:"sftp_panel_side,omitempty"`
 	SFTPColumns                string              `json:"sftp_columns,omitempty"`
 	SFTPDownloadDirectory      string              `json:"sftp_download_directory,omitempty"`
+	DefaultEditor              string              `json:"default_editor,omitempty"` // this computer's editor for remote folders
 	Toolbars                   *savedToolbars      `json:"toolbars,omitempty"`
 	UpdateCheck                string              `json:"update_check,omitempty"`
 	CloseAction                string              `json:"close_action,omitempty"`
@@ -123,6 +124,9 @@ type savedOutboundProxy struct {
 	Address string `json:"address,omitempty"`
 	User    string `json:"user,omitempty"`
 	Bypass  string `json:"bypass,omitempty"`
+	// Unconfirmed is an imported proxy command not yet saved by the user (see
+	// outboundProxy.unconfirmed).
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
 }
 
 type savedHighlight struct {
@@ -201,6 +205,7 @@ type savedProxy struct {
 	JumpAddress   string `json:"jump_address"`
 	JumpUser      string `json:"jump_user,omitempty"`
 	JumpPort      uint16 `json:"jump_port"`
+	Stopped       bool   `json:"stopped,omitempty"`
 }
 
 type savedSession struct {
@@ -417,6 +422,7 @@ func (state *State) snapshot() savedState {
 		SFTPPanelSide:              sftpPanelSideString(state.sftpPanelSide),
 		SFTPColumns:                state.sftpColumns.String(),
 		SFTPDownloadDirectory:      savedSFTPDownloadDirectory(state.sftpDownloadDirectory),
+		DefaultEditor:              string(state.defaultEditor),
 		Toolbars:                   state.toolbars.snapshot(),
 		UpdateCheck:                updateCheckString(state.updateAtStart),
 		CloseAction:                state.closeAction.String(),
@@ -511,7 +517,7 @@ func (state *State) snapshot() savedState {
 		}
 		saved.Proxies = append(saved.Proxies, savedProxy{
 			TargetID: target.CatalogID, TargetAddress: target.Address, TargetUser: target.User, TargetPort: target.Port,
-			JumpID: jump.CatalogID, JumpAddress: jump.Address, JumpUser: jump.User, JumpPort: jump.Port,
+			JumpID: jump.CatalogID, JumpAddress: jump.Address, JumpUser: jump.User, JumpPort: jump.Port, Stopped: route.Stopped,
 		})
 	}
 	for index := range state.sessions {
@@ -626,6 +632,9 @@ func (state *State) restoreLocal(saved savedState) {
 	state.toolbars.restore(saved.Toolbars)
 	state.localShell = saved.LocalShell
 	state.sessionLogsOff = saved.SessionLogsOff
+	// The saved editor is read as it is: a value this build does not know stays
+	// unknown rather than becoming another editor.
+	state.defaultEditor = ExternalEditor(strings.TrimSpace(saved.DefaultEditor))
 	state.sshAgent = agentChoiceFromSaved(saved.SSHAgent, saved.SSHAgentPath)
 	// A saved language is the user's choice. Without one (a first run, or a state
 	// from before the choice was told apart) the system's language decides, and

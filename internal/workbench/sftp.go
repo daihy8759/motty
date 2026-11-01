@@ -137,6 +137,7 @@ type sftpView struct {
 	archiveSequence       uint64
 	archiveDirectory      string
 	archiveResults        chan archiveResult
+	editorResults         chan editorResult
 	cancelExtract         context.CancelFunc
 	dialogEntry           sftpclient.Entry
 	dialogError           string
@@ -250,19 +251,51 @@ func (state *State) closeSFTP(session *Session) {
 	session.files = nil
 }
 
+// filesPanelShown reports whether the file panel is open in the active
+// workspace.
+func (state *State) filesPanelShown() bool {
+	context, _ := state.deck.Context(state.deck.ActiveWorkspace())
+	return context.Open && context.Kind == layoutcore.ContextSFTP
+}
+
+// showFilesPanel opens the file panel and its view. It does nothing when the
+// view is already there, so callers that merely need the panel open can call it
+// without toggling the panel shut.
+func (state *State) showFilesPanel(session *Session) {
+	workspace := state.deck.ActiveWorkspace()
+	context, _ := state.deck.Context(workspace)
+	context.Kind = layoutcore.ContextSFTP
+	context.Open = true
+	_ = state.deck.SetContext(workspace, context)
+	state.openSFTP(session)
+	state.fitWorkspaceTerminals(workspace)
+	state.save()
+}
+
+// hideFilesPanel closes the file panel and lets an idle connection go.
+func (state *State) hideFilesPanel(session *Session) {
+	workspace := state.deck.ActiveWorkspace()
+	state.releaseIdleSFTP(session)
+	context, _ := state.deck.Context(workspace)
+	context.Open = false
+	_ = state.deck.SetContext(workspace, context)
+	state.fitWorkspaceTerminals(workspace)
+	state.save()
+}
+
 func (state *State) clickSFTP(id ui.ID) {
 	session, ok := state.sessionByIDPointer(state.activeSessionID)
 	if !ok || state.activeSection != sectionTerminal || state.modal != modalNone {
 		return
 	}
 	if id == hitSFTPOpen {
-		context, _ := state.deck.Context(state.deck.ActiveWorkspace())
-		context.Kind = layoutcore.ContextSFTP
-		context.Open = true
-		_ = state.deck.SetContext(state.deck.ActiveWorkspace(), context)
-		state.openSFTP(session)
-		state.fitWorkspaceTerminals(state.deck.ActiveWorkspace())
-		state.save()
+		// The toolbar button toggles a live panel shut, but an open panel with no
+		// view yet (a single-session host) still needs its explicit open.
+		if state.filesPanelShown() && session.files != nil {
+			state.hideFilesPanel(session)
+			return
+		}
+		state.showFilesPanel(session)
 		return
 	}
 	if id == hitSFTPDetach {
@@ -270,12 +303,7 @@ func (state *State) clickSFTP(id ui.ID) {
 		return
 	}
 	if id == hitSFTPClose || id == hitSFTPDrawerClose {
-		state.releaseIdleSFTP(session)
-		context, _ := state.deck.Context(state.deck.ActiveWorkspace())
-		context.Open = false
-		_ = state.deck.SetContext(state.deck.ActiveWorkspace(), context)
-		state.fitWorkspaceTerminals(state.deck.ActiveWorkspace())
-		state.save()
+		state.hideFilesPanel(session)
 		return
 	}
 	if id == hitSFTPPanelSide {
@@ -309,6 +337,9 @@ func (state *State) clickSFTP(id ui.ID) {
 		case hitSFTPHeaderFilter:
 			folder.headerMenuOpen = false
 			state.clickSFTPFilter(view, hitSFTPFilterToggle)
+		case hitSFTPHeaderEditor:
+			folder.headerMenuOpen = false
+			state.openSFTPInEditor(view)
 		case hitSFTPHeaderHidden:
 			folder.headerMenuOpen = false
 			state.clickSFTPFilter(view, hitSFTPHiddenToggle)
@@ -1255,6 +1286,7 @@ func (state *State) pumpSFTP(session *Session) {
 	}
 	view := session.files
 	state.pumpSFTPArchive(session, view)
+	state.pumpSFTPEditor(session, view)
 	defer func() {
 		// A list or transfer reply must not unlock the panel while an archive
 		// command is still using its captured source and destination.

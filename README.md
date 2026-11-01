@@ -102,6 +102,14 @@ A native editor opens UTF-8 files up to 1 MiB, hashes the remote file before and
 after staging, and preserves permissions. Servers without SFTP can use the
 built-in SCP fallback.
 
+The panel's more menu can hand the folder it shows to VS Code or Zed through the
+editor's own URL scheme. Pick the editor under **Settings > Files**, which lists
+the editors installed on this computer; until one is picked the menu item stays
+hidden. A server is opened under the alias your SSH config gives that very host
+(same address, user and port), or as `user@host`; a host reached through a jump
+host that only Motty keeps is refused, because the editor's own ssh would not use
+it.
+
 The attached file panel can follow the SSH terminal's folder automatically for
 Bash and Zsh. **Settings > Files** also offers a separate, default-off switch for
 the terminal to follow file navigation at a ready, empty prompt. See
@@ -114,9 +122,10 @@ Local, remote, SOCKS5 and HTTP CONNECT rules are loopback-only, persisted and
 started explicitly. Tunnels stop with the SSH tab that owns them. Jump routes
 verify and authenticate every hop independently. A global outbound SOCKS5/HTTP
 proxy can carry the initial connection; each saved network host can inherit it,
-force a direct connection, or use its own SOCKS5/HTTP proxy. X11 forwarding
-validates a per-session fake cookie before replacing it with the local Xauthority
-cookie.
+force a direct connection, use its own SOCKS5/HTTP proxy, or connect through a
+proxy command such as `cloudflared access ssh` (OpenSSH's `ProxyCommand`). X11
+forwarding validates a per-session fake cookie before replacing it with the local
+Xauthority cookie.
 
 <p align="center">
   <a href="assets/readme-forward.png"><img src="assets/readme-forward.png" width="620" alt="New port forward dialog" /></a>

@@ -218,7 +218,7 @@ func (r *sshReconciler) loadLinks() {
 		link := link
 		r.work = append(r.work, &link)
 		r.byID[link.ID] = &link
-		if !link.Detached && link.Alias != "" {
+		if link.live() {
 			r.owners[lower(link.Alias)] = &link
 		}
 	}
@@ -238,7 +238,7 @@ func (r *sshReconciler) link(id string) *sshSyncLink {
 }
 
 func (r *sshReconciler) live(link *sshSyncLink) bool {
-	return link != nil && !link.Detached && link.Alias != ""
+	return link != nil && link.live()
 }
 
 func fieldsOf(host Host) sshSyncFields {
@@ -825,6 +825,12 @@ func (r *sshReconciler) importHost(fileHost sshconfig.Host) {
 		r.warn(r.m.WarnEndpointFmt, fileHost.Alias)
 		return
 	}
+	if fileHost.ProxyCommand != "" {
+		// It comes along once, with the host; the sync does not carry it after.
+		var note string
+		host.Proxy, note = importedProxyCommand(&r.state.messages, fileHost)
+		r.out.notes = append(r.out.notes, note)
+	}
 	host = r.addHost(host)
 	link := r.link(host.CatalogID)
 	link.Alias, link.Detached = fileHost.Alias, false
@@ -957,9 +963,17 @@ func (state *State) setProxyChain(target uint32, chain []uint32) bool {
 		edges = append(edges, edge{target: current, jump: jump})
 		current = jump
 	}
+	// A route that is rebuilt as the same edge stays as stopped as it was: the file
+	// does not know about stopping, so syncing it must not start the route again.
+	stopped := make(map[edge]bool)
+	for _, route := range state.proxies {
+		if route.TargetID == target && route.Stopped {
+			stopped[edge{target: route.TargetID, jump: route.JumpID}] = true
+		}
+	}
 	state.proxies = slices.DeleteFunc(state.proxies, func(route proxyRecord) bool { return route.TargetID == target })
 	for _, added := range edges {
-		state.proxies = append(state.proxies, proxyRecord{ID: state.nextProxyID, TargetID: added.target, JumpID: added.jump})
+		state.proxies = append(state.proxies, proxyRecord{ID: state.nextProxyID, TargetID: added.target, JumpID: added.jump, Stopped: stopped[added]})
 		state.nextProxyID++
 	}
 	if _, ok := state.proxyByID(state.selectedProxyID); !ok {

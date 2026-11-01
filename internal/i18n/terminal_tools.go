@@ -185,6 +185,17 @@ type ToolsMessages struct {
 	HostProxyDialogDescription  string
 	HostProxyPasswordNotCarried string
 
+	// A proxy command: a local program that carries a host's first connection.
+	ProxyCommand                   string
+	ProxyCommandField              string
+	ProxyErrorCommand              string
+	HostProxyCommandDescriptionFmt string // the command
+	// A command imported from an SSH config waits for the user to save it in
+	// the host's proxy dialog before it runs.
+	HostProxyCommandUnconfirmedFmt string // the command
+	HostProxyCommandConfirm        string
+	ProxyCommandUnconfirmed        string
+
 	// Searching the settings.
 	SearchPlaceholder string
 	SearchTitle       string
@@ -303,6 +314,18 @@ type ToolsMessages struct {
 	FilesFollowSetupDescription     string
 	FilesFollowSetupCopy            string
 	FilesFollowSetupCopied          string
+	FilesEditor                     string
+	FilesEditorDescription          string
+	FilesEditorNone                 string
+	FilesEditorVSCode               string
+	FilesEditorZed                  string
+	FilesEditorUnknownFmt           string
+	FilesEditorOpenFmt              string
+	FilesEditorOpenFailedTitleFmt   string
+	FilesEditorOpenFailedFmt        string
+	FilesEditorPortFmt              string
+	FilesEditorJump                 string
+	FilesEditorNotFound             string
 	TipNewLink                      string
 	LinkTitle                       string
 	LinkName                        string

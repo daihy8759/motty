@@ -265,6 +265,7 @@ var (
 // Jump-host routing: its page and dialog.
 var (
 	hitProxyAdd              = tree.ID(proxiesHits, "proxy-add")
+	hitProxyStartStop        = tree.ID(proxiesHits, "proxy-start-stop")
 	hitProxyRemove           = tree.ID(proxiesHits, "proxy-remove")
 	hitProxyDialogDismiss    = tree.ID(proxiesHits, "proxy-dialog-dismiss")
 	hitProxyDialogClose      = tree.ID(proxiesHits, "proxy-dialog-close")
@@ -565,6 +566,7 @@ type State struct {
 	terminalOption      terminalOptionMode
 	localShell          string // executable on this computer; empty uses the platform default
 	localShellMenu      localShellSelect
+	editorMenu          editorSelect
 	terminalFontSize    float32
 	terminalFontFace    ui.MonoFace
 	terminalScrollback  int
@@ -598,6 +600,7 @@ type State struct {
 	sftpColumns            sftpColumnPreferences
 	sftpFilesSettings      sftpFilesSettingsCache
 	sftpDownloadDirectory  string
+	defaultEditor          ExternalEditor // hands remote folders to this computer's editor
 	monitorRect            ui.Rect
 	monitorMenu            bool
 	monitorMenuRect        ui.Rect
@@ -1973,6 +1976,9 @@ func (state *State) Pointer(event ui.PointerEvent) (outcome ui.EventResult) {
 }
 
 func (state *State) pointer(event ui.PointerEvent) ui.EventResult {
+	if result, handled := state.updateDialogPointer(event); handled {
+		return result
+	}
 	if state.modal == modalNewHost && state.editor.groupPicker.control.Open {
 		if event.Kind == ui.PointerDown && event.Button == ui.PointerButtonPrimary && !isHostGroupPickerTarget(event.Target) {
 			state.editor.groupPicker.control.Open = false
