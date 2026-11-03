@@ -63,10 +63,12 @@ type Host struct {
 	// through an SSH connection to Address (User is then the SSH account), and
 	// the clipboard is shared with the remote desktop. Console is an RDP host's:
 	// it asks Windows for its console (administrative) session instead of a new
-	// one.
-	ViaSSH    bool
-	Clipboard bool
-	Console   bool
+	// one. Chromeless is a desktop host's too: its page shows the picture alone,
+	// without the bar above it and the status line under it.
+	ViaSSH     bool
+	Clipboard  bool
+	Console    bool
+	Chromeless bool
 
 	// localShell is the shell a local terminal was opened with: a program path,
 	// or a WSL distribution as localshell.WSLShell names it. Empty starts the
@@ -167,8 +169,10 @@ type Session struct {
 	// rttAvailable is 1 when rttMs is valid, rttMeasuring is 1 while a ping is
 	// in flight, rttBroken stops probing after a failed request, rttGeneration
 	// invalidates results from a previous connection, and rttLastPing records
-	// the last probe.
+	// the last probe, and rttSampledAt (Unix nanoseconds) when rttMs was
+	// measured, so a reading that stopped being refreshed can be dropped.
 	rttMs         int64
+	rttSampledAt  int64
 	rttAvailable  int32
 	rttMeasuring  int32
 	rttBroken     int32
@@ -216,10 +220,11 @@ type Session struct {
 	// when it moves between panes or windows, and session IDs may be reused.
 	// logStatus is what this window believes the row says, so a final status is
 	// written once even though several close paths can reach it.
-	logRecordID string
-	logStatus   sessionlog.Status
-	logFinished bool
-	logBarrier  <-chan struct{} // earlier window's writes must land before this tab's writes
+	logRecordID  string
+	logStatus    sessionlog.Status
+	logFinished  bool
+	logBarrier   <-chan struct{} // earlier window's writes must land before this tab's writes
+	logLastEvent sessionlog.EventKind
 
 	// keptAfterShell: the shell ended but the file panel or window still uses the
 	// connection, which closes with the last of them.

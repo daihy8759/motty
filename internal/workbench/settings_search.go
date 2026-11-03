@@ -126,6 +126,14 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	}
 	row(settingsGeneral, m.SettingsLanguage, "")
 	row(settingsGeneral, m.SettingsAppearance, "")
+	row(settingsGeneral, m.SettingsTabOrientation, m.SettingsTabOrientationDescription)
+	if state.tabOrientation == tabsVertical {
+		row(settingsGeneral, m.SettingsTabsAutoHide, m.SettingsTabsAutoHideDescription)
+		row(settingsGeneral, m.SettingsTabsGrouping, m.SettingsTabsGroupingDescription)
+	}
+	if state.interfaceFontRowVisible() {
+		row(settingsGeneral, m.SettingsInterfaceFont, m.SettingsInterfaceFontDescription)
+	}
 
 	if state.options.StartAtLogin != nil {
 		row(settingsGeneral, tools.GeneralLogin, tools.GeneralLoginDescription)
@@ -186,10 +194,15 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	row(settingsFiles, tools.FilesPanelAutoOpen, tools.FilesPanelAutoOpenDescription)
 	row(settingsFiles, tools.FilesPanelPosition, tools.FilesPanelPositionDescription)
 	row(settingsFiles, tools.FilesPathStyle, tools.FilesPathDescription)
+	row(settingsFiles, tools.FilesWindowOrder, tools.FilesWindowOrderDescription)
+	row(settingsFiles, tools.FilesOpenMode, tools.FilesOpenModeDescription)
 	row(settingsFiles, tools.FilesParallel, "")
 	row(settingsFiles, tools.FilesColumns, tools.FilesColumnsDescription)
 	row(settingsFiles, tools.FilesDownloadDirectory, tools.FilesDownloadAskDescription)
 	row(settingsFiles, tools.FilesEditor, tools.FilesEditorDescription)
+	if state.customEditorSettingVisible() {
+		row(settingsFiles, tools.FilesCustomEditor, tools.FilesEditorCustomDescription)
+	}
 	row(settingsFiles, tools.FilesKeepTimes, tools.FilesKeepTimesDescription)
 	row(settingsFiles, tools.FilesFollow, tools.FilesFollowDescription)
 	row(settingsFiles, tools.FilesTerminalFollow, tools.FilesTerminalFollowDescription)

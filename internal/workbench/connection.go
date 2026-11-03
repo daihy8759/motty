@@ -17,6 +17,7 @@ import (
 	"motty/internal/ai/llm"
 	"motty/internal/ai/store"
 	"motty/internal/aiproviderimport"
+	"motty/internal/buildinfo"
 	"motty/internal/localshell"
 	"motty/internal/sftpclient"
 	"motty/internal/sshconn"
@@ -154,6 +155,9 @@ func openRemoteFiles(conn Connection, mode transferMode) (sftpclient.Remote, err
 
 // Options configures the parts of the workbench that touch the outside world.
 type Options struct {
+	// DevelopmentSource offers a one-way import into an unused development
+	// profile. Nil disables discovery, including for explicit test profiles.
+	DevelopmentSource *DevelopmentSource
 	// KnownHostsPath is where trusted host keys are remembered. Empty means
 	// motty/known_hosts under the user's config directory.
 	KnownHostsPath string
@@ -235,6 +239,9 @@ type Options struct {
 	// OpenPath opens a local document with the system's default application. Nil
 	// uses app.OpenPath.
 	OpenPath func(string) error
+	// LaunchCustomEditor starts a user-chosen executable with one path. Nil uses
+	// Viva's system launcher.
+	LaunchCustomEditor func(executable, path string) error
 	// OpenSchemeURL hands a link to the application registered for a custom URL
 	// scheme, for the folder an editor is asked to open. Nil uses
 	// app.OpenSchemeURL.
@@ -297,6 +304,13 @@ type Options struct {
 	Notify func(app.Notification) error
 	// Bell sounds the terminal bell. Nil plays the system alert sound.
 	Bell func() error
+	// FontFamilies lists every installed font family, for the choice of the
+	// interface's own. Nil uses the platform's list.
+	FontFamilies func() []string
+	// SetInterfaceFont names the family the window's text is drawn in, or ""
+	// for the platform's own interface font; it reports whether the platform
+	// can follow a family at all. Nil uses the platform's own.
+	SetInterfaceFont func(family string) bool
 	// MonoFamilies lists the installed fixed-pitch font families. Nil uses
 	// app.MonospaceFamilies.
 	MonoFamilies func() []string
@@ -317,7 +331,7 @@ func (options Options) withDefaults() Options {
 		if err != nil {
 			dir = os.TempDir()
 		}
-		options.KnownHostsPath = filepath.Join(dir, "motty", "known_hosts")
+		options.KnownHostsPath = filepath.Join(dir, buildinfo.DataName, "known_hosts")
 	}
 	if options.StatePath == "" {
 		options.StatePath = filepath.Join(filepath.Dir(options.KnownHostsPath), "config.db")
@@ -336,6 +350,9 @@ func (options Options) withDefaults() Options {
 	}
 	if options.OpenPath == nil {
 		options.OpenPath = app.OpenPath
+	}
+	if options.LaunchCustomEditor == nil {
+		options.LaunchCustomEditor = app.OpenWith
 	}
 	if options.FileIcon == nil {
 		options.FileIcon = app.FileIcon
@@ -385,6 +402,12 @@ func (options Options) withDefaults() Options {
 	if options.MonoFamilies == nil {
 		options.MonoFamilies = app.MonospaceFamilies
 	}
+	if options.FontFamilies == nil {
+		options.FontFamilies = app.FontFamilies
+	}
+	if options.SetInterfaceFont == nil {
+		options.SetInterfaceFont = app.SetInterfaceFontFamily
+	}
 	if options.WallNow == nil {
 		options.WallNow = time.Now
 	}
@@ -413,6 +436,7 @@ const (
 	modalCommandPalette
 	modalShortcutCapture
 	modalStateNotice
+	modalDevelopmentImport
 	modalVaultUnlock
 	modalVaultForget
 	modalHighlightRule
@@ -434,6 +458,7 @@ const (
 	modalHistory
 	modalUpdate
 	modalUpdateProgress
+	modalFileProperties
 	modalDashboard
 	modalDashboardAdd
 	modalToolbarSettings
@@ -657,6 +682,7 @@ func (state *State) finishStartingConnection(session *Session, automatic bool) {
 // connection goroutine asked for, so Paint only ever reads state. It does
 // nothing for sessions whose status is unchanged and whose shell is quiet.
 func (state *State) Wake() {
+	defer state.syncDesktopFullscreen()
 	defer state.flushLocalDirectories()
 	state.adoptHistoryClear()
 	state.adoptCompletion()
@@ -712,6 +738,7 @@ func (state *State) Wake() {
 		state.scheduleUpdateCheck(state.update.firstDelay)
 	}
 	state.pumpSFTPConnections()
+	state.wakeEmbeddedSFTPWindows()
 	state.pumpDashboard()
 	state.pumpSessionLogs()
 	state.showNextPrompt()
@@ -753,9 +780,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 	if status.Method != "" {
 		session.method = status.Method
 	}
-	if status.System != sshconn.SystemUnknown && session.host.System != status.System {
-		state.setSessionSystem(session, status.System)
-	}
+	state.adoptSystem(session, status)
 	switch {
 	case status.EndpointRole == sshconn.EndpointProxyJump && status.Phase != sshconn.PhaseConnected:
 		session.stage = stageConnect
@@ -878,6 +903,28 @@ func (state *State) closeDisconnectedShell(session *Session) {
 	terminal.recording.resetSecrets()
 	terminal.ended = true
 	terminal.preedit = app.TextState{}
+}
+
+// adoptSystem records the system a connection reported, for this tab, the saved
+// host and every other tab open on it.
+func (state *State) adoptSystem(session *Session, status sshconn.Status) {
+	if !shouldAdoptSystem(session.host.System, status.System, status.SystemProvisional) {
+		return
+	}
+	state.setSessionSystem(session, status.System)
+}
+
+// shouldAdoptSystem reports whether what a connection reported replaces what the
+// session already knew. A provisional report is the SSH banner's guess: it names
+// the distribution whose OpenSSH the host carries, so a derivative arrives as
+// its parent. Such a guess fills a blank and never replaces a system the host
+// has named itself, or a derivative would badge as its parent until the probe
+// answers and then flip back.
+func shouldAdoptSystem(known, reported sshconn.RemoteSystem, provisional bool) bool {
+	if reported == sshconn.SystemUnknown || reported == known {
+		return false
+	}
+	return !provisional || known == sshconn.SystemUnknown
 }
 
 func (state *State) setSessionSystem(session *Session, system sshconn.RemoteSystem) {

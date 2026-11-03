@@ -302,7 +302,7 @@ func (state *State) openForwardDialog() {
 func (state *State) clickForwardDialog(id ui.ID) {
 	if state.forwardEditor.hostOpen {
 		switch {
-		case id == hitForwardDialogDismiss || id == hitForwardDialogClose || id == hitForwardDialogCancel:
+		case id == hitForwardDialogClose || id == hitForwardDialogCancel:
 			state.closeForwardDialog()
 			state.status = state.messages.StatusEditCanceled
 			return
@@ -339,7 +339,7 @@ func (state *State) clickForwardDialog(id ui.ID) {
 		}
 	}
 	switch id {
-	case hitForwardDialogDismiss, hitForwardDialogClose, hitForwardDialogCancel:
+	case hitForwardDialogClose, hitForwardDialogCancel:
 		state.closeForwardDialog()
 		state.status = state.messages.StatusEditCanceled
 	case hitForwardDialogHost:

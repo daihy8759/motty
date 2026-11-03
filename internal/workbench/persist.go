@@ -33,12 +33,17 @@ type savedState struct {
 	Version                    int                 `json:"version"`
 	Language                   string              `json:"language,omitempty"`
 	Theme                      string              `json:"theme,omitempty"`
+	TabOrientation             string              `json:"tab_orientation,omitempty"`
+	VerticalTabsAutoHide       bool                `json:"vertical_tabs_auto_hide,omitempty"`
+	VerticalTabsGrouping       bool                `json:"vertical_tabs_grouping,omitempty"`
 	NetworkProxy               string              `json:"network_proxy,omitempty"`
 	TerminalOption             string              `json:"terminalOption,omitempty"`
 	LocalShell                 string              `json:"local_shell,omitempty"`
 	SSHAgent                   string              `json:"ssh_agent,omitempty"`
 	SSHAgentPath               string              `json:"ssh_agent_path,omitempty"`
 	TerminalFontSize           int                 `json:"terminal_font_size,omitempty"`
+	TextScale                  string              `json:"text_scale,omitempty"`
+	InterfaceFont              string              `json:"interface_font,omitempty"`
 	TerminalFontFace           string              `json:"terminal_font_face,omitempty"`
 	TerminalFontFamily         string              `json:"terminal_font_family,omitempty"`
 	TerminalFontFallbacks      []string            `json:"terminal_font_fallbacks,omitempty"`
@@ -54,6 +59,8 @@ type savedState struct {
 	TerminalRightClickPaste    bool                `json:"terminal_right_click_paste,omitempty"`
 	TerminalTabTitle           bool                `json:"terminal_tab_title,omitempty"`
 	TerminalShowLatency        bool                `json:"terminal_show_latency,omitempty"`
+	TerminalToolbarPosition    string              `json:"terminal_toolbar_position,omitempty"`
+	TerminalToolbarSize        string              `json:"terminal_toolbar_size,omitempty"`
 	TerminalBellOff            bool                `json:"terminal_bell_off,omitempty"`
 	TerminalLinkPlainClick     bool                `json:"terminal_link_plain_click,omitempty"`
 	AIPanelWidth               float32             `json:"ai_panel_width,omitempty"`
@@ -76,9 +83,12 @@ type savedState struct {
 	SFTPPathInput              bool                `json:"sftp_path_input,omitempty"`
 	SFTPPanelAutoOpen          bool                `json:"sftp_panel_auto_open,omitempty"`
 	SFTPPanelSide              string              `json:"sftp_panel_side,omitempty"`
+	SFTPWindowOrder            string              `json:"sftp_window_order,omitempty"`
+	SFTPOpenMode               string              `json:"sftp_open_mode,omitempty"`
 	SFTPColumns                string              `json:"sftp_columns,omitempty"`
 	SFTPDownloadDirectory      string              `json:"sftp_download_directory,omitempty"`
 	DefaultEditor              string              `json:"default_editor,omitempty"` // this computer's editor for remote folders
+	CustomEditorPath           string              `json:"custom_editor_path,omitempty"`
 	Toolbars                   *savedToolbars      `json:"toolbars,omitempty"`
 	UpdateCheck                string              `json:"update_check,omitempty"`
 	CloseAction                string              `json:"close_action,omitempty"`
@@ -178,6 +188,9 @@ type savedHost struct {
 type savedHostGroup struct {
 	Name      string `json:"name"`
 	Collapsed bool   `json:"collapsed,omitempty"`
+	Explicit  bool   `json:"explicit,omitempty"`
+	Pinned    bool   `json:"pinned,omitempty"`
+	Order     int    `json:"order,omitempty"`
 }
 
 type savedForward struct {
@@ -208,6 +221,8 @@ type savedProxy struct {
 	JumpUser      string `json:"jump_user,omitempty"`
 	JumpPort      uint16 `json:"jump_port"`
 	Stopped       bool   `json:"stopped,omitempty"`
+	ViaShell      bool   `json:"via_shell,omitempty"`
+	RelayCommand  string `json:"relay_command,omitempty"`
 }
 
 type savedSession struct {
@@ -382,12 +397,17 @@ func (state *State) snapshot() savedState {
 		Version:                    stateFileVersion,
 		Language:                   state.savedLanguage(),
 		Theme:                      state.appearanceMode.saved(),
+		TabOrientation:             state.tabOrientation.String(),
+		VerticalTabsAutoHide:       state.verticalTabs.autoHide,
+		VerticalTabsGrouping:       state.verticalTabs.grouping,
 		NetworkProxy:               state.networkProxy.String(),
 		TerminalOption:             state.terminalOption.String(),
 		LocalShell:                 state.localShell,
 		SSHAgent:                   savedAgent,
 		SSHAgentPath:               savedAgentPath,
 		TerminalFontSize:           int(state.terminalFontSize),
+		TextScale:                  state.textScale.String(),
+		InterfaceFont:              state.uiFont.family,
 		TerminalFontFace:           terminalFontFaceString(state.fonts.classic),
 		TerminalFontFamily:         state.fonts.family,
 		TerminalFontFallbacks:      slices.Clone(state.fonts.fallbacks),
@@ -403,6 +423,8 @@ func (state *State) snapshot() savedState {
 		TerminalRightClickPaste:    state.terminalRightClickPaste,
 		TerminalTabTitle:           state.terminalTabTitle,
 		TerminalShowLatency:        state.terminalShowLatency,
+		TerminalToolbarPosition:    state.terminalToolbarPosition.String(),
+		TerminalToolbarSize:        state.terminalToolbarSize.String(),
 		TerminalBellOff:            state.terminalBellOff,
 		TerminalLinkPlainClick:     state.terminalLinkPlainClick,
 		AIPanelWidth:               state.ai.panelWidth,
@@ -424,9 +446,12 @@ func (state *State) snapshot() savedState {
 		SFTPPathInput:              state.sftpPathInput,
 		SFTPPanelAutoOpen:          state.sftpPanelAutoOpen,
 		SFTPPanelSide:              sftpPanelSideString(state.sftpPanelSide),
+		SFTPWindowOrder:            state.sftpWindowOrder.String(),
+		SFTPOpenMode:               state.sftpOpenMode.String(),
 		SFTPColumns:                state.sftpColumns.String(),
 		SFTPDownloadDirectory:      savedSFTPDownloadDirectory(state.sftpDownloadDirectory),
 		DefaultEditor:              string(state.defaultEditor),
+		CustomEditorPath:           state.customEditorPath,
 		Toolbars:                   state.toolbars.snapshot(),
 		UpdateCheck:                updateCheckString(state.updateAtStart),
 		CloseAction:                state.closeAction.String(),
@@ -501,7 +526,7 @@ func (state *State) snapshot() savedState {
 	}
 	saved.SFTPLocalBookmarks = slices.Clone(state.sftpLocalBookmarks)
 	for _, group := range state.hostGroups {
-		saved.HostGroups = append(saved.HostGroups, savedHostGroup{Name: group.Name, Collapsed: !group.Expanded})
+		saved.HostGroups = append(saved.HostGroups, savedHostGroup{Name: group.Name, Collapsed: !group.Expanded, Explicit: group.Explicit, Pinned: group.Pinned, Order: group.Order})
 	}
 	for _, identity := range state.identities {
 		saved.IdentityFiles = append(saved.IdentityFiles, identity.Path)
@@ -522,6 +547,7 @@ func (state *State) snapshot() savedState {
 		saved.Proxies = append(saved.Proxies, savedProxy{
 			TargetID: target.CatalogID, TargetAddress: target.Address, TargetUser: target.User, TargetPort: target.Port,
 			JumpID: jump.CatalogID, JumpAddress: jump.Address, JumpUser: jump.User, JumpPort: jump.Port, Stopped: route.Stopped,
+			ViaShell: route.ViaShell, RelayCommand: route.Relay,
 		})
 	}
 	for index := range state.sessions {
@@ -632,8 +658,13 @@ func (state *State) restoreSettings(saved savedState) {
 // fonts, what it does at start, the keys it has, the cloud account, the picture.
 func (state *State) restoreLocal(saved savedState) {
 	state.restoreDashboard(saved.MonitorPanels, saved.MonitorActive)
+	state.setTabOrientation(tabOrientationFromString(saved.TabOrientation))
+	state.setVerticalTabsAutoHide(saved.VerticalTabsAutoHide)
+	state.setVerticalTabsGrouping(saved.VerticalTabsGrouping)
 	state.restoreSFTPLocalFavorites(saved.SFTPLocalBookmarks)
 	state.toolbars.restore(saved.Toolbars)
+	state.terminalToolbarPosition = terminalToolbarPositionFromString(saved.TerminalToolbarPosition)
+	state.terminalToolbarSize = terminalToolbarSizeFromString(saved.TerminalToolbarSize)
 	state.localShell = saved.LocalShell
 	state.sessionLogsOff = saved.SessionLogsOff
 	// The saved editor is read as it is: a value this build does not know stays
@@ -655,8 +686,15 @@ func (state *State) restoreLocal(saved savedState) {
 	state.appearanceMode = appearanceModeFromString(saved.Theme)
 	state.networkProxy = networkProxyModeFromString(saved.NetworkProxy)
 	state.syncNativeAppearance()
+	// The theme setAppearance builds copies the metrics by value, so the saved
+	// text scale must be in effect before it runs.
+	state.textScale = textScaleFromString(saved.TextScale)
+	applyTextMetrics(state.textScale.factor())
 	state.setAppearance(state.resolveAppearance())
 	state.setTerminalFontSize(float32(saved.TerminalFontSize))
+	// Only the choice: what is in effect is decided once the window starts, when
+	// the platform has been asked what it can follow (validateInterfaceFont).
+	state.uiFont.family = strings.TrimSpace(saved.InterfaceFont)
 	state.fonts.family, state.fonts.classic = "", terminalFontFaceFromString(saved.TerminalFontFace) == ui.MonoClassic
 	if family := strings.TrimSpace(saved.TerminalFontFamily); family != "" && ui.MonoFamily(family) != ui.MonoSystem {
 		state.fonts.family, state.fonts.classic = family, false
@@ -734,7 +772,7 @@ func (state *State) restoreShared(saved savedState) {
 		if state.hostGroupIndex(name) >= 0 {
 			continue
 		}
-		state.hostGroups = append(state.hostGroups, hostGroup{Name: name, Expanded: !entry.Collapsed})
+		state.hostGroups = append(state.hostGroups, hostGroup{Name: name, Expanded: !entry.Collapsed, Explicit: entry.Explicit, Pinned: entry.Pinned, Order: max(0, entry.Order)})
 	}
 	state.restoreForwards(saved.Forwards)
 	state.restoreProxies(saved.Proxies)
@@ -772,24 +810,37 @@ func (state *State) workspaceName() string {
 	}
 }
 
-// restoreShortcuts applies the bindings the file holds, then fills what is
-// still free with the defaults. The file wins on purpose: a chord saved for one
-// action is not taken by the default of an action a later build added. Such an
-// action stays unbound, reading "—" in the settings until it is given a chord,
-// rather than quietly moving a shortcut the user chose.
+// restoreShortcuts applies the bindings the file holds, then fills what the
+// file does not mention with the defaults. The file wins on purpose: a chord
+// saved for one action is not taken by the default of an action a later build
+// added. Such an action stays unbound, reading "—" in the settings until it is
+// given a chord, rather than quietly moving a shortcut the user chose. An entry
+// with no key is an action the user removed: it stays unbound instead of taking
+// its default back.
 func restoreShortcuts(saved []savedShortcut) shortcutMap {
 	defaults := defaultShortcuts()
 	var shortcuts shortcutMap
+	var specified [shortcutActionCount]bool
 	for _, entry := range saved {
 		action := shortcutActionFromString(entry.Action)
-		chord, ok := chordFromSaved(ui.Modifiers(entry.Modifiers), entry.Key)
-		if action == shortcutNone || !ok {
+		if action == shortcutNone {
 			continue
 		}
-		shortcuts.bind(action, chord)
+		if entry.Key == "" {
+			shortcuts.unbind(action)
+			specified[action] = true
+			continue
+		}
+		chord, ok := chordFromSaved(ui.Modifiers(entry.Modifiers), entry.Key)
+		if !ok {
+			continue
+		}
+		if _, bound := shortcuts.bind(action, chord); bound {
+			specified[action] = true
+		}
 	}
 	for action := shortcutAction(1); action < shortcutActionCount; action++ {
-		if shortcuts.chords[action].valid() {
+		if specified[action] || shortcuts.chords[action].valid() {
 			continue
 		}
 		shortcuts.bind(action, defaults.chords[action])

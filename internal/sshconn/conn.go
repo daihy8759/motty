@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -151,6 +152,11 @@ type Status struct {
 	// System is detected after authentication without writing to the user's
 	// interactive shell. It remains unknown when command sessions are refused.
 	System RemoteSystem
+	// SystemProvisional marks System as the identification string's guess
+	// rather than the host's own answer. A derivative shares its parent's
+	// OpenSSH, so the guess may name the distribution the host was built from
+	// instead of the one it is: it fills a blank, and never more than that.
+	SystemProvisional bool
 	// Negotiated is what the last endpoint agreed on, once its handshake is done.
 	Negotiated Negotiated
 	// Skipped names identity files not offered to the server: those the user
@@ -200,6 +206,11 @@ type Config struct {
 	// for individual endpoints. An endpoint not in the map uses the fields
 	// above and every supported authentication method.
 	Authentication map[Endpoint]Authentication
+	// Relays names the endpoints whose connection leaves the hop before them
+	// through a relay program run in that hop's shell, instead of a direct-tcpip
+	// channel: for a jump host that only offers a shell. The key is the endpoint
+	// reached, so only the target and every jump host but the first can have one.
+	Relays map[Endpoint]Relay
 	// Proxy, when set and not bypassed for the destination, carries the first
 	// TCP connection: to the target, or to the first jump host.
 	Proxy *Proxy
@@ -261,6 +272,8 @@ type Conn struct {
 	retired    bool
 	terminated bool
 	doneOnce   sync.Once
+	// pingPending is set while a keepalive probe sent by Ping is unanswered.
+	pingPending atomic.Bool
 }
 
 // finish closes the done channel once, whichever of the goroutine ending and
@@ -523,7 +536,7 @@ func (conn *Conn) connect() error {
 	conn.beginEndpoint(target, EndpointTarget)
 	var socket net.Conn
 	if previous != nil {
-		socket, err = conn.dialThrough(previous, target.address())
+		socket, err = conn.dialHop(previous, previousEndpoint, target)
 		if err != nil {
 			return fmt.Errorf("connect to %s through %s: %w", target.address(), previousEndpoint.address(), err)
 		}
@@ -541,28 +554,36 @@ func (conn *Conn) connect() error {
 	conn.client = client
 	method := conn.lastMethod
 	conn.mu.Unlock()
+	// The banner names the distribution whose OpenSSH the host serves, and a
+	// derivative serves its parent's: Ubuntu or Debian here is a guess that the
+	// probe below corrects. Reporting it would badge the host as its parent
+	// until the answer arrives, so a guess that is about to be checked is not
+	// published at all.
+	guess := classifyBanner(serverVersion)
+	ask := standardImplementation(serverVersion) &&
+		(guess == SystemUnknown || guess == SystemUbuntu || guess == SystemDebian)
 	conn.update(func(status *Status) {
 		status.Phase = PhaseConnected
 		status.ServerVersion = serverVersion
 		status.Method = method
-		status.System = classifyBanner(serverVersion)
+		if !ask {
+			status.System = guess
+			status.SystemProvisional = false
+		}
 	})
 	// The system probe is opt-in and never started by default: it opens a second
 	// session, which makes a single-session server drop the whole transport and
 	// take the user's shell with it. Callers that enable it are still limited to
 	// standard SSH implementations; an unrecognized banner may be a gateway or
 	// appliance that answers the probe by ending the whole connection.
-	if conn.config.DetectSystem {
-		if system := conn.Status().System; standardImplementation(serverVersion) &&
-			(system == SystemUnknown || system == SystemUbuntu || system == SystemDebian) {
-			go conn.detectSystem(client, serverVersion)
-		}
+	if conn.config.DetectSystem && ask {
+		go conn.detectSystem(client, serverVersion)
 	}
 	return nil
 }
 
 func (conn *Conn) detectSystem(client *ssh.Client, serverVersion string) {
-	system, err := detectRemoteSystem(client, serverVersion)
+	system, confirmed, err := detectRemoteSystem(client, serverVersion)
 	if err != nil {
 		// A transport failure on the optional probe is not something to swallow:
 		// record it once so the connection reports the real cause and nobody
@@ -585,6 +606,7 @@ func (conn *Conn) detectSystem(client *ssh.Client, serverVersion string) {
 		return
 	}
 	conn.status.System = system
+	conn.status.SystemProvisional = !confirmed
 	conn.status.Version++
 	conn.mu.Unlock()
 	conn.notify()
@@ -611,9 +633,18 @@ func (conn *Conn) dialEndpoint(endpoint Endpoint, role EndpointRole, known *host
 	return client, err
 }
 
+// dialHop opens the connection to next from the hop before it: a direct-tcpip
+// channel, or the relay the configuration names for next.
+func (conn *Conn) dialHop(previous *ssh.Client, previousEndpoint, next Endpoint) (net.Conn, error) {
+	if relay, ok := conn.config.Relays[next]; ok {
+		return conn.dialRelay(previous, previousEndpoint, relay, next)
+	}
+	return conn.dialThrough(previous, next.address())
+}
+
 func (conn *Conn) dialEndpointThrough(previous *ssh.Client, previousEndpoint, endpoint Endpoint, known *hostKeys) (*ssh.Client, error) {
 	conn.beginEndpoint(endpoint, EndpointProxyJump)
-	socket, err := conn.dialThrough(previous, endpoint.address())
+	socket, err := conn.dialHop(previous, previousEndpoint, endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("connect to %s through %s: %w", endpoint.address(), previousEndpoint.address(), err)
 	}
@@ -637,6 +668,7 @@ func (conn *Conn) beginEndpoint(endpoint Endpoint, role EndpointRole) {
 	conn.status.ServerVersion = ""
 	conn.status.Method = ""
 	conn.status.System = SystemUnknown
+	conn.status.SystemProvisional = false
 	conn.status.Skipped = nil
 	conn.status.Err = nil
 	conn.mu.Unlock()

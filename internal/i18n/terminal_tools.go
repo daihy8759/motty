@@ -138,6 +138,7 @@ type ToolsMessages struct {
 	FontPickerEmpty         string
 	FontPickerSample        string
 	FontPickerSampleSymbols string
+	FontPickerConfirm       string
 
 	// The fonts that draw what the terminal's font lacks.
 	FontFallbackRow         string
@@ -277,6 +278,14 @@ type ToolsMessages struct {
 	FilesPanelPosition              string
 	FilesPanelPositionDescription   string
 	FilesPanelLeft, FilesPanelRight string
+	FilesWindowOrder                string
+	FilesWindowOrderDescription     string
+	FilesWindowLocalLeft            string
+	FilesWindowRemoteLeft           string
+	FilesOpenMode                   string
+	FilesOpenModeDescription        string
+	FilesOpenWindow                 string
+	FilesOpenTab                    string
 	FilesMoveLeft, FilesMoveRight   string
 	FilesParallel                   string
 	FilesPathInput                  string
@@ -308,6 +317,18 @@ type ToolsMessages struct {
 	FilesMore                       string
 	FilesShowHidden                 string
 	FilesHideHidden                 string
+	// Searching the folders below the current one by name.
+	FilesSearchSubfolders           string
+	FilesSearchPlaceholder          string
+	FilesSearchScanningFmt          string // matches, entries read
+	FilesSearchDoneFmt              string // matches, entries read
+	FilesSearchShownFmt             string // results shown
+	FilesSearchTruncated            string
+	FilesSearchFailedFmt            string // folders that could not be read
+	FilesSearchUnavailable          string
+	FilesSearchUnavailableFmt       string // the error
+	FilesSearchSearching            string
+	FilesSearchNoMatches            string
 	FilesKeepTimes                  string
 	FilesKeepTimesDescription       string
 	FilesFollow                     string
@@ -325,6 +346,9 @@ type ToolsMessages struct {
 	FilesEditorNone                 string
 	FilesEditorVSCode               string
 	FilesEditorZed                  string
+	FilesEditorCustom               string
+	FilesEditorCustomDescription    string
+	FilesCustomEditorRemoteOnly     string
 	FilesEditorUnknownFmt           string
 	FilesEditorOpenFmt              string
 	FilesEditorOpenFailedTitleFmt   string
@@ -332,6 +356,16 @@ type ToolsMessages struct {
 	FilesEditorPortFmt              string
 	FilesEditorJump                 string
 	FilesEditorNotFound             string
+	FilesCustomEditor               string
+	FilesCustomEditorNotSet         string
+	FilesCustomEditorChoose         string
+	FilesCustomEditorClear          string
+	FilesCustomEditorPicker         string
+	FilesCustomEditorFilter         string
+	FilesCustomEditorPickerFailed   string
+	FilesCustomEditorInvalid        string
+	FilesCustomEditorSaved          string
+	FilesCustomEditorUnavailable    string
 	TipNewLink                      string
 	LinkTitle                       string
 	LinkName                        string
@@ -494,10 +528,17 @@ type ToolsMessages struct {
 	SyncPassword                    string
 	SyncPath                        string
 	SyncSave                        string
+	SyncTest                        string
+	SyncTestRunning                 string
 	SyncRunRow                      string
 	SyncRunNever                    string
 	SyncRunLastFmt                  string
 	SyncNow                         string
+	SyncRestore                     string
+	SyncRestoreTitle                string
+	SyncRestoreWarning              string
+	SyncRestoreConfirm              string
+	SyncRestoreChanged              string
 	SyncAuto                        string
 	SyncAutoDescription             string
 	SyncRunFailedFmt                string

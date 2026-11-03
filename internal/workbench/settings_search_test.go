@@ -20,12 +20,16 @@ func searchSettings(t *testing.T, state *State, query string) *ui.Canvas {
 func TestSearchingSettingsListsMatchesFromEveryCategoryWithTheirCategory(t *testing.T) {
 	state := newTestState(t, testOptions(t))
 	canvas := searchSettings(t, state, "font")
-	if !state.settingsSearching() || state.settings.count != 3 {
-		t.Fatalf("results = %d, want the font size, the font family and the fallback fonts", state.settings.count)
+	if !state.settingsSearching() || state.settings.count != 4 {
+		t.Fatalf("results = %d, want the interface font, the terminal's font size, its font family and its fallback fonts", state.settings.count)
 	}
 	for index := 0; index < state.settings.count; index++ {
 		hit, ok := hitByID(canvas, hitSettingsResultList.At(index))
-		if !ok || hit.Label != state.messages.Tools.CatTerminal {
+		want := state.messages.Tools.CatTerminal
+		if state.settings.results[index].category == settingsGeneral {
+			want = state.messages.Tools.CatGeneral // the interface's font
+		}
+		if !ok || hit.Label != want {
 			t.Fatalf("result %d hit = %+v, %v: it should be a button named for its category", index, hit, ok)
 		}
 	}
@@ -144,6 +148,19 @@ func TestSearchResultsSteadyPaintDoesNotAllocate(t *testing.T) {
 		state.Paint(&canvas, size)
 	}); allocations != 0 {
 		t.Fatalf("search results paint allocations = %v (%d results)", allocations, state.settings.count)
+	}
+}
+
+func TestCustomEditorSettingAppearsInSearchWhenAvailable(t *testing.T) {
+	state := newTestState(t, testOptions(t))
+	if !state.customEditorSettingVisible() {
+		state.defaultEditor = editorCustom
+		state.customEditorPath = "/Applications/Editor.app"
+	}
+	searchSettings(t, state, state.messages.Tools.FilesCustomEditor)
+	if state.settings.count != 1 || state.settings.results[0].category != settingsFiles ||
+		state.settings.results[0].label != state.messages.Tools.FilesCustomEditor {
+		t.Fatalf("custom editor results = %+v", state.settings.results[:state.settings.count])
 	}
 }
 

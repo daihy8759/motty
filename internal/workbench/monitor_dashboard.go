@@ -302,9 +302,7 @@ func (s *State) pumpDashboard() {
 			if status.Endpoint.Host != "" {
 				v.endpoint = status.Endpoint
 			}
-			if status.System != sshconn.SystemUnknown && status.System != v.host.System {
-				s.setSessionSystem(v, status.System)
-			}
+			s.adoptSystem(v, status)
 			if s.modalSession == v.ID && !isPromptPhase(v.phase) {
 				s.closeModal()
 			}
@@ -361,7 +359,7 @@ func (s *State) pumpDashboard() {
 
 func (s *State) startDashboardCollector(id string, source *dashboardSource) {
 	system := source.session.host.System
-	if system != sshconn.SystemUnknown && !system.IsLinux() && system != sshconn.SystemWindows {
+	if !monitorSupported(system) {
 		source.blocked = true
 		s.dashboard.engine.SetStatus(id, monitoring.Unsupported)
 		return
@@ -371,17 +369,11 @@ func (s *State) startDashboardCollector(id string, source *dashboardSource) {
 	source.collecting = source.interval
 	faults := make(chan error, 1)
 	source.errors = faults
-	var worker *remotestats.Worker
-	var details *remotestats.DetailsWorker
-	if system == sshconn.SystemWindows {
-		worker = remotestats.StartWindows(source.session.conn, nil, source.interval)
-	} else {
-		worker = remotestats.StartWithInterval(source.session.conn, nil, source.interval)
-		// Disks and interfaces change slowly; their details keep the sidebar's
-		// five-second floor even when the sample cadence is faster, so a fast
-		// panel does not run df and interface counters every two seconds.
-		details = remotestats.StartDetailsWithInterval(source.session.conn, nil, max(source.interval, 5))
-	}
+	// Disks and interfaces change slowly; their details keep the sidebar's
+	// five-second floor even when the sample cadence is faster, so a fast
+	// panel does not run df and interface counters every two seconds.
+	worker := startMonitorWorker(source.session.conn, nil, system, source.interval)
+	details := startMonitorDetails(source.session.conn, nil, system, max(source.interval, 5))
 	var detailResults <-chan remotestats.DetailResult
 	if details != nil {
 		detailResults = details.Results()
@@ -586,7 +578,7 @@ func (s *State) clickDashboard(id ui.ID) bool {
 			}
 		case id == hitDashboardDialogSave:
 			s.submitDashboard()
-		case id == hitDashboardDialogCancel || id == hitDashboardDismiss:
+		case id == hitDashboardDialogCancel:
 			s.closeModal()
 			s.showNextPrompt()
 		case id.Scope() == hitDashboardHostList:
