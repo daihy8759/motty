@@ -2660,6 +2660,10 @@ func (state *State) createHostSession(host Host, address string) *Session {
 }
 
 func (state *State) createHostSessionWithConnection(host Host, address string, conn Connection, command string, relay *notifyRelay) *Session {
+	return state.createHostSessionWithDirectory(host, address, conn, command, relay, "")
+}
+
+func (state *State) createHostSessionWithDirectory(host Host, address string, conn Connection, command string, relay *notifyRelay, directory string) *Session {
 	title := state.uniqueSessionTitle(host.Label, 0)
 	workspaceID := state.pendingWorkspace
 	paneID := state.pendingPane
@@ -2675,6 +2679,7 @@ func (state *State) createHostSessionWithConnection(host Host, address string, c
 	if session == nil {
 		return nil
 	}
+	session.localDirectory = directory
 	state.activeSessionID = session.ID
 	state.activeSection = sectionTerminal
 	state.status = state.messages.StatusOpened + session.Title

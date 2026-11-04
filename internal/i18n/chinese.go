@@ -523,6 +523,7 @@ var ChineseMessages = Messages{
 	NoMatches:                      "没有匹配的主机",
 	NoMatchesSub:                   "点击“连接”会直接连接你输入的内容,写成 user@host 或 user@host:端口。",
 	ErrBadTargetFmt:                "“%s”不是可连接的目标,请写成 user@host 或 user@host:端口。",
+	ErrLocalDirectoryFmt:           "无法打开本地终端目录：%s",
 	HostStateIdle:                  "未连接",
 	HostStateConnecting:            "连接中",
 	HostStateConnected:             "已连接",

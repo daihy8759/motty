@@ -523,6 +523,7 @@ var EnglishMessages = Messages{
 	NoMatches:                      "No matching hosts",
 	NoMatchesSub:                   "Connect opens what you typed, written as user@host or user@host:port.",
 	ErrBadTargetFmt:                "\"%s\" is not something to connect to. Write it as user@host or user@host:port.",
+	ErrLocalDirectoryFmt:           "Cannot open local terminal directory: %s",
 	HostStateIdle:                  "Not connected",
 	HostStateConnecting:            "Connecting",
 	HostStateConnected:             "Connected",

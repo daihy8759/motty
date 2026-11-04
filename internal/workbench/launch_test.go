@@ -2,6 +2,8 @@ package workbench
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -62,6 +64,43 @@ func TestACommandLineTargetConnectsAtOnce(t *testing.T) {
 	}
 	if *raised != 1 {
 		t.Fatalf("the window was raised %d times", *raised)
+	}
+}
+
+func TestLocalTerminalLaunchStartsShellInRequestedDirectory(t *testing.T) {
+	skipWithoutUnixShell(t)
+	state, world, raised := launchState(t)
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Launch([]string{"--local-terminal", directory})
+	state.Wake()
+	session, ok := state.sessionByIDPointer(state.activeSessionID)
+	if !ok || !session.isLocal() || session.term == nil || session.term.shell == nil {
+		t.Fatalf("local session did not start: %+v", session)
+	}
+	t.Cleanup(func() { session.term.shell.Close() })
+	if len(world.configs) != 0 || *raised != 1 {
+		t.Fatalf("remote dials %d, window raised %d times", len(world.configs), *raised)
+	}
+	session.term.send([]byte("pwd\n"))
+	localShellOutput(t, state, session, directory)
+	if session.localDirectory != directory {
+		t.Fatalf("remembered directory = %q, want %q", session.localDirectory, directory)
+	}
+}
+
+func TestLocalTerminalLaunchRejectsInvalidDirectory(t *testing.T) {
+	state, world, _ := launchState(t)
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state.Launch([]string{"--local-terminal", file})
+	state.Wake()
+	if len(state.sessions) != 0 || len(world.configs) != 0 || !strings.Contains(state.status, file) {
+		t.Fatalf("sessions %d, remote dials %d, status %q", len(state.sessions), len(world.configs), state.status)
 	}
 }
 

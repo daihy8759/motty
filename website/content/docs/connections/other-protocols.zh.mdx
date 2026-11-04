@@ -22,6 +22,17 @@ YMODEM 传文件，见 [ZMODEM、XMODEM 与 YMODEM](/zh/docs/files/zmodem-xmodem
 
 在本机的伪终端上运行你的登录 shell：macOS 和 Linux 用 pty，Windows 用 ConPTY。
 
+从命令行指定目录并打开一个本地终端：
+
+```sh
+motty --local-terminal .
+```
+
+也可以把 `.` 换成其他相对路径或绝对路径；路径包含空格时请加引号。如果 Motty 已在运行，
+请求会交给现有窗口。目录必须存在，终端使用设置中的默认本地 Shell。
+如果 `motty` 不在 PATH 中，请使用可执行文件的完整路径；例如 macOS 默认安装位置为
+`/Applications/Motty.app/Contents/MacOS/motty`。
+
 在 Windows 上，PowerShell、CMD、Git Bash 和每个已安装的 WSL 发行版可以同时使用，
 每个标签各跑各的：点标题栏的 `+` 新建标签时，列表里每个 Shell 都是一行“本地终端 · 名称”，
 输入名字就能筛选；右键侧栏或顶栏的“本地终端”，或点新标签页里该行的箭头，也能选

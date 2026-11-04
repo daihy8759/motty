@@ -214,6 +214,11 @@ func (state *State) openLocalTerminalWith(shell localshell.Choice) *Session {
 	return state.createHostSession(host, host.Address)
 }
 
+func (state *State) openLocalTerminalAt(directory string) *Session {
+	host := localHost(state.messages.LocalTerminalTitle)
+	return state.createHostSessionWithDirectory(host, host.Address, nil, "", nil, directory)
+}
+
 // localSystem is the operating system this program runs on, so the tab wears
 // the same badge a remote machine of that kind would.
 func localSystem() sshconn.RemoteSystem {

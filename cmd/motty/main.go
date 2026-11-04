@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -48,6 +49,11 @@ func main() {
 		os.Exit(runApplyUpdate(os.Args[2:]))
 	}
 	args, background := launchArguments(os.Args[1:])
+	args, err := prepareLocalTerminalLaunch(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "motty:", err)
+		os.Exit(2)
+	}
 	// A second launch hands what it was asked to open to the copy that runs, and
 	// exits. A headless test run is its own world and never meets the real one.
 	if os.Getenv("VIVA_HEADLESS") != "" {
@@ -74,7 +80,7 @@ func main() {
 		windows.launch(args)
 	}
 	hub := workbench.NewAIHub(aiDatabasePath(datadir.Current().Dir))
-	err := app.RunApplication(func(application *app.Application) error {
+	err = app.RunApplication(func(application *app.Application) error {
 		application.OnQuitRequest(windows.quitWithDocuments)
 		status := newTray(application)
 		var openWindow func() error

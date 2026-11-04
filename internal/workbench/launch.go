@@ -13,6 +13,7 @@ import (
 
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/ui"
+	"motty/internal/localshell"
 	"motty/internal/update"
 )
 
@@ -119,6 +120,22 @@ func (state *State) launchReady() bool {
 }
 
 func (state *State) openLaunch(args []string) {
+	if len(args) > 0 && args[0] == "--local-terminal" {
+		if !slices.Contains(args, "--background") && state.options.Raise != nil {
+			state.options.Raise()
+		}
+		if len(args) < 2 || len(args) > 3 || (len(args) == 3 && args[2] != "--background") {
+			state.status = fmt.Sprintf(state.messages.ErrLocalDirectoryFmt, "")
+			return
+		}
+		directory := args[1]
+		if localStartupDirectory(directory, state.localShell) == "" || !localshell.CanStartInDirectory(state.localShell, directory) {
+			state.status = fmt.Sprintf(state.messages.ErrLocalDirectoryFmt, directory)
+			return
+		}
+		state.openLocalTerminalAt(directory)
+		return
+	}
 	if path, ok := xshellLaunchPath(args); ok {
 		if state.options.Raise != nil {
 			state.options.Raise()

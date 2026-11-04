@@ -353,6 +353,36 @@ func launchArguments(args []string) (rest []string, background bool) {
 	return rest, background
 }
 
+func prepareLocalTerminalLaunch(args []string) ([]string, error) {
+	if len(args) == 0 || args[0] != "--local-terminal" {
+		return args, nil
+	}
+	if len(args) != 2 || args[1] == "" {
+		return nil, errors.New("usage: motty --local-terminal <directory>")
+	}
+	directory, err := filepath.EvalSymlinks(args[1])
+	if err != nil {
+		return nil, fmt.Errorf("local terminal directory %q: %w", args[1], err)
+	}
+	directory, err = filepath.Abs(directory)
+	if err != nil {
+		return nil, fmt.Errorf("local terminal directory %q: %w", args[1], err)
+	}
+	if len(directory) > 2048 || strings.IndexFunc(directory, func(character rune) bool {
+		return character < 0x20 || character == 0x7f
+	}) >= 0 {
+		return nil, fmt.Errorf("invalid local terminal directory %q", args[1])
+	}
+	info, err := os.Stat(directory)
+	if err != nil {
+		return nil, fmt.Errorf("local terminal directory %q: %w", args[1], err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("local terminal directory %q is not a directory", args[1])
+	}
+	return []string{"--local-terminal", directory}, nil
+}
+
 // loginStart is the settings page's way to start the program at login.
 func loginStart() *workbench.LoginStart {
 	return &workbench.LoginStart{

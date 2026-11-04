@@ -23,7 +23,17 @@ func TestClaimSubprocessHelper(t *testing.T) {
 		t.Skip("helper process")
 	}
 	dir := os.Getenv("MOTTY_DATA_DIR")
-	primary, claim, err := claimLaunch(dir, nil, func([]string) {})
+	var args []string
+	if directory := os.Getenv("MOTTY_CLAIM_LAUNCH_DIRECTORY"); directory != "" {
+		var err error
+		args, err = prepareLocalTerminalLaunch([]string{"--local-terminal", directory})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	primary, claim, err := claimLaunch(dir, args, func(more []string) {
+		_ = os.WriteFile(filepath.Join(dir, "handoff"), []byte(strings.Join(more, "\n")), 0o600)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +75,8 @@ func TestSecondLaunchHandsOffWithoutOpeningStorage(t *testing.T) {
 	waitForFile(t, filepath.Join(dataDir, "storage-opened"))
 
 	second := exec.Command(os.Args[0], "-test.run=^TestClaimSubprocessHelper$")
-	second.Env = append(os.Environ(), claimHelperEnv+"=1", "MOTTY_DATA_DIR="+dataDir)
+	second.Dir = t.TempDir()
+	second.Env = append(os.Environ(), claimHelperEnv+"=1", "MOTTY_DATA_DIR="+dataDir, "MOTTY_CLAIM_LAUNCH_DIRECTORY=.")
 	output, err := second.CombinedOutput()
 	if err != nil {
 		t.Fatalf("second launch: %v\n%s", err, output)
@@ -81,6 +92,19 @@ func TestSecondLaunchHandsOffWithoutOpeningStorage(t *testing.T) {
 	content, err := os.ReadFile(marker)
 	if err != nil || string(content) != fmt.Sprintf("pid=%d", first.Process.Pid) {
 		t.Fatalf("the second launch changed the first process's storage marker: %q, %v", content, err)
+	}
+	handoff := filepath.Join(dataDir, "handoff")
+	waitForFile(t, handoff)
+	content, err = os.ReadFile(handoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := filepath.EvalSymlinks(second.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "--local-terminal\n" + directory; string(content) != want {
+		t.Fatalf("handoff = %q, want %q", content, want)
 	}
 }
 

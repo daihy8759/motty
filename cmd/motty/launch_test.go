@@ -24,6 +24,46 @@ func TestLaunchArgumentsDropWhatTheSystemAdds(t *testing.T) {
 	}
 }
 
+func TestLocalTerminalLaunchResolvesAndValidatesDirectory(t *testing.T) {
+	directory := t.TempDir()
+	working, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(working, directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := prepareLocalTerminalLaunch([]string{"--local-terminal", relative})
+	if err != nil || !reflect.DeepEqual(args, []string{"--local-terminal", want}) {
+		t.Fatalf("prepared %q, %v; want %q", args, err, want)
+	}
+	if got := handoffArguments(args, false); !reflect.DeepEqual(got, args) {
+		t.Fatalf("handoff changed the directory: %q", got)
+	}
+	file := filepath.Join(directory, "file")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range [][]string{
+		{"--local-terminal"}, {"--local-terminal", ""}, {"--local-terminal", file},
+		{"--local-terminal", filepath.Join(directory, "missing")},
+		{"--local-terminal", directory, "extra"},
+	} {
+		if _, err := prepareLocalTerminalLaunch(invalid); err == nil {
+			t.Errorf("accepted %q", invalid)
+		}
+	}
+	ssh := []string{"-ssh", "example.com"}
+	if got, err := prepareLocalTerminalLaunch(ssh); err != nil || !reflect.DeepEqual(got, ssh) {
+		t.Fatalf("SSH launch changed: %q, %v", got, err)
+	}
+}
+
 func TestADataDirectoryIsACopyOfItsOwn(t *testing.T) {
 	if instanceID("") != applicationID || instanceID("/a") == instanceID("/b") || instanceID("/a") == applicationID {
 		t.Fatalf("ids %q %q %q", instanceID(""), instanceID("/a"), instanceID("/b"))

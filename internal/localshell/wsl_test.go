@@ -94,6 +94,23 @@ func TestWSLStartDirectoryIsOnlyAWayTheDistributionCanReach(t *testing.T) {
 	}
 }
 
+func TestShellCanStartOnlyInAReachableDirectory(t *testing.T) {
+	for _, test := range []struct {
+		shell, directory string
+		want             bool
+	}{
+		{WSLShell("Ubuntu"), `\\wsl.localhost\Ubuntu\home\me`, true},
+		{WSLShell("Ubuntu"), `\\wsl.localhost\Debian\home\me`, false},
+		{WSLShell("Ubuntu"), `C:\Users\me`, true},
+		{"", `\\wsl.localhost\Ubuntu\home\me`, false},
+		{"", `C:\Users\me`, true},
+	} {
+		if got := CanStartInDirectory(test.shell, test.directory); got != test.want {
+			t.Errorf("CanStartInDirectory(%q, %q) = %t, want %t", test.shell, test.directory, got, test.want)
+		}
+	}
+}
+
 func TestSharedEnvironmentKeepsWhatTheUserShares(t *testing.T) {
 	if got := wslShared(""); got != "TERM:COLORTERM:"+WSLDirectoryVariable {
 		t.Fatalf("empty WSLENV became %q", got)

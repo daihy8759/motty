@@ -168,6 +168,13 @@ func wslStartDirectory(dir, distro string) string {
 	return ""
 }
 
+func CanStartInDirectory(shell, directory string) bool {
+	if distro, ok := WSLDistro(shell); ok {
+		return wslStartDirectory(directory, distro) != ""
+	}
+	return !IsWSLUNC(directory)
+}
+
 // wslEnvironmentVariables are the variables WSL is told to carry into the
 // distribution, besides the ones the user already shares.
 var wslEnvironmentVariables = []string{"TERM", "COLORTERM", WSLDirectoryVariable}

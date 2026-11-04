@@ -531,7 +531,8 @@ type Messages struct {
 
 	// ErrBadTargetFmt reports typed text that is not a connection target; it
 	// takes the text.
-	ErrBadTargetFmt string
+	ErrBadTargetFmt      string
+	ErrLocalDirectoryFmt string
 
 	// Per-host connection state shown in the host table.
 	HostStateIdle       string
