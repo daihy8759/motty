@@ -249,6 +249,7 @@ type Messages struct {
 	VerticalTabGroupCountFmt               string
 	VerticalTabsPin                        string
 	VerticalTabsAutoHide                   string
+	VerticalTabsScrollbar                  string
 	SettingsNetworkProxy                   string
 	SettingsNetworkProxyDescription        string
 	SettingsNetworkProxySystem             string
