@@ -300,6 +300,7 @@ func (fake *fakeConn) set(change func(*sshconn.Status)) {
 type world struct {
 	configs []sshconn.Config
 	conns   []*fakeConn
+	onDial  func(call int)
 }
 
 // sampleHosts are the hosts most tests act on. The application starts empty,
@@ -325,6 +326,9 @@ func newWorld(t testing.TB) (*world, Options) {
 		SetNativeAppearance:   func(app.Appearance) {},
 		Dial: func(config sshconn.Config) Connection {
 			fake := &fakeConn{}
+			if known.onDial != nil {
+				known.onDial(len(known.configs) + 1)
+			}
 			known.configs = append(known.configs, config)
 			known.conns = append(known.conns, fake)
 			return fake

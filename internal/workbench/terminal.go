@@ -271,6 +271,9 @@ func (t *terminal) syncRemaining() time.Duration {
 }
 
 func (state *State) configureTerminal(session *Session) {
+	session.outputAlert.commandRunning = false
+	session.outputAlert.completionKnown = false
+	session.outputAlert.promptSeen = false
 	if session.term.folderToken == "" {
 		session.term.resetFolderSync()
 	}
@@ -306,6 +309,7 @@ func (state *State) configureTerminal(session *Session) {
 			current.term.folderIntegrationSeen = true
 			current.term.promptStarted = true
 			current.term.promptReady = false
+			current.outputAlert.promptSeen = true
 		}
 	})
 	session.term.screen.SetPromptReady(func() {
@@ -315,9 +319,15 @@ func (state *State) configureTerminal(session *Session) {
 			t.inputGuard.active = t.promptReady
 		}
 	})
+	session.term.screen.SetCommandFinished(func(code int) {
+		if current, ok := state.sessionByIDPointer(sessionID); ok {
+			state.finishBackgroundCommand(current, code)
+		}
+	})
 	session.term.screen.SetCommandStart(func() {
 		if current, ok := state.sessionByIDPointer(sessionID); ok && current.term != nil {
 			t := current.term
+			current.outputAlert.commandRunning = current.outputAlert.promptSeen
 			t.commandReporting = true
 			t.inputGuard.start()
 			t.promptReady, t.promptStarted = false, false
@@ -670,8 +680,15 @@ func (state *State) shellOpened(session *Session, shell Shell, err error) {
 		state.describe(session)
 		return
 	}
+	if session.isLocal() {
+		state.rememberRecentConnection(session)
+	}
 	t.shell = shell
 	t.shellOpened = state.now()
+	// A program negotiates the kitty keyboard protocol for its own shell, but the
+	// screen keeps those flags across a reconnect, so a new shell would inherit
+	// modes it never asked for and start receiving Super chords as escape codes.
+	t.screen.ResetKeyboard()
 	state.submitSessionLogEvent(session, sessionlog.EventShellOpened, 0)
 	session.logStatus = sessionlog.StatusActive
 	// Only now may the optional SFTP panel open its subsystem: opening it before
@@ -766,6 +783,7 @@ func (state *State) pump(session *Session) {
 		data = state.scanTransfer(session, data)
 	}
 	if len(data) > 0 {
+		state.receiveBackgroundOutput(session)
 		t.recording.append(state.now(), terminalRecordingOutput, data)
 		t.writeRemote(data, state.now())
 		if wasExec {
@@ -815,6 +833,7 @@ func (state *State) pump(session *Session) {
 
 // shellEnded tells the screen the session is over and lets the connection go.
 func (state *State) shellEnded(session *Session) {
+	session.outputAlert.commandRunning = false
 	if state.completion.list.active && state.completion.list.sessionID == session.ID {
 		state.closeCompletionList()
 	}
@@ -1210,28 +1229,25 @@ func displayCells(value string) int {
 	return cells
 }
 
-// commandLineEditChord reports whether key with modifiers is the Command line
-// edit that reaches the program. Only macOS has a Command key; on Windows and
-// Linux Meta is the Super or Windows key, whose chords stay with the
-// application as they always did.
-func commandLineEditChord(key ui.Key, modifiers ui.Modifiers) bool {
-	if defaultShortcutModifier() != ui.ModifierMeta {
-		return false
-	}
-	return term.IsCommandLineEdit(key, modifiers)
-}
-
-// terminalKey handles a raw key for the terminal of session. Command chords
-// drive the tabs, except on macOS, where the line edits go to the program;
-// everything else becomes the bytes a program expects.
+// terminalKey encodes keys left unclaimed by the application shortcut routes.
+// Unclaimed Command chords are forwarded after kitty keyboard negotiation;
+// macOS Command line edits keep their existing behavior.
 func (state *State) terminalKey(session *Session, event ui.KeyEvent) ui.EventResult {
 	t := session.term
 	handled := ui.EventResult{Handled: true}
 	if t.preedit.Composing && event.Key == ui.KeyEnter && event.Modifiers == 0 && !t.screen.Modes().AltScreen {
 		return handled
 	}
-	if event.Modifiers&ui.ModifierMeta != 0 && !event.Key.IsModifier() && !commandLineEditChord(event.Key, event.Modifiers) {
-		return state.commandChord(session, event)
+	if event.Modifiers&ui.ModifierMeta != 0 && !event.Key.IsModifier() {
+		if letter, ok := term.CommandLineEdit(event.Key, event.Modifiers); ok && defaultShortcutModifier() == ui.ModifierMeta {
+			event.Key, event.Modifiers, event.Text, event.Typed = ui.KeyUnknown, ui.ModifierControl, letter, ""
+		} else if t.screen.KeyboardFlags() == 0 || state.shortcutBound(event) {
+			// A chord the application has bound belongs to it even where the
+			// action does not apply: the router has already declined it for this
+			// context, and sending it on would hand the program a Super key it
+			// never asked for.
+			return handled
+		}
 	}
 	if event.Modifiers == ui.ModifierControl|ui.ModifierShift && event.Text == "c" {
 		return state.copySelection(session)
@@ -1244,7 +1260,7 @@ func (state *State) terminalKey(session *Session, event ui.KeyEvent) ui.EventRes
 		}
 		return handled
 	}
-	if event.Modifiers&ui.ModifierShift != 0 && !t.screen.Modes().AltScreen {
+	if event.Modifiers&ui.ModifierShift != 0 && event.Modifiers&ui.ModifierMeta == 0 && !t.screen.Modes().AltScreen {
 		_, rows := t.screen.Size()
 		switch event.Key {
 		case ui.KeyPageUp:
@@ -1331,21 +1347,11 @@ func (state *State) terminalToolbarKey(session *Session, event ui.KeyEvent) (ui.
 	return ui.EventResult{Handled: true, Repaint: next != index, Focus: t.railIDs[next], FocusVisible: true}, true
 }
 
-// commandChord handles Command+key while a terminal has the keyboard.
-func (state *State) commandChord(session *Session, event ui.KeyEvent) ui.EventResult {
-	result := ui.EventResult{Handled: true, Repaint: true}
-	switch event.Text {
-	case "c":
-		return state.copySelection(session)
-	case "w":
-		state.closeActivePaneOrTab()
-	case "t":
-		state.activeSection = sectionHosts
-		state.save()
-	default:
-		return ui.EventResult{Handled: true}
-	}
-	return result
+// shortcutBound reports whether the shortcut table binds the chord of event,
+// whether or not its action applies to the focused target.
+func (state *State) shortcutBound(event ui.KeyEvent) bool {
+	chord, ok := shortcutChordFromEvent(event)
+	return ok && state.shortcuts.actionFor(chord) != shortcutNone
 }
 
 func (state *State) copySelection(session *Session) ui.EventResult {
@@ -1365,7 +1371,18 @@ func (state *State) Scroll(event ui.ScrollEvent) ui.EventResult {
 	if state.modal == modalFileProperties {
 		return ui.EventResult{Handled: true}
 	}
+	if state.modal == modalNone {
+		if result, handled := state.workspaceArrangementScroll(event); handled {
+			return result
+		}
+	}
 	if result := state.dashboardScroll(event); result.Handled {
+		return result
+	}
+	if result := state.workspaceDraftScroll(event); result.Handled {
+		return result
+	}
+	if result := state.scrollWorkspaceLibrary(event); result.Handled {
 		return result
 	}
 	if state.modal == modalNewHost && state.editor.groupPicker.control.Open {
@@ -1378,6 +1395,9 @@ func (state *State) Scroll(event ui.ScrollEvent) ui.EventResult {
 	if state.modal == modalNewHost && state.editor.tagPicker.control.Open {
 		p := &state.editor.tagPicker
 		return ui.EventResult{Handled: true, Repaint: pointInRect(event.X, event.Y, p.popup) && p.control.Wheel(event)}
+	}
+	if result, handled := state.remoteProcessWheel(event); handled {
+		return result
 	}
 	if result, handled := state.transferCenterScroll(event); handled {
 		return result

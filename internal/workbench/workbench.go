@@ -26,6 +26,7 @@ import (
 
 var (
 	hitHosts                   = tree.ID(shellHits, "hosts")
+	hitWorkspaces              = tree.ID(shellHits, "workspaces")
 	hitKeychain                = tree.ID(shellHits, "keychain")
 	hitProxies                 = tree.ID(shellHits, "proxies")
 	hitSnippets                = tree.ID(shellHits, "snippets")
@@ -120,6 +121,7 @@ var (
 	hitShortcutCaptureDismiss  = tree.ID(shellHits, "shortcut-capture-dismiss")
 	hitShortcutCaptureClose    = tree.ID(shellHits, "shortcut-capture-close")
 	hitShortcutCaptureCancel   = tree.ID(shellHits, "shortcut-capture-cancel")
+	hitShortcutCaptureReset    = tree.ID(shellHits, "shortcut-capture-reset")
 	hitShortcutCaptureDelete   = tree.ID(shellHits, "shortcut-capture-delete")
 	hitTerminalRecord          = tree.ID(shellHits, "terminal-record")
 	hitTerminalSaveOutput      = tree.ID(shellHits, "terminal-save-output")
@@ -277,26 +279,22 @@ var (
 
 // Jump-host routing: its page and dialog.
 var (
-	hitProxyAdd              = tree.ID(proxiesHits, "proxy-add")
-	hitProxyStartStop        = tree.ID(proxiesHits, "proxy-start-stop")
-	hitProxyRemove           = tree.ID(proxiesHits, "proxy-remove")
-	hitProxyDialogClose      = tree.ID(proxiesHits, "proxy-dialog-close")
-	hitProxyDialogCancel     = tree.ID(proxiesHits, "proxy-dialog-cancel")
-	hitProxyDialogSubmit     = tree.ID(proxiesHits, "proxy-dialog-submit")
-	hitProxyDialogTarget     = tree.ID(proxiesHits, "proxy-dialog-target")
-	hitProxyDialogJump       = tree.ID(proxiesHits, "proxy-dialog-jump")
-	hitProxyDialogViaShell   = tree.ID(proxiesHits, "proxy-dialog-via-shell")
-	hitProxyDialogViaHelp    = tree.ID(proxiesHits, "proxy-dialog-via-shell-help")
-	hitProxyDialogRelay      = tree.ID(proxiesHits, "proxy-dialog-relay")
-	hitProxyTargetDismiss    = tree.ID(proxiesHits, "proxy-target-dismiss")
-	hitProxyTargetScrollUp   = tree.ID(proxiesHits, "proxy-target-scroll-up")
-	hitProxyTargetScrollDown = tree.ID(proxiesHits, "proxy-target-scroll-down")
-	hitProxyJumpDismiss      = tree.ID(proxiesHits, "proxy-jump-dismiss")
-	hitProxyJumpScrollUp     = tree.ID(proxiesHits, "proxy-jump-scroll-up")
-	hitProxyJumpScrollDown   = tree.ID(proxiesHits, "proxy-jump-scroll-down")
-	hitProxyRowList          = tree.Sub(proxiesHits, tree.Name("proxy-row"))
-	hitProxyTargetItemList   = tree.Sub(proxiesHits, tree.Name("proxy-target-item"))
-	hitProxyJumpItemList     = tree.Sub(proxiesHits, tree.Name("proxy-jump-item"))
+	hitProxyAdd            = tree.ID(proxiesHits, "proxy-add")
+	hitProxyStartStop      = tree.ID(proxiesHits, "proxy-start-stop")
+	hitProxyRemove         = tree.ID(proxiesHits, "proxy-remove")
+	hitProxyDialogClose    = tree.ID(proxiesHits, "proxy-dialog-close")
+	hitProxyDialogCancel   = tree.ID(proxiesHits, "proxy-dialog-cancel")
+	hitProxyDialogSubmit   = tree.ID(proxiesHits, "proxy-dialog-submit")
+	hitProxyDialogTarget   = tree.ID(proxiesHits, "proxy-dialog-target")
+	hitProxyDialogJump     = tree.ID(proxiesHits, "proxy-dialog-jump")
+	hitProxyDialogViaShell = tree.ID(proxiesHits, "proxy-dialog-via-shell")
+	hitProxyDialogViaHelp  = tree.ID(proxiesHits, "proxy-dialog-via-shell-help")
+	hitProxyDialogRelay    = tree.ID(proxiesHits, "proxy-dialog-relay")
+	hitProxyTargetDismiss  = tree.ID(proxiesHits, "proxy-target-dismiss")
+	hitProxyJumpDismiss    = tree.ID(proxiesHits, "proxy-jump-dismiss")
+	hitProxyRowList        = tree.Sub(proxiesHits, tree.Name("proxy-row"))
+	hitProxyTargetItemList = tree.Sub(proxiesHits, tree.Name("proxy-target-item"))
+	hitProxyJumpItemList   = tree.Sub(proxiesHits, tree.Name("proxy-jump-item"))
 )
 
 // Known-host management: its page and dialog, with the rows and their checkboxes
@@ -436,6 +434,9 @@ const (
 	// sectionSFTP is a file-manager tab opened in the main window. It comes last
 	// so existing section values stay stable.
 	sectionSFTP
+	// sectionWorkspaces is the saved-workspace library. It follows the existing
+	// section values so adding it does not renumber them.
+	sectionWorkspaces
 )
 
 // State owns the complete interactive state of the window.
@@ -472,6 +473,9 @@ type State struct {
 	// ever written over it. stateNotice is the dialog that tells the user why a
 	// state file was not loaded as it was.
 	saveBlocked bool
+	// saveRetrying is set while a conflicted save refreshes and retries, so the
+	// refresh's own save does not start a second round.
+	saveRetrying bool
 	// config is the store the configuration lives in, and configBase what this
 	// window last read from or wrote to it.
 	config         *configstore.Store
@@ -561,10 +565,40 @@ type State struct {
 	forwardStarts      chan forwardStartResult
 	proxyCountText     string
 	hostImportResult   hostImportResult
+	sessionImport      sessionImportPreview
+	mobaEncoding       mobaEncodingPrompt
 	knownHosts         knownHostsView
 	knownHostsLayout   flex.View
 	settingsRow        flex.View
 	partLayout         flex.View // a dialog body, a host card or a group header: one at a time
+	// selectedWorkspaceTemplateID is the template the library will apply next.
+	// It is view state only and is not persisted.
+	selectedWorkspaceTemplateID   string
+	workspaceLibraryExpanded      bool
+	workspaceLibraryPointerID     string
+	workspaceLibraryLayout        flex.View
+	workspaceLibraryScroll        float32
+	workspaceLibraryBounds        ui.Rect
+	workspaceLibraryContent       float32
+	workspaceTemplateMoreBounds   []ui.Rect
+	workspaceTemplateMenu         workspaceTemplateMenu
+	workspaceTemplateDelete       workspaceTemplateDelete
+	workspaceTemplateFocusPending ui.ID
+	workspaceDraft                workspaceDraft
+	workspaceHeaderLayout         flex.View
+	workspaceHeaderMenu           workspaceHeaderMenuState
+	workspacePaneTools            workspacePaneTools
+	workspaceLayoutDraft          workspaceArrangement
+	workspaceCardRegions          []workspaceCardRegion
+	workspaceCardDrag             workspaceCardDrag
+	workspaceHeaderPanes          [layoutcore.MaxPanes]layoutcore.Pane
+	// temporaryWorkspaceColumns marks workspaces opened from the temporary
+	// selector and keeps the column count needed to save their current shape.
+	temporaryWorkspaceColumns map[layoutcore.WorkspaceID]uint8
+	// managedWorkspaceColumns marks workspaces launched from the workspace
+	// feature and keeps their current grid column count for the in-app header.
+	managedWorkspaceColumns map[layoutcore.WorkspaceID]uint8
+	workspaceSave           workspaceSave
 
 	forwardLayout, proxyLayout, forwardDialogLayout, proxyDialogLayout flex.View // the Port Forwarding and Proxies pages and their dialogs
 	chrome                                                             chromeLayout
@@ -601,6 +635,8 @@ type State struct {
 	networkProxy        networkProxyMode
 	stopAppearanceWatch func()
 	terminalOption      terminalOptionMode
+	recentConnectSort   bool
+	recentConnections   map[string]time.Time
 	localShell          string // executable on this computer; empty uses the platform default
 	localShellMenu      localShellSelect
 	editorMenu          editorSelect
@@ -673,7 +709,8 @@ type State struct {
 	terminalCopyOnSelect, terminalRightClickPaste bool
 	// terminalTabTitle lets a tab show the title its terminal reports instead
 	// of the host's name (see tabLabel).
-	terminalTabTitle bool
+	terminalTabTitle       bool
+	backgroundOutputAlerts bool
 	// terminalShowLatency displays network RTT in SSH terminals and RDP desktops,
 	// and latencyProbe names the sessions Paint saw that need a sample; Wake
 	// starts their requests so a repaint never sends network work.
@@ -801,6 +838,7 @@ type State struct {
 	workspaceViewCacheID  layoutcore.WorkspaceID
 	workspaceViewRevision uint64
 	workspaceViewBuilds   uint64
+	workspaceStatusPanes  [layoutcore.MaxPanes]layoutcore.Pane
 	pendingWorkspace      layoutcore.WorkspaceID
 	pendingPane           layoutcore.PaneID
 
@@ -837,6 +875,9 @@ func (state *State) Close() {
 		return
 	}
 	state.closed = true
+	state.remote.auto.enabled = false
+	state.closeRemoteProcessDetails()
+	state.remote.serial++
 	state.closeDashboard()
 	state.flushLocalDirectories()
 	state.closeRemoteToolsWindows()
@@ -926,6 +967,8 @@ func New(options Options) *State {
 		winChrome:             windowChrome{remember: options.RememberWindowFrame},
 	}
 	state.cellWidth, state.cellHeight = (&ui.Canvas{}).MonoCellSize(state.terminalFontSize, state.terminalFontFace)
+	state.temporaryWorkspaceColumns = make(map[layoutcore.WorkspaceID]uint8)
+	state.managedWorkspaceColumns = make(map[layoutcore.WorkspaceID]uint8)
 	// An icon-only button names itself to the keyboard as well as the pointer.
 	state.tooltip.ShowOnFocus()
 	state.setAppearance(appearanceDark)
@@ -1233,6 +1276,17 @@ func (state *State) EditorFor(hit ui.ID) *text.Editor {
 		if hit == hitHistorySearch {
 			return &state.history.search
 		}
+	case modalWorkspaceDraft:
+		switch hit {
+		case hitWorkspaceDraftName:
+			return &state.workspaceDraft.name
+		case hitWorkspaceDraftSearch:
+			return &state.workspaceDraft.query
+		}
+	case modalWorkspaceSave:
+		if hit == hitWorkspaceSaveName {
+			return &state.workspaceSave.name
+		}
 	}
 	if editor := state.terminalFindEditor(hit); editor != nil {
 		return editor
@@ -1329,6 +1383,12 @@ func (state *State) click(id ui.ID, feedback bool) {
 		return
 	case modalHostImportResult:
 		state.clickHostImportResult(id)
+		return
+	case modalSessionImportPreview:
+		state.clickSessionImportPreview(id)
+		return
+	case modalMobaEncoding:
+		state.clickMobaEncoding(id)
 		return
 	case modalNewForward:
 		state.clickForwardDialog(id)
@@ -1429,8 +1489,18 @@ func (state *State) click(id ui.ID, feedback bool) {
 	case modalLoginExpectStep:
 		state.clickLoginExpectStep(id)
 		return
+	case modalWorkspaceDraft:
+		state.clickWorkspaceDraft(id)
+		return
+	case modalWorkspaceSave:
+		state.clickWorkspaceSave(id)
+		return
+	case modalWorkspaceTemplateDelete:
+		state.clickWorkspaceTemplateDelete(id)
+		return
 	}
-	if state.clickToolbarDockMenu(id) || state.clickHostGroupActions(id) || state.clickTerminalMenu(id) || state.clickTabMenu(id) || state.clickHostMenu(id) || state.clickLocalShellPicker(id) || state.clickSnippetMenu(id) || state.clickSFTPMenu(id) {
+	if state.clickToolbarDockMenu(id) || state.clickWorkspaceTemplateManagement(id) ||
+		state.clickHostGroupActions(id) || state.clickTerminalMenu(id) || state.clickTabMenu(id) || state.clickHostMenu(id) || state.clickLocalShellPicker(id) || state.clickSnippetMenu(id) || state.clickSFTPMenu(id) {
 		return
 	}
 	if state.clickTerminalFind(id) {
@@ -1463,6 +1533,12 @@ func (state *State) click(id ui.ID, feedback bool) {
 	if state.clickTerminalTools(id) || state.clickBackupSettings(id) || state.clickRemoteToolsOpen(id) || state.clickHostView(id) || state.clickBackground(id) {
 		return
 	}
+	if state.clickWorkspaceHeader(id) {
+		return
+	}
+	if state.clickWorkspaceLibrary(id) {
+		return
+	}
 
 	switch {
 	case id == hitTerminalRecord:
@@ -1483,7 +1559,15 @@ func (state *State) click(id ui.ID, feedback bool) {
 		if session, ok := state.sessionByIDPointer(state.activeSessionID); ok {
 			state.releaseIdleSFTP(session)
 		}
+		state.clearBroadcast()
 		state.activeSection = sectionHosts
+		state.save()
+	case id == hitWorkspaces:
+		if session, ok := state.sessionByIDPointer(state.activeSessionID); ok {
+			state.releaseIdleSFTP(session)
+		}
+		state.clearBroadcast()
+		state.activeSection = sectionWorkspaces
 		state.save()
 	case id == hitNewTab || id == hitVerticalTabsNew:
 		state.openConnectPicker()
@@ -1495,15 +1579,19 @@ func (state *State) click(id ui.ID, feedback bool) {
 	case id == hitSearch:
 		// Pressing the box only focuses it; the runtime already did.
 	case id == hitKeychain:
+		state.clearBroadcast()
 		state.activeSection = sectionKeys
 		state.save()
 	case id == hitProxies:
+		state.clearBroadcast()
 		state.activeSection = sectionProxies
 		state.save()
 	case id == hitPortForwarding:
+		state.clearBroadcast()
 		state.activeSection = sectionForwards
 		state.save()
 	case id == hitSnippets:
+		state.clearBroadcast()
 		state.activeSection = sectionSnippets
 		state.save()
 	case id == hitKnownHosts:
@@ -1673,6 +1761,8 @@ func (state *State) closeSession(id uint32) {
 		// The last pane of a tab takes the tab with it.
 		if len(state.deck.Panes(workspaceID, nil)) == 0 {
 			_, _ = state.deck.RemoveWorkspace(workspaceID, nil)
+			delete(state.temporaryWorkspaceColumns, workspaceID)
+			delete(state.managedWorkspaceColumns, workspaceID)
 		}
 	}
 	// Delete rather than truncating an append: the vacated slot must not keep
@@ -1758,6 +1848,9 @@ func (state *State) closeWorkspaceNow(id layoutcore.WorkspaceID) {
 	if err != nil {
 		return
 	}
+	delete(state.temporaryWorkspaceColumns, id)
+	delete(state.managedWorkspaceColumns, id)
+	state.clearWorkspaceBroadcast(id)
 	for _, sessionID := range sessions {
 		state.closeSession(uint32(sessionID))
 	}
@@ -1951,6 +2044,18 @@ func (state *State) Pointer(event ui.PointerEvent) (outcome ui.EventResult) {
 	if result := state.toolbarDockPointer(event); result.Handled {
 		return result
 	}
+	// A mouse toggle changes input routing; return typing to its source terminal.
+	// Leave the click unhandled so the runtime still activates the switch.
+	if event.Kind == ui.PointerUp && (event.Target == hitWorkspaceHeaderBroadcast || event.Target == hitWorkspaceHeaderLayoutDismiss) &&
+		(event.Button == ui.PointerButtonPrimary || event.Button == ui.PointerButtonNone) {
+		return ui.EventResult{Focus: state.activeTerminalFocusHit(), Repaint: true}
+	}
+	if result, handled := state.workspaceCardsPointer(event); handled {
+		return result
+	}
+	if result, handled := state.workspaceLibraryPointer(event); handled {
+		return result
+	}
 	if result, handled := state.dashboardPointer(event); handled {
 		return result
 	}
@@ -2111,6 +2216,12 @@ func (state *State) pointer(event ui.PointerEvent) ui.EventResult {
 	if result, handled := state.updateDialogPointer(event); handled {
 		return result
 	}
+	if result, handled := state.remoteProcessMenuPointer(event); handled {
+		return result
+	}
+	if result, handled := state.remoteProcessScrollPointer(event); handled {
+		return result
+	}
 	if state.modal == modalNewHost && state.editor.groupPicker.control.Open {
 		if event.Kind == ui.PointerDown && event.Button == ui.PointerButtonPrimary && !isHostGroupPickerTarget(event.Target) {
 			state.editor.groupPicker.control.Open = false
@@ -2217,7 +2328,7 @@ func (state *State) Key(event ui.KeyEvent) (outcome ui.EventResult) {
 	if result, handled := state.desktopFullscreenKey(event); handled {
 		return result
 	}
-	if result, handled := state.namedShortcut(event); handled {
+	if result, handled := state.keyShortcut(event); handled {
 		return result
 	}
 	if state.tabDrag.active && event.Key == ui.KeyEscape {
@@ -2248,6 +2359,12 @@ func (state *State) Key(event ui.KeyEvent) (outcome ui.EventResult) {
 }
 
 func (state *State) key(event ui.KeyEvent) ui.EventResult {
+	if result, handled := state.workspaceCardsKey(event); handled {
+		return result
+	}
+	if result, handled := state.workspaceArrangementKey(event); handled {
+		return result
+	}
 	if result, handled := state.terminalInputKey(event); handled {
 		return result
 	}
@@ -2255,6 +2372,27 @@ func (state *State) key(event ui.KeyEvent) ui.EventResult {
 		return result
 	}
 	if result := state.dashboardKey(event); result.Handled {
+		return result
+	}
+	if result, handled := state.remoteProcessDetailsKey(event); handled {
+		return result
+	}
+	if result, handled := state.remoteProcessTableKey(event); handled {
+		return result
+	}
+	if result := state.workspaceDraftKey(event); result.Handled {
+		return result
+	}
+	if result, handled := state.workspaceSaveKey(event); handled {
+		return result
+	}
+	if result, handled := state.workspaceLibraryKey(event); handled {
+		return result
+	}
+	if result, handled := state.workspaceTemplateLauncherKey(event); handled {
+		return result
+	}
+	if result := state.workspaceHeaderKey(event); result.Handled {
 		return result
 	}
 	if result := state.remoteSearchKey(event); result.Handled {
@@ -2296,6 +2434,12 @@ func (state *State) key(event ui.KeyEvent) ui.EventResult {
 		state.terminalMenu.open = false
 		return ui.EventResult{Handled: true, Repaint: true}
 	}
+	if result, handled := state.workspaceTemplateMenuKey(event); handled {
+		return result
+	}
+	if result, handled := state.workspaceTemplateDeleteKey(event); handled {
+		return result
+	}
 	if result, handled := state.menuKey(event); handled {
 		return result
 	}
@@ -2311,16 +2455,6 @@ func (state *State) key(event ui.KeyEvent) ui.EventResult {
 	if state.modal == modalSnippet && state.snippets.capturing && event.Key == ui.KeyEscape && !event.Repeat {
 		state.snippets.capturing = false
 		return ui.EventResult{Handled: true, Repaint: true}
-	}
-	if state.modal == modalShortcutCapture && !event.Repeat {
-		if event.Key == ui.KeyEscape {
-			state.clickShortcutCapture(hitShortcutCaptureCancel)
-			return ui.EventResult{Handled: true, Repaint: true}
-		}
-		if event.Modifiers == 0 && (event.Key == ui.KeyDelete || event.Key == ui.KeyBackspace) {
-			state.clickShortcutCapture(hitShortcutCaptureDelete)
-			return ui.EventResult{Handled: true, Repaint: true}
-		}
 	}
 	if result, handled := state.aiKey(event); handled {
 		return result
@@ -2534,6 +2668,56 @@ func (state *State) createHostSessionWithConnection(host Host, address string, c
 			return nil
 		}
 	}
+	session := state.bindSessionToPane(workspaceID, paneID, host, address, title, conn, command, relay)
+	if session == nil {
+		return nil
+	}
+	state.activeSessionID = session.ID
+	state.activeSection = sectionTerminal
+	state.status = state.messages.StatusOpened + session.Title
+	if conn == nil {
+		state.startConnection(session, host)
+	} else {
+		// A container shell borrows an already connected transport: no dial
+		// happens, so its row starts here as an active session.
+		state.startSharedSessionLog(session, host)
+		state.finishStartingConnection(session, false)
+		state.apply(session, conn.Status())
+		state.pump(session)
+	}
+	state.fitTerminals()
+	state.fitSFTP(state.viewport)
+	state.rebuildTabOptions()
+	state.save()
+	return session
+}
+
+// bindWorkspaceSession creates a Session and binds it to an existing empty pane
+// without dialing. Batch startup installs every structure first, then starts
+// the independent connections.
+func (state *State) bindWorkspaceSession(workspaceID layoutcore.WorkspaceID, paneID layoutcore.PaneID, host Host, address string) *Session {
+	title := state.uniqueSessionTitle(host.Label, 0)
+	session := state.bindSessionToPane(workspaceID, paneID, host, address, title, nil, "", nil)
+	if session == nil {
+		return nil
+	}
+	state.activeSessionID = session.ID
+	state.activeSection = sectionTerminal
+	state.status = state.messages.StatusOpened + session.Title
+	return session
+}
+
+// startWorkspaceSession starts a Session that has already been bound to its
+// pane. It contains no UI restructuring and no save of its own.
+func (state *State) startWorkspaceSession(session *Session, host Host) {
+	state.startConnection(session, host)
+}
+
+func (state *State) bindSessionToPane(workspaceID layoutcore.WorkspaceID, paneID layoutcore.PaneID, host Host, address, title string, conn Connection, command string, relay *notifyRelay) *Session {
+	pane, ok := state.deck.Pane(workspaceID, paneID)
+	if !ok || pane.SessionID != 0 {
+		return nil
+	}
 	state.sessions = append(state.sessions, Session{
 		ID:               state.nextSessionID,
 		HostID:           host.ID,
@@ -2553,23 +2737,6 @@ func (state *State) createHostSessionWithConnection(host Host, address string, c
 	}
 	state.nextSessionID++
 	state.initializeSFTPPanel(workspaceID, false)
-	state.activeSessionID = session.ID
-	state.activeSection = sectionTerminal
-	state.status = state.messages.StatusOpened + session.Title
-	if conn == nil {
-		state.startConnection(session, host)
-	} else {
-		// A container shell borrows an already connected transport: no dial
-		// happens, so its row starts here as an active session.
-		state.startSharedSessionLog(session, host)
-		state.finishStartingConnection(session, false)
-		state.apply(session, conn.Status())
-		state.pump(session)
-	}
-	state.fitTerminals()
-	state.fitSFTP(state.viewport)
-	state.rebuildTabOptions()
-	state.save()
 	return session
 }
 

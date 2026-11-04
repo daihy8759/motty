@@ -104,6 +104,7 @@ const (
 	iconPaperclip
 	iconImage
 	iconSave
+	iconProcess
 )
 
 // terminalPage reports whether the window shows the panes of a workspace rather
@@ -116,6 +117,7 @@ func (state *State) terminalPage() bool {
 // Paint renders the application from state using stable hit identities.
 func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	canvas.SetTree(&tree)
+	state.workspaceCardRegions = state.workspaceCardRegions[:0]
 	state.pixelScale = canvas.PixelScale()
 	// Motty keeps one central click handler. The event pass of a click names its
 	// target here; the handler runs once this paint has returned, outside it,
@@ -124,6 +126,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	if id, ok := canvas.ClickTarget(); ok {
 		canvas.AfterPaint(func() { state.Click(id) })
 	}
+	state.refreshOutputAlerts(canvas)
 	state.syncVisible()
 	state.syncSFTPTabs()
 	state.reveal.beginPaint()
@@ -220,7 +223,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	root.Children(func() {
 		state.declareWindowBar(f, &chrome.bar, false, picture, geometry, scroll)
 		if !fullPage {
-			f.Row().Grow(1).MarginSides(0, 0, state.toolbarDockBottomReserve(false), 0).Children(func() {
+			f.Row().Grow(1).Shrink(1).MarginSides(0, 0, state.toolbarDockBottomReserve(false), 0).Children(func() {
 				f.Slot().Width(state.toolbarDockSideReserveFor(true, false)).Shrink(0)
 				state.declareNavigation(f)
 				workspaceSlot = f.Slot().Grow(1).MarginSides(0, cardRight, sectionCardMargin, 0).
@@ -241,6 +244,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintWorkspacePanes(canvas, size)
 		state.paintIndependentMonitor(canvas, size)
 		state.paintWorkspaceSideRail(canvas, size)
+		state.paintWorkspacePaneTools(canvas)
 		// Assistant popovers may intentionally extend to the window edge; paint
 		// the rail first so they can remain above it and nothing is clipped.
 		state.paintAIPanel(canvas, size)
@@ -252,6 +256,8 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		canvas.Clip(workspace)
 		if !state.devPaintPage(canvas, workspace) {
 			switch state.activeSection {
+			case sectionWorkspaces:
+				state.paintWorkspaceLibrary(canvas, workspace)
 			case sectionDashboard:
 				state.paintDashboard(canvas, workspace)
 			case sectionKeys:
@@ -316,6 +322,10 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintSessionLinkDialog(canvas, viewport)
 	case modalHostImportResult:
 		state.paintHostImportResult(canvas, viewport)
+	case modalSessionImportPreview:
+		state.paintSessionImportPreview(canvas, viewport)
+	case modalMobaEncoding:
+		state.paintMobaEncoding(canvas, viewport)
 	case modalNewForward:
 		state.paintForwardDialog(canvas, viewport)
 	case modalNewProxy:
@@ -382,6 +392,12 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintLoginExpectSecretDialog(canvas, viewport)
 	case modalLoginExpectStep:
 		state.paintLoginExpectStepDialog(canvas, viewport)
+	case modalWorkspaceDraft:
+		state.paintWorkspaceDraft(canvas, viewport)
+	case modalWorkspaceSave:
+		state.paintWorkspaceSaveDialog(canvas, viewport)
+	case modalWorkspaceTemplateDelete:
+		state.paintWorkspaceTemplateDelete(canvas, viewport)
 	}
 	if state.knownHosts.action != knownHostsActionNone {
 		state.paintKnownHostsDialog(canvas, viewport)
@@ -394,6 +410,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	state.paintTabMenu(canvas, viewport)
 	state.paintHostMenu(canvas, viewport)
 	state.paintHostGroupActions(canvas, viewport)
+	state.paintWorkspaceTemplateMenu(canvas, viewport)
 	state.paintLocalShellPicker(canvas, viewport)
 	state.paintSnippetMenu(canvas, viewport)
 	state.paintSFTPMenu(canvas, viewport)
@@ -406,6 +423,12 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	// Last, so a tooltip is never covered by what it describes.
 	state.tooltip.Paint(canvas, state.Theme(), viewport, components.TooltipOptions{Layer: tooltipLayer, SideOffset: tooltipGap}, components.HoverTooltipDelay)
 	state.fileNotices.paint(canvas, state.Theme(), ui.Rect{Y: windowBarHeight, Width: size.Width, Height: max(size.Height-windowBarHeight, 0)})
+	if !state.workspaceTemplateFocusPending.IsZero() {
+		if state.activeSection == sectionWorkspaces && state.modal == modalNone {
+			canvas.RequestFocus(state.workspaceTemplateFocusPending)
+		}
+		state.workspaceTemplateFocusPending = ui.ID{}
+	}
 }
 
 // windowRect is the whole window as last painted: the viewport a popup gives
@@ -461,6 +484,9 @@ type windowBar struct {
 
 type barTab struct {
 	badge, light flex.Box
+	title        flex.Box
+	output       outputAlertKind
+	label        string
 	workspace    layoutcore.WorkspaceInfo
 	fileSession  uint32
 	id, closeID  ui.ID
@@ -718,6 +744,8 @@ func (state *State) declareWorkspaceTab(f *flex.Frame, workspace layoutcore.Work
 	}
 	entry.background = fill
 	label := state.tabLabel(workspace)
+	entry.label = label
+	entry.output = state.workspaceOutputAlert(workspace.ID)
 	tabOptions := ui.HitOptions{Role: ui.RoleTab, Selected: active}
 	if workspace.Locked {
 		tabOptions.Hint = m.TabLockedHint
@@ -747,7 +775,12 @@ func (state *State) declareWorkspaceTab(f *flex.Frame, workspace layoutcore.Work
 			return
 		}
 		entry.badge = f.Slot().Size(20, 20).MarginSides(0, 7, 0, 0)
-		title := f.Text(label).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(foreground).LineHeight(20).Ellipsis()
+		titleColor := foreground
+		if entry.output != outputAlertNone {
+			titleColor.Alpha = 0
+		}
+		title := f.Text(label).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(titleColor).LineHeight(20).Ellipsis()
+		entry.title = title
 		if vertical {
 			title.Grow(1).Basis(0)
 		}
@@ -879,6 +912,7 @@ func (state *State) declareNavigation(f *flex.Frame) {
 		active bool
 	}{
 		{hitHosts, iconHosts, m.NavHosts, state.activeSection == sectionHosts},
+		{hitWorkspaces, iconColumns2, m.NavWorkspaces, state.activeSection == sectionWorkspaces},
 		{hitDashboard, iconActivity, m.Dashboard.Title, state.activeSection == sectionDashboard},
 		{hitSessionLogs, iconFileClock, m.SessionLogs.Title, state.activeSection == sectionSessionLogs},
 		{hitKeychain, iconKey, m.NavKeychain, state.activeSection == sectionKeys},
@@ -1829,6 +1863,7 @@ var lucideIcons = [...]ui.Icon{
 	iconEyeOff:         icons.EyeOff,
 	iconEllipsis:       icons.Ellipsis,
 	iconWrench:         icons.Wrench,
+	iconProcess:        icons.Process,
 	iconCloseOthers:    icons.ListX,
 	iconCloseRight:     icons.ArrowRightToLine,
 	iconSparkles:       icons.Sparkles,

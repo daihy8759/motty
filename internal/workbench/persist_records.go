@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"motty/internal/ai/store"
 	"motty/internal/buildinfo"
@@ -78,22 +79,26 @@ import (
 // Version 21 preserves toolbar dock zones and mixed-context ordering.
 // Version 22 preserves the device-local docked toolbar size.
 // Version 23 requires lossless transactional field patches from every writer.
+// Workspace templates travel as shared records; the layout they restore is a
+// device-local object, which epoch 23 preserves without a version of its own.
 const configFormat = 23
 
 const (
 	kindSetting             = "setting"
+	kindWorkspaceTemplate   = "workspace-template"
 	localKey                = "state"
 	developmentWorkspaceKey = "development_workspace"
 )
 
 // savedWorkspace is the restore state that differs between release and
-// development builds. It is deliberately limited to these four fields: all
-// other settings remain shared in local state.
+// development builds. Workspace identity travels with its deck; all other
+// settings remain shared in local state.
 type savedWorkspace struct {
-	Workspace     string              `json:"workspace,omitempty"`
-	Sessions      []savedSession      `json:"sessions,omitempty"`
-	ActiveSession int                 `json:"active_session,omitempty"`
-	Deck          *layoutcore.DeckDTO `json:"deck,omitempty"`
+	Workspace        string                 `json:"workspace,omitempty"`
+	Sessions         []savedSession         `json:"sessions,omitempty"`
+	ActiveSession    int                    `json:"active_session,omitempty"`
+	Deck             *layoutcore.DeckDTO    `json:"deck,omitempty"`
+	WorkspaceLayouts []savedWorkspaceLayout `json:"workspace_layouts,omitzero"`
 }
 
 func clearSavedWorkspace(saved *savedState) {
@@ -101,6 +106,7 @@ func clearSavedWorkspace(saved *savedState) {
 	saved.Sessions = nil
 	saved.ActiveSession = 0
 	saved.Deck = nil
+	saved.WorkspaceLayouts = nil
 }
 
 func applySavedWorkspace(saved *savedState, raw json.RawMessage) error {
@@ -128,6 +134,7 @@ func applySavedWorkspace(saved *savedState, raw json.RawMessage) error {
 	saved.Sessions = workspace.Sessions
 	saved.ActiveSession = workspace.ActiveSession
 	saved.Deck = workspace.Deck
+	saved.WorkspaceLayouts = workspace.WorkspaceLayouts
 	return nil
 }
 
@@ -160,6 +167,7 @@ var entityFields = []entityField{
 		return joinKey("anonymous", fieldText(fields, "label"), fieldText(fields, "address"), fieldText(fields, "user"), fieldText(fields, "port"))
 	}},
 	{field: "host_groups", kind: "group", key: func(fields map[string]json.RawMessage) string { return fieldText(fields, "name") }},
+	{field: "workspace_templates", kind: kindWorkspaceTemplate, key: func(fields map[string]json.RawMessage) string { return fieldText(fields, "id") }},
 	{field: "forwards", kind: "forward", key: func(fields map[string]json.RawMessage) string {
 		// A stable host id keeps two forwards to one endpoint apart; old records
 		// name the host by its endpoint instead.
@@ -517,6 +525,12 @@ func joinState(entries []configstore.Entry, local []byte) (savedState, *configBa
 			// it is: not part of the state, so never taken for deleted.
 			continue
 		}
+		if entry.Kind == kindWorkspaceTemplate {
+			var template WorkspaceTemplate
+			if json.Unmarshal(payload.Data, &template) != nil || template.Validate() != nil || template.ID != entry.ID {
+				continue
+			}
+		}
 		key := configstore.Key{Kind: entry.Kind, ID: entry.ID}
 		base.payloads[key] = entry.Payload
 		base.ords[key] = payload.Ord
@@ -650,7 +664,7 @@ type localWrite struct {
 
 func isWorkspaceField(name string) bool {
 	switch name {
-	case "workspace", "sessions", "active_session", "deck":
+	case "workspace", "sessions", "active_session", "deck", "workspace_layouts":
 		return true
 	default:
 		return false
@@ -732,6 +746,47 @@ func routeLocalState(base *configBase, local []byte) (localWrite, error) {
 	return localWrite{state: releaseBytes, development: developmentBytes, includeDevelopment: true}, nil
 }
 
+// mergeRecentConnectionTimes keeps successes recorded by other windows even
+// when this window writes an older local snapshot or changes another setting.
+func mergeRecentConnectionTimes(current, next []byte) ([]byte, error) {
+	var previous struct {
+		RecentConnections map[string]time.Time `json:"recent_connections"`
+	}
+	if len(current) == 0 {
+		return next, nil
+	}
+	if err := json.Unmarshal(current, &previous); err != nil {
+		return nil, err
+	}
+	if len(previous.RecentConnections) == 0 {
+		return next, nil
+	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(next, &values); err != nil {
+		return nil, err
+	}
+	times := make(map[string]time.Time)
+	if raw := values["recent_connections"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &times); err != nil {
+			return nil, err
+		}
+	}
+	if times == nil {
+		times = make(map[string]time.Time)
+	}
+	for key, at := range previous.RecentConnections {
+		if at.After(times[key]) {
+			times[key] = at
+		}
+	}
+	raw, err := json.Marshal(times)
+	if err != nil {
+		return nil, err
+	}
+	values["recent_connections"] = raw
+	return json.Marshal(values)
+}
+
 // writeEntries commits the difference between entries and base, then makes the
 // base describe them. It is the second half of a save, shared by the full
 // encoder and the hosts-only shortcut.
@@ -774,6 +829,16 @@ func writeEntries(store *configstore.Store, base *configBase, entries []configst
 				return false, err
 			}
 			change.LocalPatch[localKey] = patch
+			desired := local.state
+			change.MergeLocal = map[string]func([]byte, []byte) ([]byte, error){
+				localKey: func(current, next []byte) ([]byte, error) {
+					merged, err := mergeRecentConnectionTimes(desired, next)
+					if err == nil {
+						local.state = merged
+					}
+					return merged, err
+				},
+			}
 		}
 		if local.includeDevelopment && !bytes.Equal(local.development, base.development) {
 			if base.developmentDamaged {

@@ -72,6 +72,7 @@ type Messages struct {
 
 	// Navigation.
 	NavHosts                  string
+	NavWorkspaces             string
 	NavKeychain               string
 	NavProxies                string
 	NavSnippets               string
@@ -86,6 +87,84 @@ type Messages struct {
 	CommandPaletteEmpty       string
 	CommandSwitchSessionFmt   string
 	NewWindow                 string
+
+	// Saved multi-host workspace templates.
+	WorkspaceLibraryTitle                 string
+	WorkspaceLibraryDescription           string
+	WorkspaceLibraryEmpty                 string
+	WorkspaceLibraryEmptySub              string
+	WorkspaceEnter                        string
+	WorkspaceOpenHint                     string
+	WorkspaceTemplateActions              string
+	WorkspaceTemplateEdit                 string
+	WorkspaceTemplateDelete               string
+	WorkspaceSingleHost                   string
+	WorkspaceSingleColumn                 string
+	WorkspaceColumnsFmt                   string
+	WorkspaceTemplateHostCountFmt         string
+	WorkspaceTemplateMissingFmt           string
+	WorkspaceTemplateMissingListFmt       string
+	WorkspaceTemplateNoHosts              string
+	WorkspaceTemplateApplyFailed          string
+	WorkspaceNew                          string
+	WorkspaceDraftTemporary               string
+	WorkspaceDraftFixed                   string
+	WorkspaceDraftTitleTemporary          string
+	WorkspaceDraftTitleFixed              string
+	WorkspaceDraftTitleEdit               string
+	WorkspaceDraftDescription             string
+	WorkspaceDraftEditDescription         string
+	WorkspaceDraftName                    string
+	WorkspaceDraftNamePlaceholder         string
+	WorkspaceDraftHosts                   string
+	WorkspaceDraftHostSearch              string
+	WorkspaceDraftSelectedFmt             string
+	WorkspaceDraftLimit                   string
+	WorkspaceDraftColumns                 string
+	WorkspaceDraftHostsRequired           string
+	WorkspaceDraftEmptyPane               string
+	WorkspaceDraftMissingSession          string
+	WorkspaceDraftMissingHost             string
+	WorkspaceDraftDuplicateHost           string
+	WorkspaceLocalTerminalHint            string
+	WorkspaceDraftNameRequired            string
+	WorkspaceDraftLaunch                  string
+	WorkspaceDraftSave                    string
+	WorkspaceDraftSaveChanges             string
+	WorkspaceDraftNoHosts                 string
+	WorkspaceDraftSavedFmt                string
+	WorkspaceDraftTemporaryName           string
+	WorkspaceSaveMenu                     string
+	WorkspaceSaveTitle                    string
+	WorkspaceSaveDescriptionFmt           string
+	WorkspaceSaveFailed                   string
+	WorkspaceTemplateEditedFmt            string
+	WorkspaceTemplateEditMissing          string
+	WorkspaceTemplateDeleteTitle          string
+	WorkspaceTemplateDeleteDescriptionFmt string
+	WorkspaceTemplateDeleteConfirm        string
+	WorkspaceTemplateDeleteFailed         string
+	WorkspaceTemplateDeletedFmt           string
+	WorkspaceTemplateDeleteMissing        string
+	WorkspaceLayoutHint                   string
+	WorkspaceTemplateLayoutHint           string
+	WorkspaceLayoutStale                  string
+	WorkspaceCardReorderHint              string
+	WorkspaceBroadcastWaitingFmt          string
+	WorkspacePaneTools                    string
+	WorkspaceHeaderBroadcast              string
+	WorkspaceHeaderBroadcastingFmt        string
+	WorkspaceDraftPreview                 string
+	WorkspaceDraftPreviewEmpty            string
+	WorkspaceDraftTemporaryHint           string
+	WorkspaceDraftFixedHint               string
+	WorkspaceDraftRemoveFmt               string
+	WorkspaceHeaderBack                   string
+	WorkspaceHeaderConnectionFmt          string
+	WorkspaceHeaderPendingFmt             string
+	WorkspaceHeaderNeedsTwo               string
+	WorkspaceHeaderEmptyFmt               string
+	WorkspaceHeaderLayout                 string
 
 	// Debug workspace: a preview surface for the framework's components.
 	DebugTitle                  string
@@ -157,6 +236,8 @@ type Messages struct {
 	SettingsInterfaceFontDefault           string
 	SettingsInterfaceFontCurrentFmt        string
 	SettingsInterfaceFontUnsupportedFmt    string
+	SettingsOutputAlerts                   string
+	SettingsOutputAlertsDescription        string
 	SettingsTabOrientation                 string
 	SettingsTabOrientationDescription      string
 	SettingsTabsHorizontal                 string
@@ -498,8 +579,21 @@ type Messages struct {
 	NewTabAllHosts                string
 	NewTabPickerPlaceholder       string
 	NewTabPickerEmpty             string
-	LabelCloseTab                 string
-	LabelTerminalFmt              string
+
+	NewTabSortDefault    string
+	NewTabSortRecent     string
+	NewTabNeverConnected string
+	NewTabJustNow        string
+	NewTabSecondsAgo     string
+	NewTabMinutesAgo     string
+	NewTabHoursAgo       string
+	NewTabDaysAgo        string
+	NewTabWeeksAgo       string
+	NewTabMonthsAgo      string
+	NewTabYearsAgo       string
+
+	LabelCloseTab    string
+	LabelTerminalFmt string
 	// Names of the window's own minimize, maximize, restore and close buttons,
 	// which Viva draws on Windows and Linux.
 	LabelWindowMinimize string

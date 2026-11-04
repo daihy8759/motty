@@ -19,6 +19,7 @@ func selectionState() (*State, *Session, terminalGeometry) {
 	state := &State{
 		viewport: size, cellWidth: cellWidth, cellHeight: cellHeight,
 		activeSection: sectionTerminal, pal: &darkPalette,
+		shortcuts: defaultShortcuts(),
 	}
 	live := newTerminal(20, 5)
 	live.live = true // a shell has spoken: the terminal is what the window shows
@@ -56,9 +57,9 @@ func TestDraggingTerminalCellsSelectsAndCopiesText(t *testing.T) {
 		X: endX, Y: endY, Viewport: state.viewport,
 	})
 
-	result := state.Key(ui.KeyEvent{Target: hit, Modifiers: ui.ModifierMeta, Text: "c"})
+	result := state.Shortcut(ui.KeyEvent{Target: hit, Modifiers: defaultShortcutModifier(), Text: "c"})
 	if !result.Handled || result.Repaint || result.ClipboardText != "pha beta\ngam" {
-		t.Fatalf("Command+C = %+v", result)
+		t.Fatalf("copy shortcut = %+v", result)
 	}
 	result = state.Key(ui.KeyEvent{Target: hit, Modifiers: ui.ModifierControl | ui.ModifierShift, Text: "c"})
 	if result.ClipboardText != "pha beta\ngam" {
@@ -78,12 +79,82 @@ func TestDoubleClickSelectsAUnicodeWord(t *testing.T) {
 	if !result.Handled || !result.Repaint {
 		t.Fatalf("double click = %+v", result)
 	}
-	if copied := state.Key(ui.KeyEvent{Target: hit, Modifiers: ui.ModifierMeta, Text: "c"}).ClipboardText; copied != "世界" {
+	if copied := state.Shortcut(ui.KeyEvent{Target: hit, Modifiers: defaultShortcutModifier(), Text: "c"}).ClipboardText; copied != "世界" {
 		t.Fatalf("copied %q", copied)
 	}
 	from, to, selected := session.term.selection.span(session.term.screen.LineNumber(0), session.term.screen.Row(0), 20)
 	if !selected || from != 5 || to != 9 {
 		t.Fatalf("selection span = %d..%d, %v", from, to, selected)
+	}
+}
+
+func TestTerminalPointerClampsToTheScreensCurrentRows(t *testing.T) {
+	tests := []struct {
+		name       string
+		x, y       func(terminalGeometry, float32, float32) float32
+		wantRow    func(int) int
+		wantColumn func(int) int
+	}{
+		{
+			name: "below",
+			x: func(geometry terminalGeometry, cellWidth, _ float32) float32 {
+				return geometry.left + 2.5*cellWidth
+			},
+			y: func(geometry terminalGeometry, _, cellHeight float32) float32 {
+				return geometry.top + 19.5*cellHeight
+			},
+			wantRow:    func(rows int) int { return rows - 1 },
+			wantColumn: func(int) int { return 2 },
+		},
+		{
+			name: "right",
+			x: func(geometry terminalGeometry, cellWidth, _ float32) float32 {
+				return geometry.left + 39.5*cellWidth
+			},
+			y: func(geometry terminalGeometry, _, cellHeight float32) float32 {
+				return geometry.top + 1.5*cellHeight
+			},
+			wantRow:    func(int) int { return 1 },
+			wantColumn: func(cols int) int { return cols - 1 },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state, session, _ := selectionState()
+			state.viewport = ui.Size{
+				Width:  state.viewport.Width + 24*state.cellWidth,
+				Height: state.viewport.Height + 24*state.cellHeight,
+			}
+			geometry := state.terminalLayoutForEvent(session.ID, state.viewport)
+			hit := hitTerminalList.At(int(session.ID))
+			cols, rows := session.term.screen.Size()
+
+			result := state.Pointer(ui.PointerEvent{
+				Kind: ui.PointerDown, Button: ui.PointerButtonPrimary, Target: hit,
+				X: test.x(geometry, state.cellWidth, state.cellHeight),
+				Y: test.y(geometry, state.cellWidth, state.cellHeight), Viewport: state.viewport,
+			})
+
+			if !result.Handled {
+				t.Fatalf("pointer outside the terminal = %+v", result)
+			}
+			want := session.term.screen.PointAt(term.Position{
+				Row: test.wantRow(rows), Column: test.wantColumn(cols),
+			})
+			if session.term.selection.anchor != want || !session.term.selection.dragging {
+				t.Fatalf("selection anchor = %+v, want %+v", session.term.selection.anchor, want)
+			}
+		})
+	}
+}
+
+func TestTerminalPointerReturnsTheOriginForAnEmptyScreen(t *testing.T) {
+	state, session, geometry := selectionState()
+	session.term.screen.Resize(0, 0)
+	position := state.terminalPositionAt(session, state.viewport,
+		geometry.left+5*state.cellWidth, geometry.top+3*state.cellHeight)
+	if position != (term.Position{}) {
+		t.Fatalf("empty screen pointer = %+v", position)
 	}
 }
 
@@ -338,7 +409,7 @@ func TestDraggingBelowTheGridScrollsAndSelectsHistory(t *testing.T) {
 	if terminal.selection.edge.direction != 0 {
 		t.Fatal("releasing the button left the auto-scroll armed")
 	}
-	copied := state.Key(ui.KeyEvent{Target: hit, Modifiers: ui.ModifierMeta, Text: "c"}).ClipboardText
+	copied := state.Shortcut(ui.KeyEvent{Target: hit, Modifiers: defaultShortcutModifier(), Text: "c"}).ClipboardText
 	if !strings.HasPrefix(copied, strings.TrimSpace(first)) || strings.Count(copied, "\n") < 8 {
 		t.Fatalf("selection covers only %q", copied)
 	}

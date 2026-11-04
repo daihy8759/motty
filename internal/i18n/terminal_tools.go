@@ -209,20 +209,34 @@ type ToolsMessages struct {
 	SearchEmptyFmt    string
 
 	// Importing sessions from other clients.
-	ImportSessions            string
-	ImportChooserTitle        string
-	ImportChooserBody         string
-	ImportGuide               string // the link to the docs on exporting from each client
-	ImportGuideURL            string
-	ImportPickerFmt           string // the client's name
-	ImportCanceled            string
-	ImportFailedFmt           string
-	ImportSummaryFmt          string // hosts, client, duplicates
-	ImportWarningKeysFmt      string
-	ImportWarningSkippedFmt   string
-	ImportWarningPasswords    string
-	ImportWarningCleartextFmt string // sessions whose file held readable passwords or keys
-	ImportWarningLoopback     string // a session aimed at 127.0.0.1 / localhost
+	ImportSessions               string
+	ImportChooserTitle           string
+	ImportChooserBody            string
+	ImportEncodingTitle          string
+	ImportEncodingBody           string
+	ImportEncodingSampleUTF8Fmt  string
+	ImportEncodingSampleGBFmt    string
+	ImportEncodingOneFile        string
+	ImportGuide                  string // the link to the docs on exporting from each client
+	ImportGuideURL               string
+	ImportPickerFmt              string // the client's name
+	ImportCanceled               string
+	ImportFailedFmt              string
+	ImportSummaryFmt             string // hosts, client, duplicates
+	ImportWarningKeysFmt         string
+	ImportWarningSkippedFmt      string
+	ImportWarningPasswords       string
+	ImportWarningCleartextFmt    string // sessions whose file held readable passwords or keys
+	ImportWarningLoopback        string // a session aimed at 127.0.0.1 / localhost
+	ImportPasswordPreviewTitle   string
+	ImportPasswordPreviewBodyFmt string
+	ImportConnectionsOnly        string
+	ImportSavePasswords          string
+	ImportPasswordsSavedFmt      string
+	ImportPasswordConflictFmt    string
+	ImportHostSaveUnavailable    string
+	ImportHostSaveFailedFmt      string
+	ImportHostSaveRollbackFailed string
 
 	// Broadcast input.
 	BroadcastStart            string
@@ -230,6 +244,8 @@ type ToolsMessages struct {
 	StatusBroadcastOnFmt      string
 	StatusBroadcastOff        string
 	StatusBroadcastNeedsSplit string
+	StatusBroadcastWait       string
+	StatusBroadcastNeedsTwo   string
 
 	// Telnet and serial hosts.
 	ProtocolSSH            string
@@ -590,6 +606,9 @@ type ToolsMessages struct {
 	RemoteMenu                      string
 	RemoteTitle                     string
 	RemoteDescriptionFmt            string
+	RemoteDockOpenWindow            string
+	RemoteDockSelectProcess         string
+	RemoteDockClose                 string
 	RemoteTabProcesses              string
 	RemoteTabContainers             string
 	RemoteTabImages                 string
@@ -631,6 +650,44 @@ type ToolsMessages struct {
 	RemoteColMemory                 string
 	RemoteColTime                   string
 	RemoteColCommand                string
+	RemoteProcessDetails            string
+	RemoteProcessDetailsTitle       string
+	RemoteProcessPID                string
+	RemoteProcessParentPID          string
+	RemoteProcessUser               string
+	RemoteProcessState              string
+	RemoteProcessCPU                string
+	RemoteProcessMemory             string
+	RemoteProcessResidentMemory     string
+	RemoteProcessVirtualMemory      string
+	RemoteProcessElapsed            string
+	RemoteProcessCommand            string
+	RemoteProcessCollectedAt        string
+
+	RemoteProcessEnvironment            string
+	RemoteProcessEnvironmentName        string
+	RemoteProcessEnvironmentValue       string
+	RemoteProcessEnvironmentLoading     string
+	RemoteProcessEnvironmentEmpty       string
+	RemoteProcessEnvironmentUnsupported string
+
+	RemoteProcessCopyPID            string
+	RemoteProcessCopyUser           string
+	RemoteProcessCopyCommand        string
+	RemoteProcessStateReady         string
+	RemoteProcessStateRunning       string
+	RemoteProcessStateSleeping      string
+	RemoteProcessStateWaiting       string
+	RemoteProcessStateZombie        string
+	RemoteProcessStateStopped       string
+	RemoteProcessStatePaging        string
+	RemoteProcessStateIdle          string
+	RemoteProcessStateBlocked       string
+	RemoteProcessStateSuspended     string
+	RemoteProcessStateTerminated    string
+	RemoteProcessStateGrowing       string
+	RemoteProcessStateNotResponding string
+	RemoteProcessStateUnknown       string
 	RemoteColName                   string
 	RemoteColImage                  string
 	RemoteColState                  string
