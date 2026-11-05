@@ -2781,7 +2781,9 @@ func (state *State) createHostSessionWithDirectory(host Host, address string, co
 	workspaceID := state.pendingWorkspace
 	paneID := state.pendingPane
 	state.pendingWorkspace, state.pendingPane = 0, 0
-	directory := state.pendingDirectory
+	if directory == "" {
+		directory = state.pendingDirectory
+	}
 	state.pendingDirectory = ""
 	if pane, ok := state.deck.Pane(workspaceID, paneID); !ok || pane.SessionID != 0 {
 		var err error

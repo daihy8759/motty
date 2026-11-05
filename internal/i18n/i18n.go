@@ -531,6 +531,7 @@ type Messages struct {
 	IconDesktop                 string
 	ErrLabelRequired            string
 	ErrGroupRequired            string
+	ErrAddressTaken             string
 	ErrPortInvalid              string
 	ErrHostTagsInvalid          string
 	Cancel                      string
