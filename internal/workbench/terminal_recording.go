@@ -200,7 +200,7 @@ func (state *State) exportTerminalRecording(session *Session) {
 	}
 	path, err := state.options.SaveFile(app.SaveFileOptions{
 		Title:            state.messages.RecordingExport,
-		SuggestedName:    recordingName(session.Title),
+		SuggestedName:    recordingName(session.Title, time.Now()),
 		DefaultExtension: "mottyrec",
 		Filters:          []app.FileFilter{{Name: "Motty terminal recording", Pattern: "*.mottyrec"}},
 	})
@@ -218,7 +218,6 @@ func (state *State) exportTerminalRecording(session *Session) {
 	state.status = fmt.Sprintf(state.messages.RecordingExportedFmt, path)
 }
 
-func recordingName(title string) string {
-	name := connectionLogName(title)
-	return name[:len(name)-len("-connection-log.txt")] + "-terminal.mottyrec"
+func recordingName(title string, at time.Time) string {
+	return exportFileName(title, "terminal", "mottyrec", at)
 }

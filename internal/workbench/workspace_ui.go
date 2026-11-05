@@ -535,6 +535,7 @@ func (state *State) dragContextDivider(event ui.PointerEvent) ui.EventResult {
 		return ui.EventResult{Handled: true}
 	}
 	context.Width = min(max(width, layoutcore.MinContextWidth), layoutcore.MaxContextWidth)
+	state.sftpPanelWidth = context.Width
 	if state.deck.SetContext(workspaceID, context) != nil {
 		return ui.EventResult{Handled: true}
 	}
@@ -748,14 +749,18 @@ func (state *State) activePaneSplitBounds(axis layoutcore.Axis) (ui.Rect, bool) 
 }
 
 // splitWithCurrentHost splits the active pane and opens the same host in the
-// new one: a split is most often a second shell on the machine already at hand.
+// new one, in the directory the shell was last reported in: a split is most
+// often a second shell on the machine already at hand, to run something beside
+// the first in the same place.
 // From an empty pane there is no host to repeat, so the new pane stays empty and
 // offers the host list.
 func (state *State) splitWithCurrentHost(axis layoutcore.Axis) {
 	var host Host
+	var directory string
 	repeat := false
 	if session, ok := state.sessionByIDPointer(state.activeSessionID); ok && state.activeSection == sectionTerminal && session.host.Address != "" {
 		host, repeat = session.host, true
+		directory = session.splitDirectory()
 	}
 	if !state.splitActivePane(axis) {
 		return
@@ -763,6 +768,7 @@ func (state *State) splitWithCurrentHost(axis layoutcore.Axis) {
 	if repeat {
 		workspaceID := state.deck.ActiveWorkspace()
 		state.pendingWorkspace, state.pendingPane = workspaceID, state.deck.ActivePane(workspaceID)
+		state.pendingDirectory = directory
 		state.newHostSession(host)
 	}
 	state.save()

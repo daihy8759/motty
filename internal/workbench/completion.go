@@ -110,6 +110,9 @@ const (
 	// completionRows is how many candidates the popover lists at once; the rest
 	// scroll with the arrow keys.
 	completionRows = 10
+	// completionHistoryRows caps how many history matches join the host's
+	// commands in the popover.
+	completionHistoryRows = 5
 	// completionRowHeight is one candidate row.
 	completionRowHeight = float32(24)
 	completionMinWidth  = float32(240)
@@ -237,8 +240,8 @@ func (state *State) completionStore() *completion.CatalogStore {
 // adoptCompletion runs only on the UI thread. Every window reads the same
 // per-directory store; a late load result cannot publish over a newer install.
 func (state *State) adoptCompletion() {
-	// With completion off nothing needs the catalog, so it is not decoded: it
-	// costs about ten megabytes of heap per process.
+	// With completion off nothing needs the catalog, so it is not decoded. A
+	// decoded catalog keeps only its root commands until one is used.
 	if state.history.suggestOff && !state.completion.updatePending {
 		state.adoptCompletionUpdate()
 		state.adoptCompletionHistory()
@@ -676,7 +679,7 @@ func (state *State) completionCandidates(session *Session, line string) []comple
 		candidates = append(candidates, candidate)
 	}
 	if state.history.on && state.historyAvailable(session) && !session.host.NoHistory {
-		if rest, ok := cmdhistory.Suggest(state.completionHistory(session), line); ok {
+		for _, rest := range cmdhistory.SuggestAll(state.completionHistory(session), line, completionHistoryRows) {
 			add(completion.Candidate{Text: line + rest, Insert: rest, Kind: completion.KindCommand})
 		}
 	}

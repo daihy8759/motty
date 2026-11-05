@@ -106,6 +106,9 @@ type Session struct {
 	// localDirectory is this shell's last reported directory, independent of
 	// the files panel and of other sessions on the same machine.
 	localDirectory string
+	// startDirectory is where this remote shell starts, when it was split off a
+	// pane that was somewhere: a hint to the server, which may not have it.
+	startDirectory string
 
 	host     Host // what was dialed, to dial again
 	jumpPath string
@@ -232,4 +235,7 @@ type Session struct {
 	// keptAfterShell: the shell ended but the file panel or window still uses the
 	// connection, which closes with the last of them.
 	keptAfterShell bool
+	// localProxy is this session's subscription to the process-owned tunnel for
+	// its exact authenticated SSH transport. Zero means it has not joined one.
+	localProxy localProxySubscription
 }

@@ -127,8 +127,15 @@ type terminal struct {
 	integrated bool
 	// prediction draws typed text before the server echoes it; see terminalPrediction.
 	prediction terminalPrediction
+	// inputLine is set between the end of this shell's prompt and the next
+	// command start or control key: the cursor is on the line being typed, which
+	// is what lets typed text be shown before its echo (see terminalPrediction).
+	inputLine bool
 	// autofill is what the autofill rules need to know of this terminal.
 	autofill autofill.Watcher
+	// passwordHint is the sudo prompt line the saved password is on offer at: set
+	// while that line is still under the cursor and nothing was sent since.
+	passwordHint string
 	// recorder decides which typed lines the command history may keep; it is
 	// only fed while historyOn says the history is wanted for this terminal.
 	recorder  cmdhistory.Recorder
@@ -278,6 +285,7 @@ func (state *State) configureTerminal(session *Session) {
 		session.term.resetFolderSync()
 	}
 	session.term.screen.SetPromptToken(session.term.folderToken)
+	session.term.screen.SetDefaultCursor(state.terminalCursorStyle.termCursorStyle())
 	session.term.openLink = state.openTerminalLink
 	session.term.clock = state.now
 	// An image decoded off the window thread asks for the frame that shows it.
@@ -309,6 +317,7 @@ func (state *State) configureTerminal(session *Session) {
 			current.term.folderIntegrationSeen = true
 			current.term.promptStarted = true
 			current.term.promptReady = false
+			current.term.inputLine = false
 			current.outputAlert.promptSeen = true
 		}
 	})
@@ -317,6 +326,8 @@ func (state *State) configureTerminal(session *Session) {
 			t := current.term
 			t.promptReady = t.promptStarted && !t.promptDirty && t.commandReporting && t.submittedLines == 0
 			t.inputGuard.active = t.promptReady
+			t.inputLine = true
+			t.prediction.newPrompt()
 		}
 	})
 	session.term.screen.SetCommandFinished(func(code int) {
@@ -331,6 +342,7 @@ func (state *State) configureTerminal(session *Session) {
 			t.commandReporting = true
 			t.inputGuard.start()
 			t.promptReady, t.promptStarted = false, false
+			t.inputLine = false
 			t.promptVersion++
 			if t.submittedLines > 0 {
 				t.submittedLines--
@@ -348,6 +360,7 @@ func (t *terminal) resetFolderSync() {
 	t.folderToken = rand.Text()
 	t.screen.SetPromptToken(t.folderToken)
 	t.promptReady, t.promptStarted, t.promptDirty = false, false, false
+	t.inputLine = false
 	t.folderIntegrationSeen, t.commandReporting = false, false
 	t.reportedDirectory = term.Cwd{}
 	t.submittedLines, t.followPath = 0, ""
@@ -398,13 +411,13 @@ func (t *terminal) write(p []byte) {
 	t.screen.Write(p)
 }
 
-// writeRemote commits the shell's output. Unlike write it first lets the
-// prediction see the bytes, so an echo of what was typed confirms the overlay
-// instead of dropping it.
+// writeRemote commits the shell's output. Unlike write it then lets the
+// prediction compare the screen with what was typed, so an echo of it confirms
+// the overlay instead of dropping it.
 func (t *terminal) writeRemote(p []byte, now time.Duration) {
 	t.selection.clear()
-	t.prediction.observe(p, now)
 	t.screen.Write(p)
+	t.prediction.reconcile(t.screen, now)
 	if t.inputGuard.active && cmdhistory.PasswordPrompt(t.screen.RowText(t.screen.Cursor().Y)) {
 		t.inputGuard.start()
 	}
@@ -516,6 +529,10 @@ func (t *terminal) sendLoginReply(p []byte) bool {
 }
 
 func (t *terminal) noteShellInput(p []byte) {
+	t.passwordHint = ""
+	if bytes.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		t.inputLine = false // Enter, Tab, an arrow or Ctrl-R: the line is no longer what was typed
+	}
 	t.inputGuard.observe(p)
 	atPrompt := t.promptReady
 	t.promptReady, t.promptStarted = false, false
@@ -561,8 +578,9 @@ func (t *terminal) recordingNow() time.Duration {
 
 // shellResult is the outcome of a shell opened away from the window's thread.
 type shellResult struct {
-	shell Shell
-	err   error
+	shell      Shell
+	err        error
+	cols, rows int // the PTY size requested before opening began
 }
 
 // openShell starts the remote shell once the connection is up. Over SSH that
@@ -580,6 +598,9 @@ func (state *State) openShell(session *Session) {
 	config.IntegrateShell = session.isLocal() || (session.host.isSSH() && session.host.System != sshconn.SystemWindows &&
 		session.containerCommand == "" && (!state.sftpFollowOff || state.sftpTerminalFollow))
 	config.IntegrationToken = t.folderToken
+	if !session.isLocal() {
+		config.StartDirectory = session.startDirectory
+	}
 	t.integrated = config.IntegrateShell
 	if session.host.ForwardX11 && session.host.isSSH() {
 		environ := x11fwd.CurrentEnviron()
@@ -598,7 +619,7 @@ func (state *State) openShell(session *Session) {
 	conn, invalidate := session.conn, state.options.Invalidate
 	go func() {
 		shell, err := conn.OpenShell(config)
-		result <- shellResult{shell, err}
+		result <- shellResult{shell: shell, err: err, cols: config.Cols, rows: config.Rows}
 		if invalidate != nil {
 			invalidate()
 		}
@@ -614,6 +635,15 @@ func (state *State) collectShell(session *Session) {
 	select {
 	case result := <-t.opening:
 		t.opening = nil
+		if result.err == nil {
+			// Layout may have changed while OpenShell waited for the server.
+			// fitTerminal already resized the local screen without a shell, so
+			// its size comparison cannot detect the stale PTY after attachment.
+			cols, rows := t.screen.Size()
+			if cols != result.cols || rows != result.rows {
+				result.shell.Resize(cols, rows)
+			}
+		}
 		state.shellOpened(session, result.shell, result.err)
 	default:
 	}
@@ -793,6 +823,7 @@ func (state *State) pump(session *Session) {
 		if state.autofillRules.armed {
 			t.autofill.Output(state.now())
 		}
+		state.notePasswordPrompt(session)
 		t.login.output(state.now())
 		state.goLive(session)
 	}
@@ -1100,6 +1131,9 @@ func (state *State) Resize(size ui.Size) {
 	state.viewport = size
 	state.fitTerminals()
 	state.fitSFTP(size)
+	// Both panels stay open when the window docks them, but a window that grew
+	// too narrow for both must not leave the assistant under the monitor.
+	state.reconcileAIPanelWithMonitor(size)
 }
 
 // terminalSession finds the session whose terminal owns a hit.
@@ -1138,7 +1172,7 @@ func (state *State) TerminalInput(context app.TextInputContext) *app.TextInput {
 	t := session.term
 	geometry := state.layoutForSession(session.ID)
 	cursor := t.screen.Cursor()
-	if _, _, cells, ok := t.prediction.overlay(); ok {
+	if _, _, cells, ok := t.prediction.overlay(state.now()); ok {
 		cursor.X += cells
 	}
 	cells := 1
@@ -1196,7 +1230,7 @@ func (state *State) terminalText(sessionID uint32, event app.TextEvent) app.Text
 			// The typed text is drawn at once, ahead of the server's echo; the
 			// event asks for that frame, which committed terminal text otherwise
 			// never gets.
-			redraw = t.prediction.input(t.screen, input, state.now())
+			redraw = t.prediction.input(t.screen, input, state.now(), t.inputLine && !session.isLocal())
 		}
 	case app.TextPaste:
 		if state.modal == modalTerminalInput || state.guardTerminalText(session, event) {
@@ -1272,7 +1306,7 @@ func (state *State) terminalKey(session *Session, event ui.KeyEvent) ui.EventRes
 		}
 	}
 	modes := t.screen.Modes()
-	if t.screen.KeyboardFlags() == 0 && !modes.Win32Input && state.ghostKey(session, event) {
+	if t.screen.KeyboardFlags() == 0 && !modes.Win32Input && (state.passwordHintKey(session, event) || state.ghostKey(session, event)) {
 		return handled
 	}
 	var bytes []byte
@@ -1376,6 +1410,9 @@ func (state *State) Scroll(event ui.ScrollEvent) ui.EventResult {
 			return result
 		}
 	}
+	if state.modal == modalLocalProxy {
+		return state.scrollLocalProxy(event)
+	}
 	if result := state.dashboardScroll(event); result.Handled {
 		return result
 	}
@@ -1416,6 +1453,9 @@ func (state *State) Scroll(event ui.ScrollEvent) ui.EventResult {
 	}
 	if state.modal == modalCommandPalette {
 		return state.scrollCommandPalette(event)
+	}
+	if state.modal == modalForm {
+		return state.scrollForm(event)
 	}
 	if state.modal == modalUpdate {
 		return state.scrollUpdateNotes(event)

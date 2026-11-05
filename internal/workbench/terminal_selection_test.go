@@ -382,6 +382,36 @@ func fillHistory(t *testing.T, terminal *terminal, lines int) {
 	}
 }
 
+// A frame arrives when the compositor has one, not exactly on the interval the
+// drag asked for. A frame a millisecond early must not cost a whole step, or a
+// drag held at the edge scrolls at half the rate it asked for.
+func TestFramesArrivingEarlyDoNotHalveTheDragScrollRate(t *testing.T) {
+	state, session, geometry := selectionState()
+	terminal := session.term
+	fillHistory(t, terminal, 300)
+	terminal.screen.Scroll(200)
+	hit := hitTerminalList.At(int(session.ID))
+	x, y := cellPoint(geometry, 0, 0, state.cellWidth, state.cellHeight)
+	state.Pointer(ui.PointerEvent{Kind: ui.PointerDown, Button: ui.PointerButtonPrimary, Target: hit, X: x, Y: y, Viewport: state.viewport})
+	// Just below the grid: one line per interval, so the count of lines is the
+	// rate the pointer asked for.
+	belowY := geometry.top + 5*state.cellHeight + state.cellHeight/2
+	state.Pointer(ui.PointerEvent{Kind: ui.PointerMove, Button: ui.PointerButtonPrimary, Target: hit, Captured: true, X: x, Y: belowY, Viewport: state.viewport})
+	if lines := terminal.selection.edge.lines; lines != 1 {
+		t.Fatalf("a pointer just below the grid asks for %d lines per step", lines)
+	}
+	before := terminal.screen.ViewOffset()
+	const frames = 21
+	var at time.Duration
+	for range frames {
+		at += selectionScrollInterval - time.Millisecond
+		state.stepSelectionScroll(terminal, at)
+	}
+	if scrolled := before - terminal.screen.ViewOffset(); scrolled < frames-2 {
+		t.Fatalf("%d frames %v apart scrolled %d lines", frames, selectionScrollInterval-time.Millisecond, scrolled)
+	}
+}
+
 func TestDraggingBelowTheGridScrollsAndSelectsHistory(t *testing.T) {
 	state, session, geometry := selectionState()
 	terminal := session.term
@@ -483,5 +513,181 @@ func TestSlowMouseWheelNotchScrollsOneTerminalRow(t *testing.T) {
 		if got := session.term.screen.ViewOffset(); got != notch {
 			t.Fatalf("after %d slow notches the view is %d rows back", notch, got)
 		}
+	}
+}
+
+func TestShiftClickStretchesTheSelectionFromTheLastClick(t *testing.T) {
+	state, session, geometry := selectionState()
+	session.term.write([]byte("alpha beta\r\ngamma delta\r\n"))
+	hit := hitTerminalList.At(int(session.ID))
+	press := func(row, column int, modifiers ui.Modifiers) {
+		x, y := cellPoint(geometry, row, column, state.cellWidth, state.cellHeight)
+		state.Pointer(ui.PointerEvent{Kind: ui.PointerDown, Button: ui.PointerButtonPrimary, Target: hit, Modifiers: modifiers, X: x, Y: y, Viewport: state.viewport})
+		state.Pointer(ui.PointerEvent{Kind: ui.PointerUp, Button: ui.PointerButtonPrimary, Target: hit, Captured: true, Modifiers: modifiers, X: x, Y: y, Viewport: state.viewport})
+	}
+	copied := func() string {
+		return state.Shortcut(ui.KeyEvent{Target: hit, Modifiers: defaultShortcutModifier(), Text: "c"}).ClipboardText
+	}
+
+	// With nothing selected, Shift-click goes from the place last clicked.
+	press(0, 2, 0)
+	if session.term.selection.selected {
+		t.Fatal("a plain click selected something")
+	}
+	press(1, 4, ui.ModifierShift)
+	if got := copied(); got != "pha beta\ngamma" {
+		t.Fatalf("from the last click = %q", got)
+	}
+	// With a selection, the end nearer the click moves and the far one stays.
+	press(1, 1, ui.ModifierShift)
+	if got := copied(); got != "pha beta\nga" {
+		t.Fatalf("shrunk at the end = %q", got)
+	}
+	press(0, 7, ui.ModifierShift)
+	if got := copied(); got != "eta\nga" {
+		t.Fatalf("moved the start = %q", got)
+	}
+	press(0, 0, ui.ModifierShift)
+	if got := copied(); got != "alpha beta\nga" {
+		t.Fatalf("grown at the start = %q", got)
+	}
+}
+
+func TestShiftClickWithoutAnythingToExtendDoesNothing(t *testing.T) {
+	state, session, geometry := selectionState()
+	session.term.write([]byte("alpha beta\r\n"))
+	hit := hitTerminalList.At(int(session.ID))
+	x, y := cellPoint(geometry, 0, 3, state.cellWidth, state.cellHeight)
+	state.Pointer(ui.PointerEvent{Kind: ui.PointerDown, Button: ui.PointerButtonPrimary, Target: hit, Modifiers: ui.ModifierShift, X: x, Y: y, Viewport: state.viewport})
+	state.Pointer(ui.PointerEvent{Kind: ui.PointerUp, Button: ui.PointerButtonPrimary, Target: hit, Captured: true, Modifiers: ui.ModifierShift, X: x, Y: y, Viewport: state.viewport})
+	if session.term.selection.selected {
+		t.Fatalf("selection = %+v", session.term.selection)
+	}
+}
+
+// press, drag and release drive one gesture the way the runtime delivers it: a
+// press with its click count, moves captured by the press, then the release.
+func gesture(state *State, session *Session, geometry terminalGeometry, clicks int, down [2]int, moves ...[2]int) {
+	hit := hitTerminalList.At(int(session.ID))
+	at := func(cell [2]int) (float32, float32) {
+		return cellPoint(geometry, cell[0], cell[1], state.cellWidth, state.cellHeight)
+	}
+	x, y := at(down)
+	state.Pointer(ui.PointerEvent{Kind: ui.PointerDown, Button: ui.PointerButtonPrimary, ClickCount: clicks, Target: hit, X: x, Y: y, Viewport: state.viewport})
+	last := down
+	for _, cell := range moves {
+		x, y = at(cell)
+		state.Pointer(ui.PointerEvent{Kind: ui.PointerMove, Button: ui.PointerButtonPrimary, Target: hit, Captured: true, X: x, Y: y, Viewport: state.viewport})
+		last = cell
+	}
+	x, y = at(last)
+	state.Pointer(ui.PointerEvent{Kind: ui.PointerUp, Button: ui.PointerButtonPrimary, Target: hit, Captured: true, X: x, Y: y, Viewport: state.viewport})
+}
+
+func selectedText(session *Session) string {
+	return session.term.selection.text(session.term.screen)
+}
+
+func TestDoubleClickThenDragGrowsTheSelectionByWholeWords(t *testing.T) {
+	state, session, geometry := selectionState()
+	session.term.write([]byte("one two three four\r\n"))
+
+	gesture(state, session, geometry, 2, [2]int{0, 5})
+	if got := selectedText(session); got != "two" {
+		t.Fatalf("double click selected %q", got)
+	}
+	// Pressing inside the word and dragging forward ends on the word under the pointer.
+	gesture(state, session, geometry, 2, [2]int{0, 5}, [2]int{0, 9})
+	if got := selectedText(session); got != "two three" {
+		t.Fatalf("forward drag selected %q", got)
+	}
+	// Dragging backward keeps the clicked word and takes the word before it.
+	gesture(state, session, geometry, 2, [2]int{0, 9}, [2]int{0, 5}, [2]int{0, 1})
+	if got := selectedText(session); got != "one two three" {
+		t.Fatalf("backward drag selected %q", got)
+	}
+	// Coming back to the clicked word shrinks to just it.
+	gesture(state, session, geometry, 2, [2]int{0, 9}, [2]int{0, 1}, [2]int{0, 10})
+	if got := selectedText(session); got != "three" {
+		t.Fatalf("returning to the clicked word selected %q", got)
+	}
+}
+
+func TestTripleClickSelectsTheWholeLineAndDragsByLines(t *testing.T) {
+	state, session, geometry := selectionState()
+	session.term.write([]byte("first line\r\nsecond line\r\nthird line\r\n"))
+
+	gesture(state, session, geometry, 3, [2]int{1, 3})
+	if got := selectedText(session); got != "second line" {
+		t.Fatalf("triple click selected %q", got)
+	}
+	gesture(state, session, geometry, 3, [2]int{1, 3}, [2]int{2, 0})
+	if got := selectedText(session); got != "second line\nthird line" {
+		t.Fatalf("drag down selected %q", got)
+	}
+	gesture(state, session, geometry, 3, [2]int{1, 3}, [2]int{0, 9})
+	if got := selectedText(session); got != "first line\nsecond line" {
+		t.Fatalf("drag up selected %q", got)
+	}
+}
+
+func TestTripleClickTakesEveryRowOfASoftWrappedLine(t *testing.T) {
+	state, session, geometry := selectionState()
+	// 45 characters at 20 columns wrap onto three rows; the next line is separate.
+	long := strings.Repeat("0123456789", 4) + "abcde"
+	session.term.write([]byte(long + "\r\nnext\r\n"))
+
+	gesture(state, session, geometry, 3, [2]int{1, 4})
+	if got := selectedText(session); got != long {
+		t.Fatalf("triple click on a wrapped row selected %q, want the whole logical line", got)
+	}
+}
+
+// A program killed before it could restore its modes must not leave them on the
+// shell's prompt: moving the pointer would type escape sequences at the prompt,
+// and the wheel would walk the line editor's history instead of the scrollback.
+// The owning shell's prompt marker is where the terminal is taken back.
+func TestTheOwnersPromptTakesBackTheModesAKilledProgramLeft(t *testing.T) {
+	state, session, geometry := selectionState()
+	shell := &fakeShell{}
+	session.term.shell = shell
+	screen := session.term.screen
+	screen.SetPromptToken("tok")
+	for line := 0; line < 20; line++ {
+		screen.Write([]byte("line\r\n"))
+	}
+	// A prompt, then a full-screen program arming the modes it wants.
+	screen.Write([]byte("\x1b]133;A;motty=tok\a$ \x1b]133;B;motty=tok\a\x1b]133;C;motty=tok\a"))
+	screen.Write([]byte("\x1b[?1049h\x1b[?1003h\x1b[?1006h"))
+	// It is killed: no teardown arrives, and its modes are still armed.
+	if modes := screen.Modes(); !modes.AltScreen || modes.Mouse != term.MouseAny {
+		t.Fatalf("the program's modes were not taken: %+v", modes)
+	}
+	screen.Write([]byte("\x1b]133;D;130;motty=tok\a\x1b]133;A;motty=tok\a$ \x1b]133;B;motty=tok\a"))
+
+	hit := hitTerminalList.At(int(session.ID))
+	x, y := cellPoint(geometry, 2, 7, state.cellWidth, state.cellHeight)
+	if result := state.Pointer(ui.PointerEvent{
+		Kind: ui.PointerMove, X: x, Y: y, Target: hit, Viewport: state.viewport,
+	}); shell.typed() != "" {
+		t.Fatalf("moving the pointer at the prompt typed %q (result=%+v)", shell.typed(), result)
+	}
+	result := state.Scroll(ui.ScrollEvent{
+		X: x, Y: y, DeltaY: -state.cellHeight,
+		Viewport: state.viewport, Target: hit, Precise: true,
+	})
+	if !result.Handled || !result.Repaint || shell.typed() != "" || screen.ViewOffset() == 0 {
+		t.Fatalf("wheel at the prompt: result=%+v input=%q offset=%d", result, shell.typed(), screen.ViewOffset())
+	}
+}
+
+func TestAPlainClickAfterAWordSelectionGoesBackToCells(t *testing.T) {
+	state, session, geometry := selectionState()
+	session.term.write([]byte("one two three\r\n"))
+
+	gesture(state, session, geometry, 2, [2]int{0, 5})
+	gesture(state, session, geometry, 1, [2]int{0, 0}, [2]int{0, 5})
+	if got := selectedText(session); got != "one tw" {
+		t.Fatalf("a cell drag after a word selection selected %q", got)
 	}
 }

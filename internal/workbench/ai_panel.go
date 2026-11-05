@@ -49,6 +49,7 @@ var (
 	hitAIAutoScopeDismiss = tree.ID(aiPanelHits, "ai-auto-scope-dismiss")
 	hitAIModelList        = tree.ID(aiPanelHits, "ai-model-list") // names the models menu for its entrance and exit; it is not a control
 	hitAIModelBar         = tree.ID(aiPanelHits, "ai-model-scroll-bar")
+	hitAIRunStatus        = tree.ID(aiPanelHits, "ai-run-status")
 )
 
 const (
@@ -198,6 +199,11 @@ type aiPanel struct {
 	historyDates []string
 	historyTop   float32
 
+	// focusBack asks the next paint to put the keyboard back in the terminal
+	// after the panel closed from inside itself, which a trapped drawer used to
+	// do for the user.
+	focusBack bool
+
 	// Geometry of the last paint, for the wheel and the text input.
 	rect      ui.Rect // the whole panel; empty when it was not painted
 	list      ui.Rect // the message list (or the history list)
@@ -233,7 +239,9 @@ type aiPanel struct {
 	linkBase  int
 
 	// Scratch space reused by every layout so a paint allocates nothing.
-	wrapped []string
+	wrapped     []string
+	statusLines []string
+	usageLines  []string
 
 	// inputLayout is the message box's rows and scroll, and composer where the box
 	// was painted, for the wheel.
@@ -365,7 +373,11 @@ func (state *State) aiPanelLimits(size ui.Size) (least, most float32) {
 	if !state.terminalPage() {
 		workspaceID = 0
 	}
-	return aiPanelMin, max(state.aiSharedWidth(workspaceID, size)-aiMinTerminal-1, aiPanelMin)
+	shared := state.aiSharedWidth(workspaceID, size) - aiMinTerminal - 1
+	if size.Width < aiDockAt || shared < aiPanelMin {
+		return aiPanelMin, max(size.Width*0.92, aiPanelMin)
+	}
+	return aiPanelMin, max(shared, aiPanelMin)
 }
 
 // aiPanelSync resizes the terminals when the panel's claim on the window
@@ -384,7 +396,16 @@ func (state *State) aiPanelSync() {
 // setAIPanelOpen shows or hides the panel.
 func (state *State) setAIPanelOpen(open bool) {
 	ai := &state.ai
+	if ai.open == open {
+		return
+	}
 	if open {
+		id := state.deck.ActiveWorkspace()
+		if state.monitorShown(id) && !state.monitorAndAICanCoexist(id, state.viewport) {
+			state.closeMonitor()
+		}
+		// A stale hand-back from an earlier close must not fire after a reopen.
+		ai.panel.focusBack = false
 		// The model line reads what the database holds, so open it now rather
 		// than during a paint.
 		_, _ = state.aiStore()
@@ -399,6 +420,24 @@ func (state *State) setAIPanelOpen(open bool) {
 		ai.panel.clearAITextSelection()
 	}
 	state.aiPanelSync()
+}
+
+// reconcileAIPanelWithMonitor keeps the assistant and the monitor from being
+// left as two drawers at once: when both are open and the window cannot dock
+// them side by side, the monitor keeps the space and the assistant closes, its
+// conversation preserved, as showMonitor already decides for the reverse order.
+// The window must never hold two drawers, and never a scope-less assistant
+// drawer under the monitor's trapped one. Resize and a question the assistant
+// raises on its own call this.
+func (state *State) reconcileAIPanelWithMonitor(size ui.Size) {
+	if !state.ai.open {
+		return
+	}
+	workspace := state.deck.ActiveWorkspace()
+	if !state.monitorShown(workspace) || state.monitorAndAICanCoexist(workspace, size) {
+		return
+	}
+	state.setAIPanelOpen(false)
 }
 
 // toggleAIPanel is the window-bar button, the shortcut and the palette entry:
@@ -459,6 +498,9 @@ func (state *State) aiPanelClick(id ui.ID) bool {
 	case id == hitAIToggle:
 		state.toggleAIPanel()
 	case id == hitAIClose || id == hitAIDrawerDismiss:
+		// Closing from inside the panel takes the keyboard with it; hand it back
+		// to the terminal the panel covered.
+		state.ai.panel.focusBack = true
 		state.setAIPanelOpen(false)
 	case id == hitAIAttach:
 		state.aiPickAttachments()
@@ -1205,6 +1247,14 @@ func (state *State) aiPanelText(event app.TextEvent) app.TextState {
 		state.aiPasteImage()
 		result := app.TextStateOf(&ai.input)
 		result.Redraw = true // the chips changed, not the editor
+		return result
+	}
+	if (event.Kind == app.TextPaste || event.Kind == app.TextInsert) && isLongAIText(event.Text) {
+		// Long text is attached as a file rather than dumped into the message box,
+		// keeping the composer responsive and preventing renderer overflow.
+		state.aiPasteText(event.Text)
+		result := app.TextStateOf(&ai.input)
+		result.Redraw = true
 		return result
 	}
 	_, composing := ai.input.Composition()

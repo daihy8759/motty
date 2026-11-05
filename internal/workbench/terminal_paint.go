@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -143,6 +144,16 @@ func (state *State) activeTerminalTools(session *Session, toolList *[maxBarTools
 		filesHint = state.messages.TipFilesLocal
 	}
 	tools = append(tools, barTool{id: hitSFTPOpen, icon: iconFolderOpen, hint: filesHint, disabled: !session.canBrowseFiles(), style: filesStyle})
+	if state.localProxyActionVisible(session) {
+		tool := barTool{id: hitLocalProxyOpen, icon: iconGlobe, hint: state.messages.LocalProxy.Title}
+		if snapshot := state.localProxySnapshot(session); snapshot.Phase != localProxyDisconnected {
+			tool.style = iconButtonActive
+			if snapshot.Phase == localProxyConnected && snapshot.RemotePort != 0 {
+				tool.hint = fmt.Sprintf(state.messages.LocalProxy.ConnectedFmt, snapshot.RemotePort)
+			}
+		}
+		tools = append(tools, tool)
+	}
 	tools = append(tools, barTool{id: hitConnExport, icon: iconFileDown, hint: state.messages.ConnExportLog, style: iconButtonQuiet})
 	tools = append(tools, barTool{id: hitTerminalRecordingExport, icon: iconFilm, hint: state.messages.RecordingExport, disabled: len(session.term.recording.events) == 0, style: iconButtonQuiet})
 	recordIcon, recordHint, recordStyle := uint8(iconRecord), state.messages.TipRecordStart, iconButtonQuiet
@@ -162,6 +173,7 @@ func (state *State) activeTerminalTools(session *Session, toolList *[maxBarTools
 	managed := state.workspaceManaged(state.deck.ActiveWorkspace())
 	verticalDisabled := managed && !state.canSplitActivePane(layoutcore.Vertical)
 	horizontalDisabled := managed && !state.canSplitActivePane(layoutcore.Horizontal)
+	tools = append(tools, barTool{id: hitTerminalSnippets, icon: iconNote, hint: state.messages.Tools.SnippetTip, disabled: session.term.shell == nil, style: iconButtonQuiet})
 	tools = append(tools, barTool{id: hitPaneSplitVertical, icon: iconRows2, hint: state.messages.PaneSplitVertical, disabled: verticalDisabled, style: iconButtonQuiet, groupEnd: !inSplit})
 	tools = append(tools, barTool{id: hitPaneSplitHorizontal, icon: iconColumns2, hint: state.messages.PaneSplitHorizontal, disabled: horizontalDisabled, style: iconButtonQuiet})
 	if inSplit && !managed {
@@ -204,6 +216,7 @@ func (state *State) clearTerminalRail(session *Session) {
 		return
 	}
 	session.term.railCount = 0
+	session.term.railIDs = [maxBarTools]ui.ID{}
 	session.term.railEnabled = [maxBarTools]bool{}
 	session.term.railViewport = ui.Rect{}
 	session.term.railBounds = ui.Rect{}
@@ -419,8 +432,13 @@ func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometr
 	cellWidth, cellHeight := state.cellWidth, state.cellHeight
 	cursor := t.presentedCursor()
 	composing := t.preedit.Composing
-	predictionText, predictionRuns, predictionCells, predicting := t.prediction.overlay()
+	predictionText, predictionRuns, predictionCells, predicting := t.prediction.overlay(state.now())
 	predicting = predicting && !composing && cursor.Visible && t.sync == nil
+	if remaining, ok := t.prediction.expiry(state.now()); ok && predicting {
+		// A guess the server never echoes is taken back at its deadline, not at
+		// the next key.
+		canvas.RequestFrameIn(max(remaining, time.Millisecond))
+	}
 	if t.sync != nil && t.clock != nil {
 		canvas.RequestFrameIn(t.syncRemaining())
 	}
@@ -559,9 +577,10 @@ func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometr
 		case composing:
 			// The input method draws over these cells, which the rows left empty.
 		case cursor.Style == term.CursorUnderline:
-			canvas.Fill(ui.Rect{X: x, Y: y + cellHeight - 2, Width: cellWidth, Height: 2}, cursorColor)
+			underline := state.terminalCursorThickness.underline()
+			canvas.Fill(ui.Rect{X: x, Y: y + cellHeight - underline, Width: cellWidth, Height: underline}, cursorColor)
 		case cursor.Style == term.CursorBar:
-			canvas.Fill(ui.Rect{X: x, Y: y, Width: 3, Height: cellHeight}, cursorColor)
+			canvas.Fill(ui.Rect{X: x, Y: y, Width: state.terminalCursorThickness.bar(), Height: cellHeight}, cursorColor)
 		case !focused:
 			// A block cursor outlines its cell while the terminal does not have the keyboard.
 			canvas.Fill(ui.Rect{X: x, Y: y, Width: cellWidth, Height: 1}, cursorColor)
@@ -576,7 +595,9 @@ func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometr
 		canvas.Fill(ui.Rect{X: x, Y: y, Width: float32(covered.to-covered.from) * cellWidth, Height: cellHeight}, pal.terminal)
 	}
 	if !sensitive && focused && !composing && !predicting && t.sync == nil {
-		if rest, ok := state.commandGhost(session); ok {
+		if rest, ok := state.passwordHintGhost(session); ok {
+			state.paintGhost(canvas, t, geometry, cursor, rest, block)
+		} else if rest, ok := state.commandGhost(session); ok {
 			state.paintGhost(canvas, t, geometry, cursor, rest, block)
 		}
 	}

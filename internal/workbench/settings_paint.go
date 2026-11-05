@@ -6,6 +6,8 @@ import (
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/flex"
 	"github.com/vivaui/viva/ui"
+
+	"motty/internal/i18n"
 )
 
 // Settings are laid out as titled groups: one card per group, its rows
@@ -36,6 +38,7 @@ const (
 	controlAgentSelect                                 // independent stdio client configuration
 	controlLocalShellSelect                            // detected Windows shells
 	controlEditorSelect                                // installed editors
+	controlStartupHosts                                // the hosts a launch connects
 )
 
 // settingsControl is one control of the page, recorded while the page is
@@ -168,6 +171,8 @@ func (state *State) paintSettingsControls(canvas *ui.Canvas) {
 			state.localShellMenu.bounds = rect
 		case controlEditorSelect:
 			state.editorMenu.bounds = rect
+		case controlStartupHosts:
+			state.startupPicker.bounds = rect
 		case controlSwitch:
 			state.aiSwitch(canvas, control.id, rect, control.on, control.disabled, control.label)
 		case controlButtons:
@@ -252,8 +257,11 @@ func (state *State) paintGeneralSettings(page *settingsPage) {
 	messages := state.messages
 	language := state.settingsLanguageOptions()
 	selectedLanguage := hitSettingsLanguageEnglish
-	if state.language.String() == "zh-CN" {
+	switch state.language {
+	case i18n.Chinese:
 		selectedLanguage = hitSettingsLanguageChinese
+	case i18n.TraditionalChinese:
+		selectedLanguage = hitSettingsLanguageTraditional
 	}
 	appearance := state.settingsAppearanceOptions()
 	selectedAppearance := hitSettingsAppearanceSystem
@@ -329,6 +337,14 @@ func (state *State) paintTerminalSettings(page *settingsPage) {
 	case padRoomy:
 		selectedPadding = hitSettingsPadRoomy
 	}
+	lineHeight := state.settingsLineHeightOptions()
+	selectedLineHeight := hitSettingsLineHeightNormal
+	switch state.terminalLineHeight {
+	case lineHeightCompact:
+		selectedLineHeight = hitSettingsLineHeightCompact
+	case lineHeightRoomy:
+		selectedLineHeight = hitSettingsLineHeightRoomy
+	}
 	gutter := state.settingsGutterOptions()
 	selectedGutter := [...]ui.ID{hitSettingsGutterOff, hitSettingsGutterNumbers, hitSettingsGutterTime, hitSettingsGutterBoth}[state.terminalGutter]
 	intense := state.settingsIntenseOptions()
@@ -349,6 +365,15 @@ func (state *State) paintTerminalSettings(page *settingsPage) {
 	case terminalClipboardAsk:
 		selectedClipboard = hitSettingsClipboardAsk
 	}
+	selectedCursorStyle := hitSettingsCursorBlock
+	switch state.terminalCursorStyle {
+	case cursorBar:
+		selectedCursorStyle = hitSettingsCursorBar
+	case cursorUnderline:
+		selectedCursorStyle = hitSettingsCursorUnderline
+	}
+	thickness := state.settingsCursorThicknessOptions()
+	selectedThickness := [...]ui.ID{hitSettingsCursorNormal, hitSettingsCursorThin, hitSettingsCursorThick}[state.terminalCursorThickness]
 	page.groups(func() {
 		page.group(messages.Completion.Group, func() {
 			status, _ := state.completionCatalogStatus()
@@ -366,12 +391,15 @@ func (state *State) paintTerminalSettings(page *settingsPage) {
 				components.ButtonAction{ID: hitSettingsFontSizeDown, Label: "−", Variant: components.ButtonOutline},
 				components.ButtonAction{ID: hitSettingsFontSizeReset, Label: state.fontSizeLabel(), Variant: components.ButtonGhost},
 				components.ButtonAction{ID: hitSettingsFontSizeUp, Label: "+", Variant: components.ButtonOutline})
+			page.row(state.messages.Tools.LineHeightRow, "", lineHeight[:], selectedLineHeight)
 			page.actionRow(messages.SettingsTerminalFontFamily, state.fontDescription(), false,
 				components.ButtonAction{ID: hitSettingsFontPick, Label: state.messages.Tools.FontChoose, Variant: components.ButtonOutline})
 			page.actionRow(state.messages.Tools.FontFallbackRow, state.fallbackDescription(), false, state.fallbackActions()...)
 			page.row(state.messages.Tools.PaddingRow, "", padding[:], selectedPadding)
 			page.row(state.messages.Tools.GutterRow, state.messages.Tools.GutterDescription, gutter[:], selectedGutter)
 			page.toggleRow(state.messages.Tools.CursorRow, state.messages.Tools.CursorDescription, !state.terminalCursorSteady, hitSettingsCursorToggle)
+			page.row(state.messages.Tools.CursorShapeRow, state.messages.Tools.CursorShapeDescription, state.settingsCursorStyleOptions(), selectedCursorStyle)
+			page.row(state.messages.Tools.CursorThicknessRow, "", thickness[:], selectedThickness)
 			page.row(state.messages.Tools.IntenseRow, state.messages.Tools.IntenseDescription, intense[:], selectedIntense)
 			page.row(messages.SettingsTerminalScrollback, messages.SettingsTerminalScrollbackDescription, scrollback[:], selectedScrollback)
 			page.row(messages.SettingsTerminalClipboard, messages.SettingsTerminalClipboardDescription, clipboard[:], selectedClipboard)
@@ -382,6 +410,8 @@ func (state *State) paintTerminalSettings(page *settingsPage) {
 			page.toggleRow(state.messages.Tools.TabTitleRow, state.messages.Tools.TabTitleDescription, state.terminalTabTitle, hitSettingsTabTitle)
 			page.toggleRow(state.messages.Tools.LatencyRow, state.messages.Tools.LatencyDescription, state.terminalShowLatency, hitSettingsLatencyToggle)
 			page.toggleRow(state.messages.Tools.PasteImageRow, state.messages.Tools.PasteImageDescription, !state.pasteImageOff, hitSettingsPasteImageToggle)
+			page.toggleRow(state.messages.Tools.CloseConfirmRow, state.messages.Tools.CloseConfirmDescription, !state.closeConfirmOff, hitSettingsCloseConfirmToggle)
+			page.toggleRow(state.messages.Tools.PasswordHintRow, state.messages.Tools.PasswordHintDescription, !state.passwordHintOff, hitSettingsPasswordHintToggle)
 			page.toggleRow(state.messages.Tools.NotifyRow, state.messages.Tools.NotifyDescription, !state.notifyOff, hitSettingsNotifyToggle)
 			state.paintLocalShellSetting(page)
 		})
@@ -438,6 +468,7 @@ func (state *State) paintConnectionSettings(page *settingsPage) {
 			page.row(messages.SettingsConnectionReconnect, messages.SettingsConnectionReconnectDescription, reconnect[:], selectedReconnect)
 			page.toggleRow(messages.SettingsShare, messages.SettingsShareDescription, state.shareConnections != shareConnectionsOff, hitSettingsShareToggle)
 			page.row(messages.SettingsRestore, messages.SettingsRestoreDescription, restore[:], selectedRestore)
+			state.paintStartupSettings(page)
 			state.paintSSHAgentRow(page)
 			page.row(messages.SettingsNetworkProxy, messages.SettingsNetworkProxyDescription, networkProxy[:], selectedNetworkProxy)
 			state.paintOutboundProxyRow(page)

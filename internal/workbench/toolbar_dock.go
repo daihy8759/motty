@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"fmt"
 	"slices"
 
 	"github.com/vivaui/viva/app"
@@ -148,6 +149,15 @@ func (state *State) toolbarDockTools(zone toolbarDockZone, dst *[maxBarTools]bar
 			}
 		}
 	}
+	// An available update stays in the bar until it is installed or skipped, and
+	// is absent otherwise. Like connection progress it is not a customizable
+	// tool: it comes and goes with state, so it has no catalog entry to hide.
+	if zone == state.defaultToolbarDockZone(toolbarWindow) && state.updateIndicatorVisible() {
+		tools = append(tools, barTool{
+			id: hitUpdateToolbar, icon: iconDownload, style: iconButtonUpdate,
+			hint: fmt.Sprintf(state.messages.Tools.UpdateAvailableFmt, state.update.release.Version),
+		})
+	}
 	appendEntry := func(group toolbarGroup, key string) {
 		spec, ok := toolbarSpecFor(group, key)
 		if !ok || !state.toolbarVisible(group, spec.id) {
@@ -185,6 +195,17 @@ func (state *State) toolbarDockTools(zone toolbarDockZone, dst *[maxBarTools]bar
 	if zone == state.defaultToolbarDockZone(toolbarTerminal) {
 		for _, tool := range terminalTools {
 			if tool.id == hitWorkspacePaneTools {
+				tools = append(tools, tool)
+			}
+		}
+	}
+	if zone == state.defaultToolbarDockZone(toolbarTerminal) && !state.toolbarVisible(toolbarTerminal, hitLocalProxyOpen) {
+		if session, ok := state.terminalSideRailSession(); ok {
+			if snapshot := state.localProxySnapshot(session); snapshot.Phase == localProxyConnecting || snapshot.Phase == localProxyConnected || snapshot.Phase == localProxyFailed {
+				tool := barTool{id: hitLocalProxyOpen, icon: iconGlobe, hint: state.messages.LocalProxy.Title, style: iconButtonActive}
+				if snapshot.Phase == localProxyConnected && snapshot.RemotePort != 0 {
+					tool.hint = fmt.Sprintf(state.messages.LocalProxy.ConnectedFmt, snapshot.RemotePort)
+				}
 				tools = append(tools, tool)
 			}
 		}
