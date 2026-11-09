@@ -62,7 +62,10 @@ func (conn *Conn) defaultShellKind(client *ssh.Client) shellkind.Kind {
 	}
 	ctx, cancel := context.WithTimeout(conn.ctx, 2*time.Second)
 	defer cancel()
+	probes := conn.probeState()
+	probes.begin()
 	data, err := conn.RunCommand(ctx, shellkind.Probe, 4096)
+	probes.end(err)
 	if err != nil {
 		return shellkind.Unknown
 	}

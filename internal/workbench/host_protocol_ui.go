@@ -2,7 +2,7 @@ package workbench
 
 import (
 	"github.com/vivaui/viva/components"
-	"github.com/vivaui/viva/flex"
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/text"
 	"github.com/vivaui/viva/ui"
 	"motty/internal/serial"
@@ -37,6 +37,7 @@ var (
 	hitDialogAdvanced        = tree.ID(hostProtocolUiHits, "dialog-advanced")
 	hitDialogForwardX11      = tree.ID(hostProtocolUiHits, "dialog-forward-x11")
 	hitDialogAgentForward    = tree.ID(hostProtocolUiHits, "dialog-agent-forward")
+	hitDialogInteractiveOnly = tree.ID(hostProtocolUiHits, "dialog-interactive-only")
 	hitDialogNoHistory       = tree.ID(hostProtocolUiHits, "dialog-no-history")
 	hitDialogAgentAccess     = tree.ID(hostProtocolUiHits, "dialog-agent-access")
 	hitDialogAgentAccessHelp = tree.ID(hostProtocolUiHits, "dialog-agent-access-help")
@@ -53,7 +54,7 @@ var (
 // this is not choosing from a list.
 const maxListedPorts = 12
 
-func (state *State) paintHostProtocolSwitch(canvas *ui.Canvas, bounds ui.Rect) {
+func (state *State) paintHostProtocolSwitch(canvas *gfx.Canvas, bounds gfx.Rect) {
 	m := state.messages.Tools
 	options := [...]components.SegmentOption{
 		{ID: hitDialogProtocolSSH, Label: m.ProtocolSSH},
@@ -71,11 +72,11 @@ func (state *State) paintHostProtocolSwitch(canvas *ui.Canvas, bounds ui.Rect) {
 // port it is reached on, and on the row below the credentials the protocol takes.
 // A serial port takes the device, its line and, on its own row, the flow
 // control; a Telnet host has no credentials in the form, so it takes one row.
-func (state *State) paintHostEndpointRows(canvas *ui.Canvas, x, y, width, rowHeight float32) {
+func (state *State) paintHostEndpointRows(canvas *gfx.Canvas, x, y, width, rowHeight float32) {
 	m, tools := state.messages, state.messages.Tools
 	editor := &state.editor
-	var address, picker, second, password, third, authentication, identity, passphrase flex.Box
-	f := state.partLayout.Begin(canvas, state.Theme(), ui.Rect{X: x, Y: y, Width: width, Height: float32(state.hostEndpointRows()) * rowHeight})
+	var address, picker, second, password, third, authentication, identity, passphrase ui.Box
+	f := state.partLayout.Begin(canvas, state.Theme(), gfx.Rect{X: x, Y: y, Width: width, Height: float32(state.hostEndpointRows()) * rowHeight})
 	f.Column().Fill().Children(func() {
 		switch editor.protocol {
 		case protocolSerial:
@@ -196,7 +197,7 @@ func (state *State) hostPasswordHint() string {
 
 // paintPortsTrigger draws the picker of detected ports: a small select that lists
 // the machine's serial ports and puts the chosen one in the device field.
-func (state *State) paintPortsTrigger(canvas *ui.Canvas, bounds ui.Rect) {
+func (state *State) paintPortsTrigger(canvas *gfx.Canvas, bounds gfx.Rect) {
 	m, editor := state.messages.Tools, &state.editor
 	content := components.BeginField(canvas, state.Theme(), bounds).Paint(m.PortsPicker, "", "")
 	state.rememberHostControl(hitDialogPortsTrigger, content)
@@ -206,7 +207,7 @@ func (state *State) paintPortsTrigger(canvas *ui.Canvas, bounds ui.Rect) {
 	popupWidth := max(content.Width, 340)
 	selectControl := components.BeginSelect(canvas, state.Theme(), content, components.SelectOptions{
 		TriggerID: hitDialogPortsTrigger, Label: m.PortsPicker, Placeholder: "…", Open: editor.portsOpen, Size: components.SelectSizeSmall,
-		Content: ui.Rect{X: content.X + content.Width - popupWidth, Y: content.Y + content.Height + 4, Width: popupWidth, Height: float32(8 + max(count, 1)*32)},
+		Content: gfx.Rect{X: content.X + content.Width - popupWidth, Y: content.Y + content.Height + 4, Width: popupWidth, Height: float32(8 + max(count, 1)*32)},
 		Layer:   dialogLayer + 1, Scope: dialogScope, DismissID: hitDialogPortsDismiss, Viewport: state.windowRect(),
 		Scroll: state.selectScroll(editor.portsOpen, hitDialogPortsDismiss),
 	})
@@ -231,7 +232,7 @@ func (state *State) paintPortsTrigger(canvas *ui.Canvas, bounds ui.Rect) {
 }
 
 // clickHostProtocol handles the protocol controls of the host dialog.
-func (state *State) clickHostProtocol(id ui.ID) bool {
+func (state *State) clickHostProtocol(id gfx.ID) bool {
 	editor := &state.editor
 	switch {
 	case id == hitDialogProtocolSSH:
@@ -270,6 +271,8 @@ func (state *State) clickHostProtocol(id ui.ID) bool {
 		editor.forwardX11 = !editor.forwardX11
 	case id == hitDialogAgentForward:
 		editor.agentForward = !editor.agentForward
+	case id == hitDialogInteractiveOnly:
+		editor.interactiveOnly = !editor.interactiveOnly
 	case id == hitDialogNoHistory:
 		editor.noHistory = !editor.noHistory
 	case id == hitDialogAgentAccess:
@@ -395,7 +398,7 @@ const (
 	groupHeadingHeight = 40
 	// sshSwitchRowsHeight is both groups: the first row sits 4px under its
 	// heading, the others 12px under the row above, and 16px are left at the end.
-	sshSwitchRowsHeight = groupHeadingHeight + (4 + 20) + 2*(12+20) + groupHeadingHeight + (4 + 20) + 16
+	sshSwitchRowsHeight = groupHeadingHeight + (4 + 20) + 3*(12+20) + groupHeadingHeight + (4 + 20) + 16
 )
 
 // advancedHeaderHeight is the row that opens the Advanced section of an SSH
@@ -438,23 +441,23 @@ const otpButtonsRow = 38
 
 // paintAdvancedSection draws the row that opens or closes an SSH host's
 // less-used settings and, while open, the settings under it.
-func (state *State) paintAdvancedSection(canvas *ui.Canvas, bounds ui.Rect) {
+func (state *State) paintAdvancedSection(canvas *gfx.Canvas, bounds gfx.Rect) {
 	pal, open := state.pal, state.editor.advancedOpen
 	label := state.messages.Tools.AdvancedOptions
 	chevron := iconChevronRight
 	if open {
 		chevron = iconChevronDown
 	}
-	var icon flex.Box
-	header := ui.Rect{X: bounds.X, Y: bounds.Y + advancedHeaderGap, Width: bounds.Width, Height: 32}
+	var icon ui.Box
+	header := gfx.Rect{X: bounds.X, Y: bounds.Y + advancedHeaderGap, Width: bounds.Width, Height: 32}
 	state.rememberHostControl(hitDialogAdvanced, header)
 	f := state.partLayout.Begin(canvas, state.Theme(), header)
-	f.Row().Fill().PadSides(0, 0, 0, 2).Gap(8).Items(flex.Center).
-		Radius(radius.control).Hover(flex.Look{}.Background(pal.surfaceSoft)).
-		HitWith(hitDialogAdvanced, label, ui.HitOptions{Role: ui.RoleButton, Expanded: open}).
+	f.Row().Fill().PadSides(0, 0, 0, 2).Gap(8).Items(ui.Center).
+		Radius(radius.control).Hover(ui.Look{}.Background(pal.surfaceSoft)).
+		HitWith(hitDialogAdvanced, label, gfx.HitOptions{Role: gfx.RoleButton, Expanded: open}).
 		Children(func() {
 			icon = f.Slot().Size(16, 16)
-			f.Text(label).FontSize(metrics.FontSizeM).Weight(ui.WeightMedium).Color(pal.muted).LineHeight(20)
+			f.Text(label).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(pal.muted).LineHeight(20)
 		})
 	f.End()
 	paintIcon(canvas, uint8(chevron), icon.Rect(), pal.muted)
@@ -465,19 +468,19 @@ func (state *State) paintAdvancedSection(canvas *ui.Canvas, bounds ui.Rect) {
 
 // paintAlgorithmRows draws the SSH algorithm choice and, for a custom one, the
 // list that is allowed, then the one-time code secret.
-func (state *State) paintAlgorithmRows(canvas *ui.Canvas, x, y, width, rowHeight float32) {
+func (state *State) paintAlgorithmRows(canvas *gfx.Canvas, x, y, width, rowHeight float32) {
 	m, editor, pal := state.messages.Tools, &state.editor, state.pal
 	rows := float32(1)
 	if editor.algoMode == algoCustom {
 		rows++
 	}
 	const removeWidth, scanWidth, pasteWidth = 84, 132, 96
-	var algo, custom, login, otp, scan, paste, remove, x11, agentFwd, noHistory, agentAccess, agentHelp flex.Box
-	f := state.partLayout.Begin(canvas, state.Theme(), ui.Rect{X: x, Y: y, Width: width, Height: (rows+1)*rowHeight + otpFieldHeight + otpButtonsRow + sshSwitchRowsHeight})
+	var algo, custom, login, otp, scan, paste, remove, x11, agentFwd, noHistory, interactive, agentAccess, agentHelp ui.Box
+	f := state.partLayout.Begin(canvas, state.Theme(), gfx.Rect{X: x, Y: y, Width: width, Height: (rows+1)*rowHeight + otpFieldHeight + otpButtonsRow + sshSwitchRowsHeight})
 	heading := func(title string) {
 		f.Column().Height(groupHeadingHeight).Children(func() {
 			f.Column().Height(1).MarginSides(12, 0, 0, 0).Background(withAlpha(pal.line, 0.7))
-			f.Text(title).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(pal.muted).MarginSides(8, 0, 0, 2)
+			f.Text(title).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(pal.muted).MarginSides(8, 0, 0, 2)
 		})
 	}
 	f.Column().Fill().Children(func() {
@@ -490,14 +493,15 @@ func (state *State) paintAlgorithmRows(canvas *ui.Canvas, x, y, width, rowHeight
 			otp = f.Slot().Grow(1)
 		})
 		f.Row().Height(otpButtonsRow).Gap(8).Children(func() {
-			scan = f.Slot().Size(scanWidth, 30).Self(flex.Start)
-			paste = f.Slot().Size(pasteWidth, 30).Self(flex.Start)
-			remove = f.Slot().Size(removeWidth, 30).Self(flex.Start)
+			scan = f.Slot().Size(scanWidth, 30).Self(ui.Start)
+			paste = f.Slot().Size(pasteWidth, 30).Self(ui.Start)
+			remove = f.Slot().Size(removeWidth, 30).Self(ui.Start)
 		})
 		heading(m.AdvancedSession)
 		x11 = state.declareDialogCheckbox(f, m.X11Forward, 4, 0)
 		agentFwd = state.declareDialogCheckbox(f, m.AgentForward, 12, 0)
 		noHistory = state.declareDialogCheckbox(f, state.messages.History.HostNoRecord, 12, 0)
+		interactive = state.declareDialogCheckbox(f, m.InteractiveOnly, 12, 0)
 		heading(m.AdvancedAgents)
 		agentAccess, agentHelp = state.declareDialogCheckboxHelp(f, m.AgentAccess, 4, 0)
 	})
@@ -515,7 +519,7 @@ func (state *State) paintAlgorithmRows(canvas *ui.Canvas, x, y, width, rowHeight
 		state.paintDialogField(canvas, hitDialogAlgorithms, fieldAlgorithms, m.AlgoCustomField, m.AlgoCustomPlaceholder, custom.Rect())
 	}
 	state.paintDialogField(canvas, hitDialogLoginCommand, fieldLoginCommand, m.LoginCommandField, m.LoginCommandPlaceholder, login.Rect())
-	var removeRect ui.Rect
+	var removeRect gfx.Rect
 	if editor.otpSaved {
 		removeRect = remove.Rect()
 	}
@@ -523,6 +527,7 @@ func (state *State) paintAlgorithmRows(canvas *ui.Canvas, x, y, width, rowHeight
 	state.paintDialogCheckbox(canvas, hitDialogForwardX11, m.X11Forward, editor.forwardX11, x11)
 	state.paintDialogCheckbox(canvas, hitDialogAgentForward, m.AgentForward, editor.agentForward, agentFwd)
 	state.paintDialogCheckbox(canvas, hitDialogNoHistory, state.messages.History.HostNoRecord, editor.noHistory, noHistory)
+	state.paintDialogCheckbox(canvas, hitDialogInteractiveOnly, m.InteractiveOnly, editor.interactiveOnly, interactive)
 	state.paintDialogCheckbox(canvas, hitDialogAgentAccess, m.AgentAccess, editor.agentAccess, agentAccess)
 	// After the checkbox, whose words reach to the end of the row, so that this is
 	// the hit on top where the two meet.
@@ -533,7 +538,7 @@ func (state *State) paintAlgorithmRows(canvas *ui.Canvas, x, y, width, rowHeight
 // read it from a QR code image, and for a
 // saved one a button, in its own rectangle, to take it away. The secret itself
 // is never drawn.
-func (state *State) paintOTPRow(canvas *ui.Canvas, field, scan, paste, remove ui.Rect) {
+func (state *State) paintOTPRow(canvas *gfx.Canvas, field, scan, paste, remove gfx.Rect) {
 	m, editor := state.messages.Tools, &state.editor
 	placeholder := m.OTPPlaceholder
 	if editor.otpSaved {
@@ -575,9 +580,9 @@ func (state *State) desktopRowsHeight() float32 {
 // bounds' place: connecting through SSH, sharing the clipboard, showing the
 // picture without the bars around it and, for RDP, asking Windows for its
 // console (administrative) session.
-func (state *State) paintVNCRows(canvas *ui.Canvas, bounds ui.Rect) {
+func (state *State) paintVNCRows(canvas *gfx.Canvas, bounds gfx.Rect) {
 	editor, m := &state.editor, state.messages.Desktop
-	var tunnel, clipboard, chromeless, console flex.Box
+	var tunnel, clipboard, chromeless, console ui.Box
 	f := state.partLayout.Begin(canvas, state.Theme(), bounds)
 	f.Column().Fill().Children(func() {
 		tunnel = state.declareDialogCheckbox(f, m.ViaSSH, 4, 0)

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/vivaui/viva/app"
-	"github.com/vivaui/viva/ui"
+	"github.com/vivaui/viva/gfx"
 	"motty/internal/sftpclient"
 	"motty/internal/sshconn"
 )
@@ -385,7 +385,7 @@ func openHost(state *State) {
 	if id == 0 {
 		id = state.hosts[0].ID
 	}
-	pointer(state, ui.PointerEvent{Kind: ui.PointerDown, Button: ui.PointerButtonPrimary, ClickCount: 2, Target: hitHostList.At(int(id))})
+	pointer(state, gfx.PointerEvent{Kind: gfx.PointerDown, Button: gfx.PointerButtonPrimary, ClickCount: 2, Target: hitHostList.At(int(id))})
 }
 
 func connect(t testing.TB, state *State, world *world) *fakeConn {
@@ -398,9 +398,9 @@ func connect(t testing.TB, state *State, world *world) *fakeConn {
 	return world.conns[len(world.conns)-1]
 }
 
-func paintedTexts(state *State) (*ui.Canvas, []string) {
-	var canvas ui.Canvas
-	state.Paint(&canvas, ui.Size{Width: 1400, Height: 900})
+func paintedTexts(state *State) (*gfx.Canvas, []string) {
+	var canvas gfx.Canvas
+	state.Paint(&canvas, gfx.Size{Width: 1400, Height: 900})
 	var texts []string
 	for _, text := range canvas.Texts() {
 		texts = append(texts, text.Value)
@@ -470,10 +470,49 @@ func TestABannerGuessNeverReplacesTheSystemTheHostNamed(t *testing.T) {
 	}
 }
 
+// A server that ends the connection on the client's own probes is remembered as
+// an interactive-only host, so the retry it promises can connect.
+func TestAProbeRefusalKeepsTheHostToItsInteractiveSession(t *testing.T) {
+	world, options := newWorld(t)
+	now := 10 * time.Second
+	options.Now = func() time.Duration { return now }
+	state := newTestState(t, options)
+	state.connectionReconnect = reconnectThree
+	connection := connect(t, state, world)
+	connection.set(func(status *sshconn.Status) { status.Phase = sshconn.PhaseConnected })
+	state.Wake()
+	if world.configs[0].InteractiveOnly {
+		t.Fatal("a host was confined to its interactive session before a server refused a probe")
+	}
+	connection.set(func(status *sshconn.Status) {
+		status.Phase = sshconn.PhaseClosed
+		status.Err = fmt.Errorf("%w: ssh: disconnect, reason 11", sshconn.ErrDisconnected)
+		status.ProbeRefused = true
+	})
+	state.Wake()
+	if !state.hosts[0].InteractiveOnly {
+		t.Fatal("the saved host was not confined to its interactive session")
+	}
+	if !state.sessions[0].host.InteractiveOnly {
+		t.Fatal("the retry would still send probes: the session's host was not updated")
+	}
+	if screen := state.sessions[0].term.screen.Text(); !strings.Contains(screen, state.messages.ConnProbeRefused) {
+		t.Fatalf("the user was not told why the host was confined: %q", screen)
+	}
+	now += time.Second
+	state.Wake()
+	if len(world.conns) != 2 {
+		t.Fatalf("the retry dialed %d connections, want 2", len(world.conns))
+	}
+	if !world.configs[1].InteractiveOnly {
+		t.Fatal("the retry was not dialed as an interactive session")
+	}
+}
+
 func TestHostKeyDialogAnswersTrustOnceRejectAndDismiss(t *testing.T) {
 	for _, test := range []struct {
 		name    string
-		hit     ui.ID
+		hit     gfx.ID
 		trusted []bool
 		reject  int
 	}{
@@ -548,20 +587,20 @@ func TestPasswordDialogMasksSubmitsOnEnterAndAsksAgainAfterARefusal(t *testing.T
 	if contains(texts, "hunter2") {
 		t.Fatalf("the password was painted: %v", texts)
 	}
-	var field ui.Hit
+	var field gfx.Hit
 	for _, hit := range canvas.Hits() {
 		if hit.ID == hitPasswordField {
 			field = hit
 		}
 	}
-	if !field.Secure || field.Value != "" || field.Role != ui.RoleTextField {
+	if !field.Secure || field.Value != "" || field.Role != gfx.RoleTextField {
 		t.Fatalf("password hit = %+v, want a secure field carrying no value", field)
 	}
 	if canvas.InitialFocus() != hitPasswordField {
 		t.Fatal("the password field does not take focus when the dialog opens")
 	}
 
-	if result := state.Key(ui.KeyEvent{Key: ui.KeyEnter, Target: hitPasswordField}); !result.Handled {
+	if result := state.Key(gfx.KeyEvent{Key: gfx.KeyEnter, Target: hitPasswordField}); !result.Handled {
 		t.Fatal("Enter in the password field was not handled")
 	}
 	if len(fake.passwords) != 1 || fake.passwords[0] != "hunter2" {
@@ -596,7 +635,7 @@ func TestThePasswordDialogHintAndErrorLinesDoNotOverlap(t *testing.T) {
 	if !contains(texts, state.messages.PasswordRetry) || !contains(texts, state.messages.PasswordHintUnsaved) {
 		t.Fatalf("the dialog does not show both lines: %v", texts)
 	}
-	var hint, problem ui.Rect
+	var hint, problem gfx.Rect
 	for _, text := range canvas.Texts() {
 		switch text.Value {
 		case state.messages.PasswordHintUnsaved:
@@ -621,10 +660,10 @@ func TestEnterOutsideThePasswordFieldDoesNotSubmit(t *testing.T) {
 	fake := connect(t, state, world)
 	fake.set(func(s *sshconn.Status) { s.Phase = sshconn.PhasePasswordPrompt; s.Attempt = 1 })
 	state.Wake()
-	if result := state.Key(ui.KeyEvent{Key: ui.KeyEnter, Target: hitPasswordCancel}); result.Handled {
+	if result := state.Key(gfx.KeyEvent{Key: gfx.KeyEnter, Target: hitPasswordCancel}); result.Handled {
 		t.Fatal("Enter on a button was taken as a password submit")
 	}
-	if result := state.Key(ui.KeyEvent{Key: ui.KeyEnter, Target: hitPasswordField, Repeat: true}); result.Handled {
+	if result := state.Key(gfx.KeyEvent{Key: gfx.KeyEnter, Target: hitPasswordField, Repeat: true}); result.Handled {
 		t.Fatal("a held Enter submitted the password")
 	}
 	if len(fake.passwords) != 0 {
@@ -633,7 +672,7 @@ func TestEnterOutsideThePasswordFieldDoesNotSubmit(t *testing.T) {
 }
 
 func TestDismissingThePasswordDialogCancelsTheConnection(t *testing.T) {
-	for _, hit := range []ui.ID{hitPasswordCancel, hitPasswordClose, hitPasswordDismiss} {
+	for _, hit := range []gfx.ID{hitPasswordCancel, hitPasswordClose, hitPasswordDismiss} {
 		world, options := newWorld(t)
 		state := newTestState(t, options)
 		fake := connect(t, state, world)
@@ -842,8 +881,8 @@ func TestWakeAndConnectingPaintDoNotAllocateWhenNothingChanged(t *testing.T) {
 	state := newTestState(t, options)
 	connect(t, state, world)
 	state.Wake()
-	var canvas ui.Canvas
-	size := ui.Size{Width: 1400, Height: 900}
+	var canvas gfx.Canvas
+	size := gfx.Size{Width: 1400, Height: 900}
 	state.Paint(&canvas, size)
 
 	if allocations := testing.AllocsPerRun(100, state.Wake); allocations != 0 {
@@ -923,9 +962,9 @@ func TestOneKeyboardInteractiveRoundShowsAFieldPerQuestion(t *testing.T) {
 			t.Fatalf("the dialog does not ask %q: %v", want, texts)
 		}
 	}
-	var canvas ui.Canvas
-	state.Paint(&canvas, ui.Size{Width: 1400, Height: 900})
-	secure := map[ui.ID]bool{}
+	var canvas gfx.Canvas
+	state.Paint(&canvas, gfx.Size{Width: 1400, Height: 900})
+	secure := map[gfx.ID]bool{}
 	for _, hit := range canvas.Hits() {
 		if index, ok := hit.ID.In(hitPasswordFields); ok {
 			secure[hit.ID] = hit.Secure
@@ -940,7 +979,7 @@ func TestOneKeyboardInteractiveRoundShowsAFieldPerQuestion(t *testing.T) {
 
 	// The password is the only answer the save box may keep.
 	state.secrets.save = true
-	if result := state.Key(ui.KeyEvent{Key: ui.KeyEnter, Target: hitPasswordFields.At(3)}); !result.Handled {
+	if result := state.Key(gfx.KeyEvent{Key: gfx.KeyEnter, Target: hitPasswordFields.At(3)}); !result.Handled {
 		t.Fatal("Enter in a question field was not handled")
 	}
 	if len(fake.answers) != 1 || len(fake.answers[0]) != 3 ||

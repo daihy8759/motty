@@ -4,15 +4,15 @@ import (
 	"math"
 	"testing"
 
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/keymap"
-	"github.com/vivaui/viva/ui"
 	"motty/internal/ai/store"
 	layoutcore "motty/internal/workspace"
 )
 
 // paintedTabNumber is the text a paint put in a tab's number slot, between its
 // badge and its name.
-func paintedTabNumber(canvas *ui.Canvas, tab barTab) string {
+func paintedTabNumber(canvas *gfx.Canvas, tab barTab) string {
 	badge, title := tab.badge.Rect(), tab.title.Rect()
 	for _, text := range canvas.Texts() {
 		bounds := text.Bounds
@@ -26,8 +26,8 @@ func paintedTabNumber(canvas *ui.Canvas, tab barTab) string {
 
 // paintedAt is paintedTexts at a height that shows a whole settings page.
 func paintedAt(state *State, width, height float32) []string {
-	var canvas ui.Canvas
-	state.Paint(&canvas, ui.Size{Width: width, Height: height})
+	var canvas gfx.Canvas
+	state.Paint(&canvas, gfx.Size{Width: width, Height: height})
 	var texts []string
 	for _, text := range canvas.Texts() {
 		texts = append(texts, text.Value)
@@ -74,8 +74,8 @@ func TestVerticalTabsCarryTheirNumbers(t *testing.T) {
 func TestGroupedTabsKeepTheNumberOfTheirPlace(t *testing.T) {
 	state := restoredGroupedTabs(t, groupingEntries()...)
 	state.setTabNumbers(true)
-	var canvas ui.Canvas
-	state.Paint(&canvas, ui.Size{Width: 1200, Height: 900})
+	var canvas gfx.Canvas
+	state.Paint(&canvas, gfx.Size{Width: 1200, Height: 900})
 	if len(state.verticalTabs.tabs) == 0 {
 		t.Fatal("no grouped tabs were painted")
 	}
@@ -94,7 +94,7 @@ func TestGroupedTabsKeepTheNumberOfTheirPlace(t *testing.T) {
 	first := state.verticalTabs.grouped.groups[0]
 	state.setVerticalTabGroupCollapsed(first.key, true)
 	canvas.Reset()
-	state.Paint(&canvas, ui.Size{Width: 1200, Height: 900})
+	state.Paint(&canvas, gfx.Size{Width: 1200, Height: 900})
 	order := state.verticalTabs.grouped.order
 	if len(state.verticalTabs.tabs) == 0 || state.verticalTabs.tabs[0].number != tabNumber(first.count+1) {
 		t.Fatalf("after collapsing %d tabs the first visible row shows %q", first.count, state.verticalTabs.tabs[0].number)
@@ -109,45 +109,38 @@ func TestGroupedTabsKeepTheNumberOfTheirPlace(t *testing.T) {
 	}
 }
 
-func TestNumberKeysDoNothingWhileTheNumbersAreHidden(t *testing.T) {
+func TestNumberKeysSwitchTabsWhileTheNumbersAreHidden(t *testing.T) {
 	state, _ := threeTabs(t)
 	state.Click(hitHosts)
-	before := tabIndex(state)
-	press := func(digit string) ui.EventResult {
-		return state.Shortcut(ui.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: keymap.Primary, Text: digit})
+	if state.tabNumbers {
+		t.Fatal("tab numbers must default to off")
 	}
-	if result := press("1"); result.Handled {
-		t.Fatal("a hidden number still took its key from the terminal")
+	press := func(digit string) gfx.EventResult {
+		return state.Shortcut(gfx.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: keymap.Primary, Text: digit})
 	}
-	if got := tabIndex(state); got != before {
-		t.Fatalf("a hidden number moved to tab %d, from %d", got, before)
+	if result := press("2"); !result.Handled || tabIndex(state) != 1 {
+		t.Fatalf("a hidden number did not reach the second tab: handled=%v tab=%d", result.Handled, tabIndex(state))
 	}
 
 	state.setTabNumbers(true)
-	if result := press("1"); !result.Handled {
-		t.Fatal("the number key did not move to its tab")
-	}
-	if got := tabIndex(state); got != 0 {
-		t.Fatalf("the first digit went to tab %d", got)
-	}
-	if result := press("2"); !result.Handled || tabIndex(state) != 1 {
-		t.Fatalf("the second digit did not reach the second tab: %+v", result)
+	if result := press("1"); !result.Handled || tabIndex(state) != 0 {
+		t.Fatalf("the first digit did not reach its tab while the numbers are shown: handled=%v tab=%d", result.Handled, tabIndex(state))
 	}
 
 	state.setTabNumbers(false)
-	if result := press("1"); result.Handled || tabIndex(state) != 1 {
-		t.Fatalf("hiding the numbers again left the key bound: handled=%v tab=%d", result.Handled, tabIndex(state))
+	if result := press("2"); !result.Handled || tabIndex(state) != 1 {
+		t.Fatalf("hiding the numbers again left the keys inert: handled=%v tab=%d", result.Handled, tabIndex(state))
 	}
 }
 
-func TestTheNumbersSettingOwnsTheNumberKeys(t *testing.T) {
+func TestTheNumberKeysRowIsAlwaysInSettings(t *testing.T) {
 	state, _ := threeTabs(t)
 	state.Click(hitSettings)
 	if state.tabNumbers {
 		t.Fatal("tab numbers must default to off")
 	}
-	if contains(paintedAt(state, 1400, 3400), state.messages.SettingsTabNumberKeys) {
-		t.Fatal("the key row is drawn while the numbers are hidden")
+	if !contains(paintedAt(state, 1400, 3400), state.messages.SettingsTabNumberKeys) {
+		t.Fatal("the number keys row is missing while the numbers are hidden")
 	}
 
 	state.Click(hitSettingsTabNumbers)
@@ -159,7 +152,7 @@ func TestTheNumbersSettingOwnsTheNumberKeys(t *testing.T) {
 	}
 
 	state.Click(hitSettingsTabNumbersAlt)
-	want := keymap.Chord{Modifiers: ui.ModifierAlt, Char: '1'}
+	want := keymap.Chord{Modifiers: gfx.ModifierAlt, Char: '1'}
 	if got := state.shortcuts.chords.Chord(shortcutTabNumber); got != want {
 		t.Fatalf("choosing Alt bound %+v, want %+v", got, want)
 	}
@@ -176,45 +169,43 @@ func TestTheNumbersSettingOwnsTheNumberKeys(t *testing.T) {
 
 func TestTheNumberKeysSettingTakesTheKeyboard(t *testing.T) {
 	state, _ := threeTabs(t)
-	state.setTabNumbers(true)
 	state.Click(hitSettings)
-	var canvas ui.Canvas
-	state.Paint(&canvas, ui.Size{Width: 1400, Height: 3400})
-	for _, id := range []ui.ID{hitSettingsTabNumbersPrimary, hitSettingsTabNumbersAlt, hitSettingsTabNumbersShift} {
+	var canvas gfx.Canvas
+	state.Paint(&canvas, gfx.Size{Width: 1400, Height: 3400})
+	for _, id := range []gfx.ID{hitSettingsTabNumbersPrimary, hitSettingsTabNumbersAlt, hitSettingsTabNumbersShift} {
 		if _, ok := hitByID(&canvas, id); !ok {
 			t.Fatalf("the number keys row is missing option %v", id)
 		}
 	}
-	result := state.Key(ui.KeyEvent{Target: hitSettingsTabNumbersPrimary, Key: ui.KeyRight})
+	result := state.Key(gfx.KeyEvent{Target: hitSettingsTabNumbersPrimary, Key: gfx.KeyRight})
 	if !result.Handled || result.Focus != hitSettingsTabNumbersAlt {
 		t.Fatalf("keyboard choice: %+v", result)
 	}
-	if got := state.shortcuts.chords.Chord(shortcutTabNumber).Modifiers; got != ui.ModifierAlt {
+	if got := state.shortcuts.chords.Chord(shortcutTabNumber).Modifiers; got != gfx.ModifierAlt {
 		t.Fatalf("the keyboard chose %v, want Alt", got)
 	}
 }
 
 func TestTheNumberKeysAreAbleToFireInATerminal(t *testing.T) {
 	state, _ := threeTabs(t)
-	state.setTabNumbers(true)
 	state.Click(hitSettings)
 	// Shift alone cannot be told apart from typing its symbol, so the third
 	// choice is the platform's primary key with Shift.
 	state.Click(hitSettingsTabNumbersShift)
-	want := keymap.Chord{Modifiers: keymap.Primary | ui.ModifierShift, Char: '1'}
+	want := keymap.Chord{Modifiers: keymap.Primary | gfx.ModifierShift, Char: '1'}
 	if got := state.shortcuts.chords.Chord(shortcutTabNumber); got != want {
 		t.Fatalf("the third choice bound %+v, want %+v", got, want)
 	}
-	result := state.Shortcut(ui.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: want.Modifiers, Text: "2"})
+	result := state.Shortcut(gfx.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: want.Modifiers, Text: "2"})
 	if !result.Handled || tabIndex(state) != 1 {
 		t.Fatalf("the third choice did not reach the second tab: %+v", result)
 	}
 }
 
-// A hidden number has to reach the terminal behind the CLI login dialog too:
-// the dialog swallows every action it recognises, so it must recognise none of
-// the numbers while the setting is off.
-func TestHiddenNumberKeysStayWithTheTerminalDuringCLILogin(t *testing.T) {
+// The CLI login dialog swallows every action it recognises, and the number row
+// is one of them with the numbers hidden or shown, so the login terminal never
+// sees the digits as input.
+func TestTheCLILoginDialogTakesTheNumberKeys(t *testing.T) {
 	w := newSettingsWorld(t, newLister())
 	state := w.state
 	auth := &fakeShell{done: make(chan struct{})}
@@ -222,17 +213,13 @@ func TestHiddenNumberKeysStayWithTheTerminalDuringCLILogin(t *testing.T) {
 	local.shell = auth
 	state.ai.login = &aiCLILogin{provider: store.Provider{ID: "auth"}, term: local, cancel: func() {}}
 	state.ai.cfg.dialog = aiDialogCLILogin
-	digit := func(text string) ui.EventResult {
-		return state.Shortcut(ui.KeyEvent{Target: hitAICLILoginTerminal, Modifiers: keymap.Primary, Text: text})
+	digit := func(text string) gfx.EventResult {
+		return state.Shortcut(gfx.KeyEvent{Target: hitAICLILoginTerminal, Modifiers: keymap.Primary, Text: text})
 	}
 	if state.tabNumbers {
 		t.Fatal("tab numbers must default to off")
 	}
-	if result := digit("1"); result.Handled {
-		t.Fatal("the login dialog took a number key while the numbers are hidden")
-	}
-	state.setTabNumbers(true)
 	if result := digit("1"); !result.Handled {
-		t.Fatal("the login dialog left the number key with the terminal while the numbers are shown")
+		t.Fatal("the login dialog left a number key with the terminal while the numbers are hidden")
 	}
 }

@@ -235,9 +235,9 @@ var TraditionalMessages = Messages{
 	SettingsTabsHorizontal:                 "水平",
 	SettingsTabsVertical:                   "垂直",
 	SettingsTabNumbers:                     "顯示分頁編號",
-	SettingsTabNumbersDescription:          "依序為分頁編號，編號鍵就能指向要開啟的分頁。",
+	SettingsTabNumbersDescription:          "在分頁上顯示它在分頁列中的序號。",
 	SettingsTabNumberKeys:                  "編號快速鍵",
-	SettingsTabNumberKeysDescription:       "按住後再按 1–9 開啟對應編號的分頁；隱藏編號時這些按鍵交回終端機。",
+	SettingsTabNumberKeysDescription:       "按住後再按 1–9 開啟對應序號的分頁，無需先顯示編號。",
 	SettingsTabsAutoHide:                   "自動收起垂直分頁",
 	SettingsTabsAutoHideDescription:        "終端機頁中，滑鼠懸停時展開側邊欄，不改變終端機大小。",
 	SettingsTabsGrouping:                   "支援垂直聚合",
@@ -637,6 +637,7 @@ var TraditionalMessages = Messages{
 	ConnFailedFmt:                  "連線失敗：%s",
 	ConnAuthFailed:                 "認證失敗，伺服器拒絕了認證資訊。",
 	ConnSkippedKeyFmt:              "本次連線已跳過 %s。",
+	ConnProbeRefused:               "伺服器拒絕了背景探測命令，已將該主機設為僅互動工作階段模式。",
 	ConnChangedTitle:               "警告：主機金鑰已變更",
 	ConnChangedBodyFmt:             "%s 出示的金鑰與您信任過的不同，這可能意味著遭到攻擊。未傳送任何內容。",
 	ConnChangedTrustedFmt:          "已信任：%s",
@@ -2431,6 +2432,7 @@ var traditionalTools = ToolsMessages{
 	X11HintWindows:                  "請安裝並啟動 VcXsrv 或 X410 等 X 服務端，然後新開一個分頁",
 	X11HintOther:                    "請確認 X 服務端(Xorg 或 Xwayland)正在執行且 DISPLAY 正確，然後新開一個分頁",
 	AgentForward:                    "轉發 ssh-agent",
+	InteractiveOnly:                 "僅互動工作階段(不傳送背景探測命令)",
 	AgentAccess:                     "允許 MCP 代理使用此主機",
 	AgentAccessNote:                 "讓 Claude Code 等 AI 代理在 Motty 未開啟時使用這台主機。需先在 Motty 裡連線過一次，以信任它的主機金鑰；代理用金鑰或已儲存的密碼登入。",
 	AdvancedSession:                 "工作階段",
@@ -2821,6 +2823,7 @@ var traditionalMonitor = MonitorMessages{
 	NoDisks: "沒有可用的磁碟資訊", WaitingDetails: "正在讀取主機資訊…", DetailsUnavailable: "部分主機資訊暫不可用，稍後自動重試",
 	Pause: "暫停監控", Resume: "繼續監控", Paused: "已暫停", Updated: "自動重新整理 · 剛剛更新", Interval: "重新整理間隔", IntervalFmt: "%d 秒", Retry: "重試", NotConnected: "連線到伺服器後可檢視監控。",
 	Collapse: "收起",
+	Logins:   "登入工作階段 (who)", NoLogins: "系統未回報登入工作階段", LoginsUnavailable: "無法讀取登入工作階段", LoginsTruncated: "僅顯示前 32 個工作階段",
 }
 
 var traditionalSessionLogs = SessionLogsMessages{

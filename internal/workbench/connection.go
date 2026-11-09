@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/vivaui/viva/ui"
+	"github.com/vivaui/viva/gfx"
 	"motty/internal/diag"
 	"net"
 	"os"
@@ -172,7 +172,7 @@ func openRemoteFiles(conn Connection, mode transferMode) (sftpclient.Remote, err
 // DragPreview is a picture that follows a drag outside every window.
 type DragPreview interface {
 	// MoveTo puts the picture's top-left at origin, in screen coordinates.
-	MoveTo(origin ui.Point)
+	MoveTo(origin gfx.Point)
 	Close()
 }
 
@@ -196,7 +196,7 @@ type Options struct {
 	// application lifecycle. Nil means the host did not enable multi-window.
 	NewWindow func() error
 	// OpenContentWindow is Viva's reusable native content-window factory.
-	OpenContentWindow func(app.Config, *ui.Canvas) (*app.ContentWindow, error)
+	OpenContentWindow func(app.Config, *gfx.Canvas) (*app.ContentWindow, error)
 	// CloseWindow closes this window the way its close button does. Command+W
 	// calls it on a page that has no tab to close. Nil leaves that key unbound.
 	CloseWindow func()
@@ -251,12 +251,12 @@ type Options struct {
 	// coordinates) and calls adopt with its state before it first paints; it is
 	// what dropping a tab outside every window does. Nil means a tab cannot be
 	// torn off.
-	TearOff func(origin ui.Point, adopt func(*State)) error
+	TearOff func(origin gfx.Point, adopt func(*State)) error
 	// OpenDragPreview shows a picture of size at origin (screen coordinates),
 	// drawn by paint, above every window; it is what follows a tab dragged out
 	// of every window, where no window can draw it. An error, or nil, means the
 	// platform cannot, and the window shows what it can at its own edge.
-	OpenDragPreview func(size ui.Size, origin ui.Point, paint func(canvas *ui.Canvas, size ui.Size)) (DragPreview, error)
+	OpenDragPreview func(size gfx.Size, origin gfx.Point, paint func(canvas *gfx.Canvas, size gfx.Size)) (DragPreview, error)
 	// Blank starts the window empty: no tabs are restored into it.
 	Blank bool
 	// WindowID is which window of this run it is: the first is 1, and each window
@@ -287,7 +287,7 @@ type Options struct {
 	// FileIcon returns the system's icon for a local file or folder at the given
 	// pixel size, as the file panel shows an application bundle with its own icon.
 	// Nil uses app.FileIcon.
-	FileIcon func(path string, pixels int) (ui.Bitmap, error)
+	FileIcon func(path string, pixels int) (gfx.Bitmap, error)
 	// EditPollInterval is how often a file open in the system's editor is looked
 	// at for a save. Zero means a second.
 	EditPollInterval time.Duration
@@ -861,6 +861,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 		session.method = status.Method
 	}
 	state.adoptSystem(session, status)
+	state.adoptProbeRefusal(session, status)
 	switch {
 	case status.EndpointRole == sshconn.EndpointProxyJump && status.Phase != sshconn.PhaseConnected:
 		session.stage = stageConnect
@@ -1015,6 +1016,35 @@ func shouldAdoptSystem(known, reported sshconn.RemoteSystem, provisional bool) b
 	return !provisional || known == sshconn.SystemUnknown
 }
 
+// adoptProbeRefusal keeps a host whose server ended the connection on the
+// client's own probes to the interactive session, the only kind it permits. The
+// retry that follows, automatic or by Enter, then opens a shell instead of
+// asking the server the same question again.
+func (state *State) adoptProbeRefusal(session *Session, status sshconn.Status) {
+	if !status.ProbeRefused || !session.host.isSSH() || session.host.InteractiveOnly {
+		return
+	}
+	state.setHostInteractiveOnly(session)
+}
+
+func (state *State) setHostInteractiveOnly(session *Session) {
+	session.host.InteractiveOnly = true
+	if session.HostID != 0 {
+		for index := range state.hosts {
+			if state.hosts[index].ID == session.HostID {
+				state.hosts[index].InteractiveOnly = true
+				break
+			}
+		}
+		for index := range state.sessions {
+			if state.sessions[index].HostID == session.HostID {
+				state.sessions[index].host.InteractiveOnly = true
+			}
+		}
+	}
+	state.save()
+}
+
 func (state *State) setSessionSystem(session *Session, system sshconn.RemoteSystem) {
 	session.host.System = system
 	if session.HostID != 0 {
@@ -1095,6 +1125,9 @@ func (state *State) tellFailure(session *Session, status sshconn.Status) {
 		t.say(sgrFail, m.ConnAuthFailed)
 	default:
 		t.say(sgrFail, fmt.Sprintf(m.ConnFailedFmt, status.Err))
+	}
+	if status.ProbeRefused {
+		t.say(sgrWarn, m.ConnProbeRefused)
 	}
 	if session.reconnectPending {
 		t.say(sgrMuted, fmt.Sprintf(m.ConnReconnectWaitingFmt, session.reconnectAttempt, clockText(int64(reconnectDelay(session.reconnectAttempt)/time.Second))))
@@ -1310,7 +1343,7 @@ func (state *State) answered(session *Session) {
 
 // clickHostKey handles the host-key dialog. Dismissing it rejects the key:
 // silence must never mean trust.
-func (state *State) clickHostKey(id ui.ID) {
+func (state *State) clickHostKey(id gfx.ID) {
 	session := state.promptSession()
 	if session == nil || session.conn == nil {
 		state.closeModal()
@@ -1336,7 +1369,7 @@ func (state *State) clickHostKey(id ui.ID) {
 
 // clickPassword handles the password dialog. Dismissing it cancels the
 // connection.
-func (state *State) clickPassword(id ui.ID) {
+func (state *State) clickPassword(id gfx.ID) {
 	switch id {
 	case hitPasswordSave:
 		state.secrets.save = !state.secrets.save
@@ -1353,7 +1386,7 @@ func (state *State) clickPassword(id ui.ID) {
 	}
 }
 
-func (state *State) clickKeyPassphrase(id ui.ID) {
+func (state *State) clickKeyPassphrase(id gfx.ID) {
 	switch id {
 	case hitKeyPassphraseSave:
 		state.secrets.save = !state.secrets.save

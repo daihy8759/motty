@@ -4,8 +4,8 @@ import (
 	"strconv"
 
 	"github.com/vivaui/viva/components"
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/keymap"
-	"github.com/vivaui/viva/ui"
 )
 
 var (
@@ -30,7 +30,7 @@ const (
 // symbol away from the terminal.
 func (state *State) tabNumberOptions() [3]components.SegmentOption {
 	primary, shifted := "Ctrl", "Ctrl+Shift"
-	if keymap.Primary == ui.ModifierMeta {
+	if keymap.Primary == gfx.ModifierMeta {
 		primary, shifted = "Cmd", "Cmd+Shift"
 	}
 	return [...]components.SegmentOption{
@@ -41,15 +41,15 @@ func (state *State) tabNumberOptions() [3]components.SegmentOption {
 }
 
 // tabNumberModifiers is the modifier set of one of those options.
-func tabNumberModifiers(id ui.ID) (ui.Modifiers, bool) {
+func tabNumberModifiers(id gfx.ID) (gfx.Modifiers, bool) {
 	primary := keymap.Primary
 	switch id {
 	case hitSettingsTabNumbersPrimary:
 		return primary, true
 	case hitSettingsTabNumbersAlt:
-		return ui.ModifierAlt, true
+		return gfx.ModifierAlt, true
 	case hitSettingsTabNumbersShift:
-		return primary | ui.ModifierShift, true
+		return primary | gfx.ModifierShift, true
 	}
 	return 0, false
 }
@@ -57,19 +57,19 @@ func tabNumberModifiers(id ui.ID) (ui.Modifiers, bool) {
 // tabNumberModifierID is the option the number family is bound to. A chord the
 // user bound to some other combination on the shortcuts page has none: the
 // settings row then shows no choice until one is pressed.
-func (state *State) tabNumberModifierID() ui.ID {
+func (state *State) tabNumberModifierID() gfx.ID {
 	chord := state.shortcuts.chords.Chord(shortcutTabNumber)
 	for _, option := range state.tabNumberOptions() {
 		if modifiers, _ := tabNumberModifiers(option.ID); modifiers == chord.Modifiers {
 			return option.ID
 		}
 	}
-	return ui.ID{}
+	return gfx.ID{}
 }
 
 // setTabNumberModifier rebinds the whole digit row to one of the options. A
 // chord another action owns leaves the row as it was.
-func (state *State) setTabNumberModifier(id ui.ID) bool {
+func (state *State) setTabNumberModifier(id gfx.ID) bool {
 	modifiers, ok := tabNumberModifiers(id)
 	if !ok {
 		return false
@@ -84,8 +84,9 @@ func (state *State) setTabNumberModifier(id ui.ID) bool {
 	return true
 }
 
-// setTabNumbers shows or hides the number each tab carries, and with it the
-// number shortcuts: a key with no number on screen has nothing to name.
+// setTabNumbers shows or hides the number each tab carries. The number
+// shortcuts stay bound either way: a tab holds its place in the bar with or
+// without the badge naming it.
 func (state *State) setTabNumbers(shown bool) bool {
 	if state.tabNumbers == shown {
 		return false
@@ -108,18 +109,7 @@ func tabNumber(number int) string {
 
 // tabNumberColor is the tab's text color with less ink: the number names the
 // name, it does not compete with it.
-func tabNumberColor(foreground ui.Color) ui.Color {
+func tabNumberColor(foreground gfx.Color) gfx.Color {
 	foreground.Alpha *= .6
 	return foreground
-}
-
-// shortcutActionFor is actionFor with the settings that switch an action off.
-// The number row is the one action a setting can silence: with the numbers
-// hidden, its keys belong to the terminal again.
-func (state *State) shortcutActionFor(chord keymap.Chord) shortcutAction {
-	action := state.shortcuts.actionFor(chord)
-	if action == shortcutTabNumber && !state.tabNumbers {
-		return shortcutNone
-	}
-	return action
 }

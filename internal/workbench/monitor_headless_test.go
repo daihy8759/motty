@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/vivaui/viva/app"
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/headless"
-	"github.com/vivaui/viva/ui"
 	"motty/internal/remotestats"
 )
 
@@ -149,7 +149,7 @@ func TestMonitorNativePanelAtDifferentScales(t *testing.T) {
 			if p.interval != 1 {
 				t.Fatal("drawer refresh menu did not apply")
 			}
-			if err = view.Scroll(ui.ScrollEvent{X: b.X + 100, Y: b.Y + 250, DeltaY: 10000}); err != nil {
+			if err = view.Scroll(gfx.ScrollEvent{X: b.X + 100, Y: b.Y + 250, DeltaY: 10000}); err != nil {
 				t.Fatal(err)
 			}
 			if !view.HasText(state.messages.Monitor.NoHardware) || p.scroll <= 0 {
@@ -161,6 +161,40 @@ func TestMonitorNativePanelAtDifferentScales(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMonitorLoginSessionsScrollAndCollapse(t *testing.T) {
+	state, session := monitorFixture(t)
+	panel := &session.stats.panel
+	panel.data.LoginsAvailable = true
+	panel.data.Logins = []remotestats.Login{
+		{User: "alice", Terminal: "pts/0", Since: "2026-11-09 10:40 (10.0.0.22)"},
+		{User: "bob", Terminal: "pts/1", Since: "2026-11-09 11:20 (10.0.0.23)"},
+	}
+	state.setAppearance(appearanceDark)
+	view, err := headless.Open(app.Config{Title: "Monitor", Width: 1280, Height: 900, Tree: Tree(), Paint: state.Paint, OnPointer: state.Pointer, OnKey: state.Key, OnScroll: state.Scroll, OnResize: state.Resize}, nil, headless.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer view.Close()
+	if err = view.Scroll(gfx.ScrollEvent{X: state.monitorRect.X + 50, Y: state.monitorRect.Y + 400, DeltaY: 10000}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := view.Hit(state.messages.Monitor.Logins); !ok {
+		t.Fatal("login sessions section is not reachable when scrolling")
+	}
+	if dir := os.Getenv("MOTTY_MONITOR_SCREENSHOTS"); dir != "" {
+		if err = view.Screenshot(filepath.Join(dir, "monitor-login-sessions.png")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	openHeight := panel.contentHeight
+	if err = view.ClickLabel(state.messages.Monitor.Logins); err != nil {
+		t.Fatal(err)
+	}
+	if !panel.loginsClosed || panel.contentHeight >= openHeight {
+		t.Fatal("collapsing login sessions did not reduce scroll content")
 	}
 }
 
@@ -213,7 +247,7 @@ func TestMonitorSpecialServerNativeStates(t *testing.T) {
 				if !p.coresMore {
 					t.Fatal("high-core-count view did not expand")
 				}
-				if err = view.Scroll(ui.ScrollEvent{X: state.monitorRect.X + 30, Y: state.monitorRect.Y + 400, DeltaY: 10000}); err != nil {
+				if err = view.Scroll(gfx.ScrollEvent{X: state.monitorRect.X + 30, Y: state.monitorRect.Y + 400, DeltaY: 10000}); err != nil {
 					t.Fatal(err)
 				}
 				if p.scroll <= 0 {

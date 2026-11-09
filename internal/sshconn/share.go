@@ -39,7 +39,7 @@ func (conn *Conn) Share(notify func()) (*Conn, error) {
 	status.Attempt, status.Questions, status.IdentityPath, status.Skipped, status.Err = 0, nil, "", nil, nil
 	child := &Conn{
 		config: config, ctx: ctx, cancel: cancel, done: make(chan struct{}),
-		status: status, client: owner.client, owner: owner,
+		status: status, client: owner.client, owner: owner, probes: owner.probes,
 	}
 	owner.shares = append(owner.shares, child)
 	return child, nil
@@ -109,6 +109,7 @@ func (conn *Conn) endShare(err error) {
 	conn.status.Version++
 	conn.status.Phase = PhaseClosed
 	conn.status.Err = err
+	conn.status.ProbeRefused = err != nil && conn.probeState().refused()
 	conn.mu.Unlock()
 	conn.cancel()
 	conn.notify()
