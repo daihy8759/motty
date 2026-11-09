@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"bytes"
 	"encoding/json"
 	layoutcore "motty/internal/workspace"
 	"os"
@@ -44,6 +45,107 @@ func TestWorkspaceTemplatesRoundTripInStableOrder(t *testing.T) {
 	}
 	if len(ids) != 2 || !slices.Contains(ids, production.ID) || !slices.Contains(ids, database.ID) {
 		t.Fatalf("records = %v", ids)
+	}
+}
+
+func TestLegacyWorkspaceTemplateRecordProjection(t *testing.T) {
+	const id = "ws_0123456789abcdef0123456789abcdef"
+	legacy := []byte(`{"o":1,"d":{"id":"` + id + `","name":"Legacy","host_ids":["host_a"],"columns":2}}`)
+	projected, err := projectRecord(configstore.Key{Kind: kindWorkspaceTemplate, ID: id}, legacy)
+	if err != nil {
+		t.Fatalf("project legacy template: %v", err)
+	}
+	var payload recordPayload
+	if err := json.Unmarshal(projected, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var template WorkspaceTemplate
+	if err := json.Unmarshal(payload.Data, &template); err != nil {
+		t.Fatal(err)
+	}
+	if template.ID != id || template.Columns != 2 || template.Layout.Kind != 0 {
+		t.Fatalf("legacy projection = %+v", template)
+	}
+}
+
+func TestLegacyWorkspaceTemplateDoesNotBlockSavingOrLaunching(t *testing.T) {
+	for _, incremental := range []bool{false, true} {
+		for _, action := range []string{"create", "edit", "launch"} {
+			name := "full/" + action
+			if incremental {
+				name = "incremental/" + action
+			}
+			t.Run(name, func(t *testing.T) {
+				world, options := newWorld(t)
+				initial := newTestState(t, options)
+				template := mustWorkspaceTemplate(t, "Legacy", workspaceCatalogIDs(initial, 0, 1), 2)
+				raw, err := json.Marshal(map[string]any{
+					"id": template.ID, "name": template.Name, "host_ids": template.HostIDs,
+					"columns": 2, "future_field": true,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := initial.config.Commit(configstore.Change{Put: []configstore.Entry{{
+					Kind: kindWorkspaceTemplate, ID: template.ID, Payload: recordPayloadJSON(t, 1, raw),
+				}}}); err != nil {
+					t.Fatal(err)
+				}
+				state := newTestState(t, options)
+				if len(state.templates) != 1 || !isGrid(state.templates[0].Layout, 2) {
+					t.Fatalf("restored templates = %+v", state.templates)
+				}
+				state.activeSection = sectionWorkspaces
+				state.hasSaved = incremental
+				if incremental {
+					state.lastSaved = state.snapshot()
+				}
+				switch action {
+				case "create":
+					state.openWorkspaceDraft(workspaceDraftFixed)
+					state.workspaceDraft.name.Insert("New template")
+					state.workspaceDraft.selected[template.HostIDs[0]] = true
+					state.submitWorkspaceDraft()
+					if len(state.templates) != 2 || state.workspaceDraft.error != "" {
+						t.Fatalf("create failed: templates=%d error=%q status=%q",
+							len(state.templates), state.workspaceDraft.error, state.status)
+					}
+				case "edit":
+					state.openWorkspaceDraftEdit(template.ID)
+					state.workspaceDraft.name.Insert("Renamed")
+					state.submitWorkspaceDraft()
+					if state.templates[0].Name != "Renamed" || state.workspaceDraft.error != "" {
+						t.Fatalf("edit failed: template=%+v error=%q status=%q",
+							state.templates[0], state.workspaceDraft.error, state.status)
+					}
+				case "launch":
+					state.selectedWorkspaceTemplateID = template.ID
+					state.applySelectedWorkspaceTemplate()
+					if len(world.configs) != 2 || state.activeSection != sectionTerminal {
+						t.Fatalf("launch failed: dials=%d section=%d status=%q",
+							len(world.configs), state.activeSection, state.status)
+					}
+				}
+				restored := newTestState(t, options)
+				if !reflect.DeepEqual(restored.templates, state.templates) {
+					t.Fatalf("saved templates = %+v, want %+v", restored.templates, state.templates)
+				}
+				if action == "launch" && (len(restored.sessions) != 2 ||
+					!restored.workspaceManaged(restored.deck.ActiveWorkspace())) {
+					t.Fatal("launched workspace did not survive a restart")
+				}
+				records, err := state.config.Records()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, record := range records {
+					if record.Kind == kindWorkspaceTemplate && record.ID == template.ID &&
+						!bytes.Contains(record.Payload, []byte(`"future_field":true`)) {
+						t.Fatalf("save lost an unknown template field: %s", record.Payload)
+					}
+				}
+			})
+		}
 	}
 }
 

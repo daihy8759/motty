@@ -38,7 +38,7 @@ type WorkspaceTemplate struct {
 	ID      string                `json:"id"`
 	Name    string                `json:"name"`
 	HostIDs []string              `json:"host_ids"`
-	Layout  layoutcore.LayoutSpec `json:"layout"`
+	Layout  layoutcore.LayoutSpec `json:"layout,omitzero"`
 	// Columns is read from files written before layouts existed, which stored
 	// only a grid width. normalizeWorkspaceTemplate folds it into Layout.
 	Columns uint8 `json:"columns,omitempty"`
