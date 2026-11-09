@@ -157,12 +157,3 @@ func (state *State) moveMergedSecrets(merges []hostMerge) error {
 	}
 	return nil
 }
-
-func (catalog *hostCatalog) hostByCatalogID(id string) (Host, bool) {
-	for _, host := range catalog.hosts {
-		if host.CatalogID == id {
-			return host, true
-		}
-	}
-	return Host{}, false
-}

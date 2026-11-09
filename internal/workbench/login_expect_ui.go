@@ -61,7 +61,7 @@ func (state *State) paintLoginExpectSection(canvas *ui.Canvas, bounds ui.Rect) {
 	var icon flex.Box
 	f := state.partLayout.Begin(canvas, state.Theme(), header)
 	f.Row().Fill().PadSides(0, 0, 0, 2).Gap(8).Items(flex.Center).
-		Radius(radius.control).HoverBackground(pal.surfaceSoft).
+		Radius(radius.control).Hover(flex.Look{}.Background(pal.surfaceSoft)).
 		HitWith(hitDialogLoginExpectHeader, m.SectionTitle, ui.HitOptions{Role: ui.RoleButton, Expanded: open}).
 		Children(func() {
 			icon = f.Slot().Size(16, 16)
