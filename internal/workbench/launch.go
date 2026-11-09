@@ -146,6 +146,10 @@ func (state *State) openLaunch(args []string) {
 		return
 	}
 	text, link := launchText(args)
+	if len(args) == 0 && state.relaunchAction == relaunchNewWindow && state.options.NewWindow != nil {
+		state.openNewWindow()
+		return
+	}
 	// A second start of the program brings the window forward even with nothing
 	// to open; without it the user who double-clicks the icon of a program hidden
 	// in the tray sees nothing happen. A start at login (--background) does not.
@@ -406,10 +410,14 @@ func (state *State) checkForUpdates(asked bool) {
 	}
 	check := state.options.CheckUpdate
 	if check == nil {
+		pkg := update.PackageArchive
+		if state.options.Updater != nil {
+			pkg = state.options.Updater.Package()
+		}
 		check = func() (update.Release, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			return update.Check(ctx, nil, runtime.GOOS, updateArch())
+			return update.CheckPackage(ctx, nil, runtime.GOOS, updateArch(), pkg)
 		}
 	}
 	go func() {

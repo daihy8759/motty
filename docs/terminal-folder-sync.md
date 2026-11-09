@@ -26,9 +26,42 @@ press Ctrl+C once to clear that ambiguity, then navigate again. Motty never
 sends an interrupt automatically. A reconnect rotates the session token and
 requires entirely fresh prompt authorization.
 
+## Remembered Directory
+
+The last directory reported by a remote shell's own prompt is saved with the
+tab. A restored tab that reconnects starts its integrated Bash or Zsh there,
+instead of in the account's home directory. The directory is still only a hint:
+if it has since been removed, the shell starts where it normally would. Splits
+made before that reconnect inherit the same remembered directory.
+
+Only trusted prompt reports are remembered. A running program, a nested login,
+or a report that does not belong to this session's integration cannot change
+the next start directory. Native Windows SSH hosts are not POSIX shell targets,
+and disabling both integration directions keeps the ordinary shell startup, so
+neither remembers a remote directory in this way.
+
 Local panes, standalone file windows and container command sessions do not
 control terminals. Refreshing a list or following a terminal report never sends
 another `cd` back. Both preferences use the existing shared-settings storage.
+
+## Local Terminal Folder
+
+Local shells report their folder the same way. **Settings > Terminal > Local
+terminal folder** chooses what that is used for:
+
+Restored local tabs always start when Motty reopens, whatever **Settings >
+Connection > On restore** says: starting a local shell connects to nothing, so
+that setting only governs remote tabs. The choice below is where they start.
+
+- **Last folder** is the default. Reopening Motty starts each restored local tab
+  in the folder it was last in. A new local
+  terminal starts in the folder of the local tab in front, or else in the last
+  folder any local shell reported; that folder outlives the tab and the app.
+- **Home folder** starts every local tab at home: restored local tabs forget
+  their folder.
+
+A split always starts in its pane's folder, whichever is chosen. The choice and
+the last folder stay on this device rather than in synced settings.
 
 ## Startup Compatibility
 
@@ -56,8 +89,10 @@ another `cd` back. Both preferences use the existing shared-settings storage.
   trap that the user's startup files set *after* Motty's replaces it; reverse
   sync then stays off for that shell and the file panel says why. An array
   `PROMPT_COMMAND` (Bash 5.1+) always has `PS0` and never takes this path.
-- To keep ordinary shell startup entirely, disable both directions and
-  reconnect. Re-enabling integration for an already open ordinary shell also
+- To keep ordinary SSH shell startup entirely, disable both directions, set
+  **Settings > Terminal > Tab name** to **Connection name** or **Terminal title**,
+  and reconnect. **Current path** independently enables directory reporting.
+  Re-enabling integration for an already open ordinary shell also
   requires reconnecting. There is no command injection into a live prompt to
   install integration.
 

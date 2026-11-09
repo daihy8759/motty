@@ -123,6 +123,12 @@ func (conn realConn) OpenSFTP() (sftpclient.Remote, error) {
 	return sftpclient.Open(conn.Conn.Client())
 }
 
+func (conn realConn) OpenSudoSFTP(password string) (sftpclient.Remote, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	return sftpclient.OpenSudo(ctx, conn.Conn.Client(), password)
+}
+
 // OpenSCP is the file backend for a server that has no SFTP subsystem.
 func (conn realConn) OpenSCP() (sftpclient.Remote, error) {
 	return sftpclient.OpenSCP(conn.Conn.Client())
@@ -253,6 +259,10 @@ type Options struct {
 	OpenDragPreview func(size ui.Size, origin ui.Point, paint func(canvas *ui.Canvas, size ui.Size)) (DragPreview, error)
 	// Blank starts the window empty: no tabs are restored into it.
 	Blank bool
+	// WindowID is which window of this run it is: the first is 1, and each window
+	// keeps its own tabs, its own place and its own record under that number.
+	// Zero is the first window.
+	WindowID int
 	// RememberWindowFrame saves where this window's content area is, and opens
 	// the next first window there. Only the first window of a process sets it;
 	// a torn-off or secondary window belongs to one session.
@@ -309,6 +319,9 @@ type Options struct {
 	// which a desktop session offers to the remote system. Nil uses
 	// app.ClipboardFiles.
 	ClipboardFiles func() ([]string, error)
+	// SetClipboardFiles puts files on the system clipboard, as a file manager
+	// does after a copy. Nil uses app.SetClipboardFiles.
+	SetClipboardFiles func([]string) error
 	// ClipboardImagePNG reads an image from the system clipboard as PNG bytes.
 	// Nil uses app.ClipboardImagePNG.
 	ClipboardImagePNG func() ([]byte, error)
@@ -427,6 +440,9 @@ func (options Options) withDefaults() Options {
 	if options.ClipboardFiles == nil {
 		options.ClipboardFiles = app.ClipboardFiles
 	}
+	if options.SetClipboardFiles == nil {
+		options.SetClipboardFiles = app.SetClipboardFiles
+	}
 	if options.Notify == nil {
 		options.Notify = app.SendNotification
 	}
@@ -499,6 +515,7 @@ const (
 	modalDashboardAdd
 	modalToolbarSettings
 	modalSFTPColumns
+	modalSudoSFTP
 	modalTerminalInput
 	modalLoginExpectSecret
 	modalLoginExpectStep
@@ -507,6 +524,7 @@ const (
 	modalWorkspaceSave
 	modalWorkspaceTemplateDelete
 	modalLocalProxy
+	modalCredential
 )
 
 // tone colors a session's headline.
@@ -543,9 +561,10 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	session.resetLatency()
 	avoidShare := session.avoidShare || loopbackTunnel(host)
 	session.avoidShare = false
-	state.stopSessionForwards(session.ID, false)
+	state.redialSessionForwards(session.ID)
 	state.closeSFTP(session)
 	state.stopRemoteStats(session)
+	session.sudoCommands, session.sudoPassword = false, ""
 	if session.term != nil && session.term.shell != nil {
 		releaseShell(session.term.shell)
 	}
@@ -562,6 +581,11 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	}
 	session.established = false
 	session.disconnected = false
+	if session.restored && session.isLocal() && state.localStart == localStartHome {
+		// The folder a restored tab was left in is what the home choice
+		// forgets; a tab that ends and starts again in this run keeps its own.
+		session.localDirectory = ""
+	}
 	session.restored = false
 	session.autoRestore, session.restoreNote = false, ""
 	session.host = host
@@ -710,6 +734,7 @@ func (state *State) finishStartingConnection(session *Session, automatic bool) {
 		state.closeCompletionList()
 		t := session.term
 		t.shell, t.ended, t.live, t.inputSent, t.told = nil, false, false, false, toldNothing
+		t.noShellTold = false
 		t.resetFolderSync()
 		t.rx = t.rx[:0]
 		t.skippedEndpoint, t.skippedRole, t.skipsTold = sshconn.Endpoint{}, sshconn.EndpointTarget, 0
@@ -726,10 +751,11 @@ func (state *State) finishStartingConnection(session *Session, automatic bool) {
 // nothing for sessions whose status is unchanged and whose shell is quiet.
 func (state *State) Wake() {
 	defer state.syncDesktopFullscreen()
-	defer state.flushLocalDirectories()
+	defer state.flushTerminalDirectories()
 	defer state.syncLocalProxySessions()
 	state.adoptHistoryClear()
 	state.adoptCompletion()
+	state.pumpNoteLinks()
 	state.pumpRevealResults()
 	state.pumpFileWindows()
 	if state.syncPending {
@@ -740,6 +766,9 @@ func (state *State) Wake() {
 	}
 	if state.restorePending {
 		state.restorePending = false
+		// Local shells first: they dial nothing, so they need not share the
+		// bound on how many connections one restore opens.
+		state.startRestoredLocalSessions()
 		state.connectRestoredSessions()
 		state.openStartupSessions()
 	}
@@ -790,6 +819,7 @@ func (state *State) Wake() {
 	state.pumpSessionLogs()
 	state.showNextPrompt()
 	state.drainAI()
+	state.syncNoteWindows()
 	state.syncSFTPWindows()
 	state.aiPumpCLILogin()
 	state.syncRemoteToolsWindows()
@@ -887,6 +917,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 		// After the connected line: a saved or failed save is what the user needs to read.
 		state.rememberSecret(session)
 	case sshconn.PhaseClosed:
+		session.sudoCommands, session.sudoPassword = false, ""
 		state.endDesktop(session)
 		session.pendingSecretName, session.pendingSecretValue = "", ""
 		state.stopSessionForwards(session.ID, true)
@@ -900,6 +931,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 		}
 		state.tell(session, toldEnded, status)
 	case sshconn.PhaseFailed:
+		session.sudoCommands, session.sudoPassword = false, ""
 		state.endDesktop(session)
 		session.pendingSecretName, session.pendingSecretValue = "", ""
 		state.stopSessionForwards(session.ID, true)
@@ -1036,17 +1068,25 @@ func formatEndpoint(endpoint sshconn.Endpoint) string {
 func (state *State) tellFailure(session *Session, status sshconn.Status) {
 	t, m := session.term, state.messages
 	switch {
-	case errors.Is(status.Err, sshconn.ErrHostKeyChanged):
+	case errors.Is(status.Err, sshconn.ErrHostKeyChanged) || errors.Is(status.Err, sshconn.ErrHostKeyRejected) && status.HostKey.Type == rdpCertificateType && len(status.HostKey.Known) > 0:
 		t.say(sgrFail, m.ConnChangedTitle)
 		t.say("", "")
-		t.say("", fmt.Sprintf(m.ConnChangedBodyFmt, status.HostKey.Address))
+		if status.HostKey.Type == vncServerKeyType {
+			t.say("", state.vncKeyDescription(status.HostKey))
+		} else {
+			t.say("", fmt.Sprintf(m.ConnChangedBodyFmt, status.HostKey.Address))
+		}
 		t.say("", "")
 		for _, known := range status.HostKey.Known {
 			t.say("", fmt.Sprintf(m.ConnChangedTrustedFmt, known))
 		}
 		t.say("", fmt.Sprintf(m.ConnChangedPresented, status.HostKey.Fingerprint))
 		t.say("", "")
-		t.say(sgrMuted, fmt.Sprintf(m.ConnChangedHintFmt, status.HostKey.File))
+		if status.HostKey.Type == vncServerKeyType || status.HostKey.Type == rdpCertificateType {
+			t.say(sgrMuted, m.HostKeyForgetHint)
+		} else {
+			t.say(sgrMuted, fmt.Sprintf(m.ConnChangedHintFmt, status.HostKey.File))
+		}
 	case errors.Is(status.Err, sshconn.ErrHostKeyRejected):
 		t.say(sgrFail, m.ConnRejected)
 	case errors.Is(status.Err, sshconn.ErrCanceled):
@@ -1145,6 +1185,8 @@ func (state *State) showNextPrompt() {
 			state.hostKeyDescription = fmt.Sprintf(state.messages.HostKeyDescriptionFmt, session.hostKey.Address)
 			if session.hostKey.Type == rdpCertificateType {
 				state.hostKeyDescription = state.rdpCertificateDescription(session.hostKey)
+			} else if session.hostKey.Type == vncServerKeyType {
+				state.hostKeyDescription = state.vncKeyDescription(session.hostKey)
 			}
 		case sshconn.PhasePasswordPrompt:
 			state.modal = modalPassword
@@ -1198,6 +1240,9 @@ func (state *State) closeModal() {
 	if state.modal == modalSFTPColumns {
 		state.sftpColumnEditor.list.Cancel()
 	}
+	if state.modal == modalSudoSFTP {
+		state.sudoSFTP = sudoSFTPDialog{}
+	}
 	if state.modal == modalRemoteClipboard {
 		state.clipboardRequest = remoteClipboardRequest{}
 	}
@@ -1206,6 +1251,9 @@ func (state *State) closeModal() {
 	}
 	if state.modal == modalDeleteRule {
 		state.ruleDelete = ruleDelete{}
+	}
+	if state.modal == modalCredential {
+		state.credentialForm = credentialUI{} // the password does not stay in the form
 	}
 	if state.modal == modalWorkspaceDraft {
 		state.workspaceDraft.reset()
@@ -1271,6 +1319,11 @@ func (state *State) clickHostKey(id ui.ID) {
 	switch id {
 	case hitHostKeyTrust:
 		session.conn.TrustHostKey(true)
+	case hitHostKeyForget:
+		if !state.forgetServerIdentity(session) {
+			return
+		}
+		session.conn.RejectHostKey()
 	case hitHostKeyOnce:
 		session.conn.TrustHostKey(false)
 	case hitHostKeyReject, hitHostKeyClose, hitHostKeyDismiss:

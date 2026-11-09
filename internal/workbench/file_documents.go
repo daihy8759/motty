@@ -77,6 +77,7 @@ const (
 
 type fileDocument struct {
 	owner                            *State
+	note                             *noteWindow
 	cacheKey, location, name, source string
 	local                            bool
 	worker                           *sftpclient.Worker
@@ -166,30 +167,44 @@ func (state *State) openFileWindow(view *sftpView, location string, local bool) 
 		}()
 		return
 	}
-	conn, mode := session.conn, session.host.Transfer
-	if conn == nil {
+	if session.conn == nil || view.openFiles == nil {
 		delete(state.fileWindows.documents, key)
 		state.fileOpenNotice(view.detached, state.messages.FileWindow.CannotOpen, state.messages.SFTPUnavailable, components.ToastError)
 		return
 	}
-	d.worker = sftpclient.NewWorker(func() (sftpclient.Remote, error) { return openRemoteFiles(conn, mode) }, func() {})
-	go func() {
-		for result := range d.worker.Results() {
-			if result.Operation == sftpclient.OperationOpenDocument {
-				state.postFileEvent(decodeFileEvent(d, result.Data, result.Err))
-			}
-			if result.Operation == sftpclient.OperationSaveDocument {
-				state.postFileEvent(fileDocumentEvent{document: d, data: result.Data, err: result.Err, saved: true})
-			}
-			if result.Operation == sftpclient.OperationReadDocument {
-				state.postFileEvent(fileDocumentEvent{document: d, data: result.Data, err: result.Err, compared: true})
-			}
-		}
-	}()
+	d.openRemoteWorker(view.openFiles)
 	if !d.worker.OpenDocument(location) {
 		delete(state.fileWindows.documents, key)
 		d.worker.Close()
 		state.fileOpenNotice(view.detached, state.messages.FileWindow.CannotOpen, state.messages.SFTPUnavailable, components.ToastError)
+	}
+}
+
+func (d *fileDocument) openRemoteWorker(open func() (sftpclient.Remote, error)) {
+	worker := sftpclient.NewWorker(open, func() {})
+	d.worker = worker
+	go func() {
+		for result := range worker.Results() {
+			if result.Operation == sftpclient.OperationOpenDocument {
+				d.owner.postFileEvent(decodeFileEvent(d, result.Data, result.Err))
+			}
+			if result.Operation == sftpclient.OperationSaveDocument {
+				d.owner.postFileEvent(fileDocumentEvent{document: d, data: result.Data, err: result.Err, saved: true})
+			}
+			if result.Operation == sftpclient.OperationReadDocument {
+				d.owner.postFileEvent(fileDocumentEvent{document: d, data: result.Data, err: result.Err, compared: true})
+			}
+		}
+	}()
+}
+
+func (state *State) forgetSFTPDocumentAccess(view *sftpView) {
+	for _, document := range state.fileWindows.documents {
+		if document.view == view && !document.local && !document.closed && document.worker != nil {
+			document.worker.Close()
+			message := state.messages.SFTPUnavailable
+			document.openRemoteWorker(func() (sftpclient.Remote, error) { return nil, errors.New(message) })
+		}
 	}
 }
 
@@ -326,11 +341,11 @@ func (d *fileDocument) setText(decoded filecontent.Text, err error) {
 }
 
 func (d *fileDocument) dirty() bool {
-	return d.image == nil && d.ready && d.editor.String() != d.original
+	return d.note == nil && d.image == nil && d.ready && d.editor.String() != d.original
 }
 
 func (d *fileDocument) requestSave(closeAfter bool) {
-	if d.busy || !d.ready || d.image != nil {
+	if d.note != nil || d.busy || !d.ready || d.image != nil {
 		return
 	}
 	d.encodingOpen = false
@@ -533,6 +548,9 @@ func (d *fileDocument) chooseEncoding(name string) {
 }
 
 func (d *fileDocument) requestClose(allow func()) {
+	if d.note != nil {
+		d.owner.save()
+	}
 	d.encodingOpen = false
 	if d.busy {
 		d.allowClose = allow
@@ -566,6 +584,21 @@ func (d *fileDocument) dispose() {
 		return
 	}
 	d.closed = true
+	if d.note != nil {
+		n := &d.note.content
+		n.captureNoteSelection()
+		if n.owner == n {
+			n.body.Unmark()
+			n.title.Unmark()
+			n.tags.Unmark()
+			n.owner = nil
+		}
+		d.note.content.imageToken++
+		if cancel := d.note.content.imageCancel; cancel != nil {
+			cancel()
+		}
+	}
+
 	d.closeCanceled = nil
 	d.stopComparison()
 	if d.worker != nil {
@@ -969,6 +1002,13 @@ func (state *State) closeFileWindows() {
 // ConfirmDocumentClose serializes dirty-document confirmation before closing a
 // source window or quitting. Cancel leaves the application and edits alive.
 func (state *State) ConfirmDocumentClose(allow func()) bool {
+	if state.confirmNoteClose(func() {
+		if !state.ConfirmDocumentClose(allow) {
+			allow()
+		}
+	}) {
+		return true
+	}
 	m := &state.fileWindows
 	for _, key := range m.order {
 		d := m.documents[key]

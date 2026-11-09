@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/vivaui/viva/text"
+	"github.com/vivaui/viva/ui"
 	"motty/internal/i18n"
 	"motty/internal/loginexpect"
 	"motty/internal/otp"
@@ -47,6 +48,10 @@ type hostEditor struct {
 	iconOpen bool
 	// iconReveal says the list has just opened and has to scroll to the chosen icon.
 	iconReveal bool
+	// iconChosen says the user picked an icon, or the host being edited already
+	// has one, so a protocol switch must not replace it with that protocol's
+	// default.
+	iconChosen bool
 	// port is the port of an SSH or Telnet host and the line settings of a serial
 	// one ("115200 8N1").
 	port text.Editor
@@ -57,8 +62,15 @@ type hostEditor struct {
 	identity     string
 	authOpen     bool
 	identityOpen bool
-	transfer     transferMode
-	algorithms   text.Editor
+	// credential is the saved password the host takes its password from, and
+	// credentialOpen its list being open.
+	credential     string
+	credentialOpen bool
+	// credentialAnchor is where the password field was painted, which the list
+	// of shared passwords opens under.
+	credentialAnchor ui.Rect
+	transfer         transferMode
+	algorithms       text.Editor
 	// loginCommand is the line typed into the host's shells after login.
 	loginCommand text.Editor
 	// forwardX11 is the host's "Forward X11" switch.
@@ -168,10 +180,10 @@ func (editor *hostEditor) portNumber() (uint16, bool) {
 }
 
 // validate returns the first user-visible error, or empty when the form is
-// submittable. Several entries may describe one destination: they are separate
-// hosts with their own label, login rules and authentication, so sharing an
-// address, account and port with a saved host is not an error.
-func (editor *hostEditor) validate(messages i18n.Messages) string {
+// submittable. Several entries may share a destination when they have distinct
+// names; only the same endpoint under the same name is an accidental duplicate.
+// Hosts reached under another account or through a bastion remain distinct too.
+func (editor *hostEditor) validate(hosts []Host, ignoreID uint32, messages i18n.Messages) string {
 	if editor.value(fieldLabel) == "" || editor.value(fieldAddress) == "" {
 		return messages.ErrLabelRequired
 	}
@@ -219,6 +231,12 @@ func (editor *hostEditor) validate(messages i18n.Messages) string {
 	if _, ok := normalizeHostColor(editor.value(fieldColor)); !ok {
 		return messages.ErrHostColorInvalid
 	}
+	candidate := editor.host(0)
+	for _, host := range hosts {
+		if host.ID != ignoreID && sameHost(host, candidate) {
+			return messages.ErrAddressTaken
+		}
+	}
 	return ""
 }
 
@@ -242,8 +260,8 @@ func (editor *hostEditor) load(host Host) {
 	editor.loginCommand.Insert(host.LoginCommand)
 	editor.otp, editor.otpSaved, editor.otpRemove = text.Editor{}, false, false
 	editor.algoMode = host.algoMode()
-	editor.auth, editor.identity = host.Auth, host.Identity
-	editor.authOpen, editor.identityOpen = false, false
+	editor.auth, editor.identity, editor.credential = host.Auth, host.Identity, host.Credential
+	editor.authOpen, editor.identityOpen, editor.credentialOpen = false, false, false
 	editor.forwardX11 = host.ForwardX11
 	editor.agentForward = host.AgentForward
 	editor.noHistory = host.NoHistory
@@ -263,7 +281,7 @@ func (editor *hostEditor) load(host Host) {
 	editor.user.Insert(host.User)
 	editor.group.Insert(host.Group)
 	editor.tags.Insert(formatHostTags(host))
-	editor.icon, editor.system = host.Icon, host.System
+	editor.icon, editor.iconChosen, editor.system = host.Icon, true, host.System
 	editor.protocol, editor.flow = host.Protocol, host.Line.Flow
 	editor.viaSSH, editor.clipboard, editor.chromeless = host.ViaSSH, host.Clipboard, host.Chromeless
 	editor.console = host.Protocol == protocolRDP && host.Console
@@ -324,6 +342,11 @@ func (editor *hostEditor) host(id uint32) Host {
 	if cfg := loginexpect.Normalize(editor.loginExpect); cfg.Enabled || len(cfg.Steps) > 0 {
 		host.LoginExpect = &cfg
 	}
+	// Only a host that signs in with a password has one to take from a saved one.
+	if editor.protocol == protocolVNC || editor.protocol == protocolRDP ||
+		editor.protocol == protocolSSH && editor.auth != authPrivateKey && editor.auth != authAgent {
+		host.Credential = editor.credential
+	}
 	host.normalizeEndpoint()
 	setHostTags(&host, tags)
 	host.finish()
@@ -343,13 +366,13 @@ func (editor *hostEditor) reset() {
 	editor.tags = text.Editor{}
 	editor.tagPicker = hostTagPicker{}
 	editor.groupPicker = hostGroupPicker{}
-	editor.icon, editor.system, editor.iconOpen = hostIconAuto, sshconn.SystemUnknown, false
+	editor.icon, editor.iconChosen, editor.system, editor.iconOpen = hostIconAuto, false, sshconn.SystemUnknown, false
 	editor.port = text.Editor{}
 	editor.algorithms = text.Editor{}
 	editor.loginCommand = text.Editor{}
 	editor.otp, editor.otpSaved, editor.otpRemove = text.Editor{}, false, false
-	editor.algoMode, editor.auth, editor.identity = algoDefault, authAutomatic, ""
-	editor.authOpen, editor.identityOpen = false, false
+	editor.algoMode, editor.auth, editor.identity, editor.credential = algoDefault, authAutomatic, "", ""
+	editor.authOpen, editor.identityOpen, editor.credentialOpen = false, false, false
 	editor.forwardX11, editor.agentForward, editor.noHistory, editor.transfer = false, false, false, transferAuto
 	editor.loginExpect, editor.loginExpectOpen = loginexpect.Config{}, false
 	editor.agentAccess = false
@@ -393,7 +416,14 @@ func (editor *hostEditor) setProtocol(protocol hostProtocol) {
 		}
 	}
 	editor.protocol, editor.portsOpen, editor.iconOpen = protocol, false, false
-	editor.authOpen, editor.identityOpen = false, false
+	if !editor.iconChosen {
+		if protocol == protocolSerial {
+			editor.icon = hostIconSerial
+		} else if editor.icon == hostIconSerial {
+			editor.icon = hostIconAuto
+		}
+	}
+	editor.authOpen, editor.identityOpen, editor.credentialOpen = false, false, false
 	if protocol == protocolSerial {
 		editor.ports = serial.Ports()
 		if editor.value(fieldAddress) == "" && len(editor.ports) > 0 {

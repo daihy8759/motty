@@ -20,6 +20,7 @@ import (
 	"motty/internal/ai/gate"
 	"motty/internal/ai/mcp"
 	"motty/internal/ai/probe"
+	"motty/internal/ai/reasoning"
 	"motty/internal/ai/store"
 	"motty/internal/aiproviderimport"
 	"motty/internal/vault"
@@ -61,6 +62,7 @@ var (
 	hitAISetFormPresetItems   = tree.Sub(aiSettingsHits, tree.Name("ai-set-form-preset-item"))
 	hitAISetFormName          = tree.ID(aiSettingsHits, "ai-set-form-name")
 	hitAISetFormURL           = tree.ID(aiSettingsHits, "ai-set-form-url")
+	hitAISetFormModelsURL     = tree.ID(aiSettingsHits, "ai-set-form-models-url")
 	hitAISetFormKey           = tree.ID(aiSettingsHits, "ai-set-form-key")
 	hitAISetFormCLIPath       = tree.ID(aiSettingsHits, "ai-set-form-cli-path")
 	hitAISetConfirmCancel     = tree.ID(aiSettingsHits, "ai-set-confirm-cancel")
@@ -80,6 +82,9 @@ var (
 	hitAISetContext30         = tree.ID(aiSettingsHits, "ai-set-context30")
 	hitAISetContext60         = tree.ID(aiSettingsHits, "ai-set-context60")
 	hitAISetContext120        = tree.ID(aiSettingsHits, "ai-set-context120")
+	hitAISetText1             = tree.ID(aiSettingsHits, "ai-set-text1")
+	hitAISetText4             = tree.ID(aiSettingsHits, "ai-set-text4")
+	hitAISetText8             = tree.ID(aiSettingsHits, "ai-set-text8")
 	hitAISetRedact            = tree.ID(aiSettingsHits, "ai-set-redact")
 	hitAISetHistory           = tree.ID(aiSettingsHits, "ai-set-history")
 	hitAISetClearHistory      = tree.ID(aiSettingsHits, "ai-set-clear-history")
@@ -123,6 +128,17 @@ var (
 	hitAISetProbeTimeout10 = tree.ID(aiSettingsHits, "ai-set-probe-to-10")
 	hitAISetProbeTimeout15 = tree.ID(aiSettingsHits, "ai-set-probe-to-15")
 	hitAISetProbeTimeout30 = tree.ID(aiSettingsHits, "ai-set-probe-to-30")
+
+	hitAISetModelReasoning   = tree.Sub(aiSettingsHits, tree.Name("ai-set-model-reasoning"))
+	hitAISetReasoningAuto    = tree.ID(aiSettingsHits, "ai-set-reasoning-auto")
+	hitAISetReasoningEnable  = tree.ID(aiSettingsHits, "ai-set-reasoning-enable")
+	hitAISetReasoningDisable = tree.ID(aiSettingsHits, "ai-set-reasoning-disable")
+	hitAISetReasoningPreset0 = tree.ID(aiSettingsHits, "ai-set-reasoning-preset-0")
+	hitAISetReasoningPreset1 = tree.ID(aiSettingsHits, "ai-set-reasoning-preset-1")
+	hitAISetReasoningPreset2 = tree.ID(aiSettingsHits, "ai-set-reasoning-preset-2")
+	hitAISetReasoningSave    = tree.ID(aiSettingsHits, "ai-set-reasoning-save")
+	hitAISetReasoningCancel  = tree.ID(aiSettingsHits, "ai-set-reasoning-cancel")
+	hitAISetReasoningClose   = tree.ID(aiSettingsHits, "ai-set-reasoning-close")
 )
 
 // aiDialogKind is which of the section's dialogs is up.
@@ -138,6 +154,7 @@ const (
 	aiDialogMCPAllowAll
 	aiDialogAgentAllowAll
 	aiDialogProbe
+	aiDialogModelReasoning
 )
 
 // aiCopyState is what the "copy client configuration" button last did.
@@ -170,6 +187,7 @@ type aiSettingsUI struct {
 	presetOpen     bool
 	name           text.Editor
 	baseURL        text.Editor
+	modelsURL      text.Editor
 	apiKey         text.Editor
 	cliPath        text.Editor
 	cliAutoPath    string
@@ -228,6 +246,12 @@ type aiSettingsUI struct {
 	importSelected   map[int]bool
 	importErr        string
 	importResult     aiImportResult
+
+	// The reasoning configuration dialog for a model.
+	reasoningModelName  string
+	reasoningProviderID string
+	reasoningMode       int // 0: Auto, 1: Enabled, 2: Disabled
+	reasoningPreset     int // 0: 3档(low,medium,high), 1: 6档(minimal..max), 2: 2档(default,high)
 }
 
 func (state *State) aiSettingsVisible() bool {
@@ -329,6 +353,9 @@ func (state *State) aiSettingsClick(id ui.ID) bool {
 	case id.Scope() == hitAISetModelSwitch:
 		index, _ := id.In(hitAISetModelSwitch)
 		state.aiToggleModel(index)
+	case id.Scope() == hitAISetModelReasoning:
+		row, _ := id.In(hitAISetModelReasoning)
+		state.aiOpenModelReasoning(row)
 	case id == hitAISetRiskLow:
 		state.aiPut("ai.auto_up_to", "low")
 	case id == hitAISetRiskMedium:
@@ -349,6 +376,12 @@ func (state *State) aiSettingsClick(id ui.ID) bool {
 		state.aiPut("ai.context_lines", "60")
 	case id == hitAISetContext120:
 		state.aiPut("ai.context_lines", "120")
+	case id == hitAISetText1:
+		state.aiPut("ai.attachment_text_mib", "1")
+	case id == hitAISetText4:
+		state.aiPut("ai.attachment_text_mib", "4")
+	case id == hitAISetText8:
+		state.aiPut("ai.attachment_text_mib", "8")
 	case id == hitAISetRedact:
 		state.aiPut("ai.redact", onOff(!state.ai.settings.redact))
 	case id == hitAISetHistory:
@@ -518,6 +551,25 @@ func (state *State) aiDialogClick(id ui.ID) {
 		case hitAISetProbeTimeout30:
 			cfg.probeTimeout = 30 * time.Second
 		}
+	case aiDialogModelReasoning:
+		switch id {
+		case hitAISetFormClose, hitAISetReasoningClose, hitAISetReasoningCancel:
+			state.aiCloseDialog()
+		case hitAISetReasoningAuto:
+			cfg.reasoningMode = 0
+		case hitAISetReasoningEnable:
+			cfg.reasoningMode = 1
+		case hitAISetReasoningDisable:
+			cfg.reasoningMode = 2
+		case hitAISetReasoningPreset0:
+			cfg.reasoningPreset = 0
+		case hitAISetReasoningPreset1:
+			cfg.reasoningPreset = 1
+		case hitAISetReasoningPreset2:
+			cfg.reasoningPreset = 2
+		case hitAISetReasoningSave:
+			state.aiSaveModelReasoning()
+		}
 	case aiDialogImport:
 		state.aiImportDialogClick(id)
 	}
@@ -564,7 +616,7 @@ func (state *State) aiCloseDialog() {
 	cfg := &state.ai.cfg
 	cfg.dialog, cfg.editID, cfg.deleteID, cfg.formErr, cfg.hadKey, cfg.presetOpen = aiDialogNone, "", "", "", false, false
 	cfg.notice = ""
-	cfg.name, cfg.baseURL, cfg.apiKey = text.Editor{}, text.Editor{}, text.Editor{}
+	cfg.name, cfg.baseURL, cfg.modelsURL, cfg.apiKey = text.Editor{}, text.Editor{}, text.Editor{}, text.Editor{}
 	cfg.cliPath, cfg.authStyle, cfg.apiFormat = text.Editor{}, "", ""
 	cfg.cliAutoPath, cfg.cliPathMissing = "", false
 	// The import candidates hold credentials in memory; closing the dialog is
@@ -572,6 +624,8 @@ func (state *State) aiCloseDialog() {
 	cfg.importStep, cfg.importErr = aiImportSources, ""
 	cfg.importSources, cfg.importCandidates, cfg.importSelected = nil, nil, nil
 	cfg.importResult = aiImportResult{}
+	cfg.reasoningModelName, cfg.reasoningProviderID = "", ""
+	cfg.reasoningMode, cfg.reasoningPreset = 0, 0
 }
 
 func (state *State) aiSettingsPointer(event ui.PointerEvent) (ui.EventResult, bool) {
@@ -606,7 +660,7 @@ func (state *State) aiSettingsKey(event ui.KeyEvent) (ui.EventResult, bool) {
 	}
 	if event.Key == ui.KeyEnter && !event.Repeat {
 		switch {
-		case cfg.dialog == aiDialogProvider && (event.Target == hitAISetFormName || event.Target == hitAISetFormURL || event.Target == hitAISetFormKey || event.Target == hitAISetFormCLIPath):
+		case cfg.dialog == aiDialogProvider && (event.Target == hitAISetFormName || event.Target == hitAISetFormURL || event.Target == hitAISetFormModelsURL || event.Target == hitAISetFormKey || event.Target == hitAISetFormCLIPath):
 			state.aiSubmitProvider()
 			return ui.EventResult{Handled: true, Repaint: true}, true
 		case cfg.dialog == aiDialogNone && event.Target == hitAISetModelInput:
@@ -652,6 +706,9 @@ func (state *State) aiSettingsKey(event ui.KeyEvent) (ui.EventResult, bool) {
 	case hitAISetContext0, hitAISetContext30, hitAISetContext60, hitAISetContext120:
 		lines = state.aiContextOptions()
 		options = lines[:]
+	case hitAISetText1, hitAISetText4, hitAISetText8:
+		textLimits := state.aiTextLimitOptions()
+		options = textLimits[:]
 	case hitAISetMCPObserve, hitAISetMCPAsk, hitAISetMCPAllowAll:
 		modes = state.aiMCPModeOptions()
 		options = modes[:]
@@ -684,6 +741,8 @@ func (state *State) aiSettingsEditor(hit ui.ID) *text.Editor {
 		return &cfg.cliPath
 	case cfg.dialog == aiDialogProvider && hit == hitAISetFormURL && !store.IsCLIKind(cfg.kind):
 		return &cfg.baseURL
+	case cfg.dialog == aiDialogProvider && hit == hitAISetFormModelsURL && !store.IsCLIKind(cfg.kind):
+		return &cfg.modelsURL
 	case cfg.dialog == aiDialogProvider && hit == hitAISetFormKey && !store.IsCLIKind(cfg.kind):
 		return &cfg.apiKey
 	case cfg.dialog == aiDialogNone && hit == hitAISetModelInput:
@@ -740,6 +799,12 @@ func (state *State) aiContextOptions() [4]components.SegmentOption {
 	return [...]components.SegmentOption{
 		{ID: hitAISetContext0, Label: state.messages.AISettings.ContextOff},
 		{ID: hitAISetContext30, Label: "30"}, {ID: hitAISetContext60, Label: "60"}, {ID: hitAISetContext120, Label: "120"},
+	}
+}
+
+func (state *State) aiTextLimitOptions() [3]components.SegmentOption {
+	return [...]components.SegmentOption{
+		{ID: hitAISetText1, Label: "1 MiB"}, {ID: hitAISetText4, Label: "4 MiB"}, {ID: hitAISetText8, Label: "8 MiB"},
 	}
 }
 
@@ -850,6 +915,7 @@ func (state *State) aiOpenProviderForm(id string) {
 	// The importer accepts a base URL up to MaxURLRunes; the editor must not
 	// silently shorten such a provider when it is opened for an unrelated edit.
 	cfg.baseURL.Restrict(printableLine, aiproviderimport.MaxURLRunes)
+	cfg.modelsURL.Restrict(printableLine, aiproviderimport.MaxURLRunes)
 	cfg.apiKey.Restrict(printableLine, 600)
 	cfg.cliPath.Restrict(printableLine, 4096)
 	if id == "" {
@@ -864,6 +930,7 @@ func (state *State) aiOpenProviderForm(id string) {
 	cfg.authStyle, cfg.apiFormat = provider.AuthStyle, provider.APIFormat
 	cfg.name.Insert(provider.Name)
 	cfg.baseURL.Insert(provider.BaseURL)
+	cfg.modelsURL.Insert(provider.ModelsURL)
 	cfg.cliPath.Insert(provider.CLIPath)
 	state.aiDiscoverCLIPath()
 }
@@ -898,10 +965,11 @@ func (state *State) aiSubmitProvider() {
 	m := state.messages.AISettings
 	name := strings.TrimSpace(cfg.name.String())
 	base := strings.TrimSpace(cfg.baseURL.String())
+	modelsURL := strings.TrimSpace(cfg.modelsURL.String())
 	key := strings.TrimSpace(cfg.apiKey.String())
 	cliProvider := store.IsCLIKind(cfg.kind)
 	if cliProvider {
-		base, key = "", ""
+		base, modelsURL, key = "", "", ""
 	}
 	switch {
 	case name == "":
@@ -910,11 +978,14 @@ func (state *State) aiSubmitProvider() {
 	case !cliProvider && base != "" && !validBaseURL(base):
 		cfg.formErr = m.ErrFormBaseURL
 		return
+	case !cliProvider && modelsURL != "" && !validBaseURL(modelsURL):
+		cfg.formErr = m.ErrFormModelsURL
+		return
 	case !cliProvider && base == "" && key == "" && !cfg.hadKey:
 		cfg.formErr = m.ErrFormKey
 		return
 	}
-	provider := store.Provider{ID: cfg.editID, Name: name, Kind: cfg.kind, BaseURL: base, APIKey: key, HasKey: key != "", Enabled: true}
+	provider := store.Provider{ID: cfg.editID, Name: name, Kind: cfg.kind, BaseURL: base, ModelsURL: modelsURL, APIKey: key, HasKey: key != "", Enabled: true}
 	if cliProvider {
 		provider.CLIPath = strings.TrimSpace(cfg.cliPath.String())
 		if provider.CLIPath == cfg.cliAutoPath {
@@ -935,7 +1006,7 @@ func (state *State) aiSubmitProvider() {
 		if key == "" && !cliProvider {
 			provider.APIKey, provider.HasKey = old.APIKey, old.HasKey // the field is left empty to keep the key
 		}
-		refetch = provider.Kind != old.Kind || provider.BaseURL != old.BaseURL || provider.APIKey != old.APIKey || provider.CLIPath != old.CLIPath
+		refetch = provider.Kind != old.Kind || provider.BaseURL != old.BaseURL || provider.ModelsURL != old.ModelsURL || provider.APIKey != old.APIKey || provider.CLIPath != old.CLIPath
 		resetAuth = cliProvider && (provider.Kind != old.Kind || provider.CLIPath != old.CLIPath)
 	}
 	db, err := state.aiStore()
@@ -1572,4 +1643,103 @@ func (state *State) aiProbeAllModels() {
 			s.aiSettingsChanged()
 		})
 	}()
+}
+
+// aiOpenModelReasoning 打开指定行模型的思考/推理努力配置对话框。
+func (state *State) aiOpenModelReasoning(row int) {
+	provider, model, ok := state.aiModelOnPage(row)
+	if !ok {
+		return
+	}
+	cfg := &state.ai.cfg
+	cfg.reasoningProviderID = provider.ID
+	cfg.reasoningModelName = model.Name
+
+	if model.ReasoningDisabled {
+		cfg.reasoningMode = 2 // Disabled
+		cfg.reasoningPreset = 0
+	} else if model.Reasoning != nil && len(model.Reasoning.Levels) > 0 {
+		cfg.reasoningMode = 1 // Enabled
+		switch len(model.Reasoning.Levels) {
+		case 6:
+			cfg.reasoningPreset = 1
+		case 2:
+			cfg.reasoningPreset = 2
+		default:
+			cfg.reasoningPreset = 0
+		}
+	} else {
+		cfg.reasoningMode = 0 // Auto
+		cfg.reasoningPreset = 0
+	}
+	cfg.dialog = aiDialogModelReasoning
+}
+
+// aiSaveModelReasoning 保存当前模型的思考配置至数据库并重载状态。
+func (state *State) aiSaveModelReasoning() {
+	cfg := &state.ai.cfg
+	if cfg.reasoningProviderID == "" || cfg.reasoningModelName == "" {
+		state.aiCloseDialog()
+		return
+	}
+	var (
+		reasoningCfg *store.ReasoningConfig
+		disabled     bool
+	)
+	switch cfg.reasoningMode {
+	case 0: // Auto (清除覆写，恢复代际与命名自动推断)
+		reasoningCfg = nil
+		disabled = false
+	case 1: // Enabled (手动强制开启)
+		disabled = false
+		switch cfg.reasoningPreset {
+		case 1:
+			reasoningCfg = &store.ReasoningConfig{
+				Levels:  []string{reasoning.LevelMinimal, reasoning.LevelLow, reasoning.LevelMedium, reasoning.LevelHigh, reasoning.LevelXHigh, reasoning.LevelMax},
+				Default: reasoning.LevelMedium,
+			}
+		case 2:
+			reasoningCfg = &store.ReasoningConfig{
+				Levels:  []string{reasoning.LevelDefault, reasoning.LevelHigh},
+				Default: reasoning.LevelHigh,
+			}
+		default:
+			reasoningCfg = &store.ReasoningConfig{
+				Levels:  []string{reasoning.LevelLow, reasoning.LevelMedium, reasoning.LevelHigh},
+				Default: reasoning.LevelMedium,
+			}
+		}
+	case 2: // Disabled (强制禁用)
+		reasoningCfg = nil
+		disabled = true
+	}
+
+	db, err := state.aiStore()
+	if err == nil {
+		err = db.SetModelReasoning(cfg.reasoningProviderID, cfg.reasoningModelName, reasoningCfg, disabled)
+	}
+	if err != nil {
+		cfg.formErr = err.Error()
+		return
+	}
+	state.aiWrote()
+	state.aiCloseDialog()
+}
+
+func (state *State) aiReasoningModeOptions() [3]components.SegmentOption {
+	m := state.messages.AISettings
+	return [...]components.SegmentOption{
+		{ID: hitAISetReasoningAuto, Label: m.ModelReasoningAuto},
+		{ID: hitAISetReasoningEnable, Label: m.ModelReasoningEnable},
+		{ID: hitAISetReasoningDisable, Label: m.ModelReasoningDisable},
+	}
+}
+
+func (state *State) aiReasoningPresetOptions() [3]components.SegmentOption {
+	m := state.messages.AISettings
+	return [...]components.SegmentOption{
+		{ID: hitAISetReasoningPreset0, Label: m.ModelReasoningPreset3},
+		{ID: hitAISetReasoningPreset1, Label: m.ModelReasoningPreset6},
+		{ID: hitAISetReasoningPreset2, Label: m.ModelReasoningPreset2},
+	}
 }

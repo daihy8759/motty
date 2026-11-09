@@ -90,11 +90,38 @@ func (prefs *toolbarPreferences) restoreDock(saved []toolbarDockEntry) {
 		}
 		prefs.dock = append(prefs.dock, entry)
 	}
+	// A terminal tool added by an upgrade follows the side the user's existing
+	// terminal tools use; the group setting is not consulted here because it is
+	// restored after the layout.
+	missingZone := func(group toolbarGroup) toolbarDockZone {
+		if group == toolbarTerminal {
+			for _, placed := range prefs.dock {
+				if placed.Group != toolbarTerminal {
+					continue
+				}
+				switch {
+				case toolbarDockLeft(placed.Zone):
+					return toolbarDockLeftTop
+				case toolbarDockVertical(placed.Zone):
+					return toolbarDockSideTop
+				}
+			}
+		}
+		return defaultToolbarDockZone(group)
+	}
 	for group := toolbarWindow; group <= toolbarTerminal; group++ {
 		for _, entry := range prefs.entries(group) {
-			if !slices.ContainsFunc(prefs.dock, func(other toolbarDockEntry) bool { return other.Group == group && other.Key == entry.Key }) {
-				prefs.dock = append(prefs.dock, toolbarDockEntry{group, entry.Key, defaultToolbarDockZone(group)})
+			if slices.ContainsFunc(prefs.dock, func(other toolbarDockEntry) bool { return other.Group == group && other.Key == entry.Key }) {
+				continue
 			}
+			placed := toolbarDockEntry{group, entry.Key, missingZone(group)}
+			// The latency readout used to sit at the top of the rail; keep it
+			// ahead of the actions it was pinned above.
+			if group == toolbarTerminal && entry.Key == "latency" {
+				prefs.dock = slices.Insert(prefs.dock, 0, placed)
+				continue
+			}
+			prefs.dock = append(prefs.dock, placed)
 		}
 	}
 }
@@ -138,6 +165,9 @@ func (state *State) toolbarDockTools(zone toolbarDockZone, dst *[maxBarTools]bar
 	var terminalTools []barTool
 	if session, ok := state.terminalSideRailSession(); ok {
 		terminalTools = state.activeTerminalTools(session, &terminal)
+	} else if state.noteSidebarVisible() {
+		// Restored/disconnected sessions still need the action that closes the browser.
+		terminalTools = append(terminal[:0], barTool{id: hitNotesPanel, icon: iconNotebook, hint: state.noteText("Notes", "笔记"), style: iconButtonActive})
 	}
 	tools := dst[:0]
 	// Connection progress is a transient navigation action, not a customizable
@@ -250,6 +280,9 @@ func (state *State) moveToolbarDockTool(id ui.ID, zone toolbarDockZone, before u
 }
 
 func (state *State) toolbarDockChanged() {
+	// The layout entry is only a mirror of the Show latency preference; keep it
+	// equal so the customize list and the saved layout never disagree.
+	state.syncLatencyToolbarEntry()
 	state.chrome.geometry.valid = false
 	state.toolbarDock.sideScroll = [4]float32{}
 	state.toolbarDock.bottomScroll = [2]float32{}

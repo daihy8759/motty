@@ -103,10 +103,16 @@ func (state *State) clickTerminalTools(id ui.ID) bool {
 		state.toggleBroadcast()
 	case id.Scope() == hitSettingsSchemeList:
 		index := item(id)
-		schemeID, _, _ := state.schemeAt(index)
-		if state.setTerminalScheme(schemeID) {
-			state.save()
+		if index < state.schemeTotal() {
+			schemeID, _, _ := state.schemeAt(index)
+			if state.setTerminalScheme(schemeID) {
+				state.save()
+			}
 		}
+	case id == hitSchemeBrowseAll:
+		state.openSchemeBrowser()
+	case id == hitSchemeDrawerClose:
+		state.schemeBrowserOpen = false
 	case id == hitSettingsHighlightToggle:
 		if state.setBuiltinHighlight(state.highlighting.builtinOff) {
 			state.save()
@@ -117,14 +123,24 @@ func (state *State) clickTerminalTools(id ui.ID) bool {
 	case id == hitSettingsCopyOnSelect:
 		state.terminalCopyOnSelect = !state.terminalCopyOnSelect
 		state.save()
-	case id == hitSettingsTabTitle:
-		state.terminalTabTitle = !state.terminalTabTitle
+	case id == hitSettingsTabTitle || id == hitSettingsTabConnection || id == hitSettingsTabDirectory:
+		state.tabTitleMode = tabTitleTerminal
+		if id == hitSettingsTabConnection {
+			state.tabTitleMode = tabTitleConnection
+		}
+		if id == hitSettingsTabDirectory {
+			state.tabTitleMode = tabTitleDirectory
+		}
 		state.save()
 	case id == hitSettingsLatencyToggle:
 		state.terminalShowLatency = !state.terminalShowLatency
+		state.syncLatencyToolbarEntry()
 		state.save()
 	case id == hitSettingsRightClickPaste:
 		state.terminalRightClickPaste = !state.terminalRightClickPaste
+		state.save()
+	case id == hitSettingsInputClick:
+		state.terminalInputClickOff = !state.terminalInputClickOff
 		state.save()
 	case id == hitSettingsBellToggle:
 		state.terminalBellOff = !state.terminalBellOff
@@ -159,6 +175,7 @@ func (state *State) clickTerminalTools(id ui.ID) bool {
 		}
 	case id == hitImportSessions:
 		state.modal = modalImportSessions
+	case state.clickCredentialSettings(id):
 	case id == hitSettingsAutofillAdd:
 		state.openAutofillDialog(nil)
 	case id == hitSettingsAutofillSudo:

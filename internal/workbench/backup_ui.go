@@ -13,8 +13,10 @@ import (
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/components"
+	"github.com/vivaui/viva/keymap"
 	"motty/internal/backup"
 	"motty/internal/cloudsync"
+	"motty/internal/gist"
 	"motty/internal/i18n"
 	"motty/internal/vault"
 	"motty/internal/webdav"
@@ -23,7 +25,8 @@ import (
 // Backup and sync. A backup is the hosts, settings, trusted host keys and saved
 // passwords sealed in one file under a password the user chooses (package
 // backup). It can be written to a file, or kept in the cloud (a WebDAV server,
-// S3-compatible storage or a GitHub Gist, all behind cloudsync.Store) and
+// S3-compatible storage, a GitHub Gist or a Gitee snippet, all behind
+// cloudsync.Store) and
 // fetched from another computer. Sessions, the open layout and the cloud login
 // itself stay on the computer they belong to.
 
@@ -31,14 +34,15 @@ import (
 var backupUiHits = tree.Feature("backup-ui")
 
 var (
-	hitBackupExport      = tree.ID(backupUiHits, "backup-export")
-	hitBackupRestore     = tree.ID(backupUiHits, "backup-restore")
-	hitSyncConfigure     = tree.ID(backupUiHits, "sync-configure")
-	hitSyncConfigureS3   = tree.ID(backupUiHits, "sync-configure-s3")
-	hitSyncConfigureGist = tree.ID(backupUiHits, "sync-configure-gist")
-	hitSyncNow           = tree.ID(backupUiHits, "sync-now")
-	hitSyncRestore       = tree.ID(backupUiHits, "sync-restore")
-	hitSyncAuto          = tree.ID(backupUiHits, "sync-auto")
+	hitBackupExport       = tree.ID(backupUiHits, "backup-export")
+	hitBackupRestore      = tree.ID(backupUiHits, "backup-restore")
+	hitSyncConfigure      = tree.ID(backupUiHits, "sync-configure")
+	hitSyncConfigureS3    = tree.ID(backupUiHits, "sync-configure-s3")
+	hitSyncConfigureGist  = tree.ID(backupUiHits, "sync-configure-gist")
+	hitSyncConfigureGitee = tree.ID(backupUiHits, "sync-configure-gitee")
+	hitSyncNow            = tree.ID(backupUiHits, "sync-now")
+	hitSyncRestore        = tree.ID(backupUiHits, "sync-restore")
+	hitSyncAuto           = tree.ID(backupUiHits, "sync-auto")
 )
 
 const (
@@ -102,7 +106,20 @@ type syncState struct {
 	textLanguage     i18n.Language
 }
 
+// restoreSync replaces the account this window syncs with. What the engine has
+// in hand belongs to the window running it rather than to the account: a start
+// waiting on its timer, a request on its way, the retries and what the progress
+// row says carry on, which is what lets the settings be loaded again when
+// another window changes the account.
 func (state *State) restoreSync(saved *savedSync) {
+	work := state.sync
+	defer func() {
+		state.sync.working, state.sync.again, state.sync.err = work.working, work.again, work.err
+		state.sync.retries, state.sync.waitingForVault, state.sync.holdBack = work.retries, work.waitingForVault, work.holdBack
+		state.sync.timer = work.timer
+		state.sync.rowText, state.sync.runText, state.sync.runFor = work.rowText, work.runText, work.runFor
+		state.sync.textLanguage = work.textLanguage
+	}()
 	state.sync = syncState{}
 	if saved == nil {
 		return
@@ -155,16 +172,23 @@ func (state *State) savedSyncValue() *savedSync {
 // logins that reach the backup itself.
 func excludedFromBackup(name string) bool {
 	switch name {
-	case webdavPasswordSecret, s3SecretName, gistTokenSecret, backupPasswordSecret:
+	case webdavPasswordSecret, s3SecretName, gistTokenSecret, giteeTokenSecret, backupPasswordSecret:
 		return true
 	}
 	return false
 }
 
-// backupDocument gathers what a backup holds: every shared record, deleted ones
-// as tombstones, the trusted keys and the saved passwords. A locked vault is
+// backupDocument gathers what a file backup holds: shared records, device-local
+// shortcuts, trusted keys and saved passwords. A locked vault is
 // reported as vault.ErrNeedsConversion, since the passwords cannot be read.
 func (state *State) backupDocument() (backup.Document, error) {
+	if !state.flushNoteDraft() {
+		return backup.Document{}, errors.New(state.noteText("Finish composing or resolve the note save error before backing up.", "请完成输入法输入或处理笔记保存错误后再备份。"))
+	}
+	state.save()
+	if state.hasUnsavedNotes() {
+		return backup.Document{}, errors.New(state.notes.error)
+	}
 	if state.config == nil {
 		return backup.Document{}, errors.New(state.messages.Tools.SyncErrNoStore)
 	}
@@ -173,6 +197,11 @@ func (state *State) backupDocument() (backup.Document, error) {
 		return backup.Document{}, err
 	}
 	document := backup.Document{Created: state.options.WallNow().UTC(), Device: state.config.Device(), Format: configFormat, Writer: configWriter(), Records: records}
+	snapshot := state.snapshot()
+	document.ShortcutPreferences = &backup.ShortcutPreferences{DefaultsGeneration: snapshot.ShortcutDefaultsGeneration, Shortcuts: make([]backup.Shortcut, 0, len(snapshot.Shortcuts))}
+	for _, entry := range snapshot.Shortcuts {
+		document.ShortcutPreferences.Shortcuts = append(document.ShortcutPreferences.Shortcuts, backup.Shortcut{Action: entry.Action, Key: entry.Key, Modifiers: entry.Modifiers})
+	}
 	if data, err := os.ReadFile(state.options.KnownHostsPath); err == nil {
 		document.KnownHosts = string(data)
 	}
@@ -216,6 +245,9 @@ func (state *State) backupErrorText(err error) string {
 		return m.SyncErrInsecure
 	case errors.Is(err, cloudsync.ErrTooLarge):
 		if state.sync.kind == syncGist {
+			if state.sync.gist.provider == gist.Gitee {
+				return m.GiteeErrTooLarge
+			}
 			return m.GistErrTooLarge
 		}
 		return m.SyncErrTooLarge
@@ -301,6 +333,19 @@ func (state *State) applyBackup(document backup.Document) (hosts int, err error)
 	}
 	if err := state.reloadShared(); err != nil {
 		return 0, &partialRestoreError{fmt.Sprintf(m.BackupFailedFmt, err)}
+	}
+	if preferences := document.ShortcutPreferences; preferences != nil {
+		saved := make([]savedShortcut, 0, len(preferences.Shortcuts))
+		for _, entry := range preferences.Shortcuts {
+			saved = append(saved, savedShortcut{Action: entry.Action, Key: entry.Key, Modifiers: entry.Modifiers})
+		}
+		state.shortcuts = restoreShortcuts(saved)
+		if preferences.DefaultsGeneration < shortcutDefaultsGeneration && len(saved) > 0 {
+			state.shortcuts.migrateChangedDefaults(func(chord keymap.Chord) bool { return state.snippetNamed(chord) != "" })
+		}
+		if err := state.saveWithResultMode(false); err != nil {
+			return len(state.hosts), &partialRestoreError{fmt.Sprintf(m.BackupFailedFmt, err)}
+		}
 	}
 	state.reloadOtherWindows()
 
@@ -805,6 +850,8 @@ func (state *State) clickBackupSettings(id ui.ID) bool {
 		state.openS3Configure()
 	case hitSyncConfigureGist:
 		state.openGistConfigure()
+	case hitSyncConfigureGitee:
+		state.openGiteeConfigure()
 	case hitSyncNow:
 		if state.sync.configured() {
 			state.syncNow()
@@ -869,7 +916,8 @@ func (state *State) paintBackupSettings(page *settingsPage) {
 			page.actionRow(m.SyncRow, row, false,
 				components.ButtonAction{ID: hitSyncConfigure, Label: m.SyncConfigure, Variant: components.ButtonOutline},
 				components.ButtonAction{ID: hitSyncConfigureS3, Label: m.SyncConfigureS3, Variant: components.ButtonOutline},
-				components.ButtonAction{ID: hitSyncConfigureGist, Label: m.SyncConfigureGist, Variant: components.ButtonOutline})
+				components.ButtonAction{ID: hitSyncConfigureGist, Label: m.SyncConfigureGist, Variant: components.ButtonOutline},
+				components.ButtonAction{ID: hitSyncConfigureGitee, Label: m.SyncConfigureGitee, Variant: components.ButtonOutline})
 			page.toggleRow(m.SyncAuto, m.SyncAutoDescription, !state.sync.manual, hitSyncAuto)
 			page.actionRow(m.SyncRunRow, run, !state.sync.configured() || state.sync.working,
 				components.ButtonAction{ID: hitSyncNow, Label: m.SyncNow, Variant: components.ButtonOutline},

@@ -217,10 +217,12 @@ func (state *State) paintSFTPPage(canvas *ui.Canvas, size ui.Size, session *Sess
 						add(hitSFTPRename, iconPencil, messages.SFTPRename, false)
 						add(hitSFTPMove, iconFolderOpen, messages.SFTPMove, false)
 						add(hitSFTPChmod, iconLock, messages.SFTPPermissions, false)
-						add(hitSFTPDelete, iconTrash, messages.SFTPDelete, true)
 						if _, archive := state.selectedArchive(session, view); archive {
 							add(hitSFTPExtract, iconArchive, messages.Tools.Extract, false)
 						}
+					}
+					if !local {
+						add(hitSFTPDelete, iconTrash, messages.SFTPDelete, true)
 					}
 				})
 				if one {
@@ -271,7 +273,7 @@ func (state *State) paintSFTPPage(canvas *ui.Canvas, size ui.Size, session *Sess
 	}
 	state.paintSFTPIconButtons(canvas, buttons[:buttonCount])
 	if folder.headerMenuOpen && state.sftpHeaderMenuAvailable(view) {
-		state.paintSFTPHeaderMenu(canvas, ui.Size{Width: size.Width, Height: size.Height}, moreButton.Rect(), folder, view)
+		state.requestSFTPHeaderMenu(moreButton.Rect(), folder, view)
 	}
 	if folder.filterOpen {
 		state.paintSFTPFilter(canvas, filterSlot.Rect(), folder)
@@ -749,7 +751,10 @@ func (state *State) paintSFTPDialog(canvas *ui.Canvas, viewport ui.Rect, view *s
 	case sftpDialogDelete:
 		title = messages.SFTPDeleteFileTitle
 		description = fmt.Sprintf(messages.SFTPDeleteDescriptionFmt, view.dialogEntry.Name)
-		if view.dialogEntry.IsDir() && !view.dialogEntry.IsLink() {
+		if len(view.dialogEntries) > 1 {
+			title = messages.SFTPDeleteSelectionTitle
+			description = fmt.Sprintf(messages.SFTPDeleteSelectionFmt, len(view.dialogEntries))
+		} else if view.dialogEntry.IsDir() && !view.dialogEntry.IsLink() {
 			// A folder goes with everything in it; the confirmation says so.
 			title = messages.SFTPDeleteDirectoryTitle
 			description = fmt.Sprintf(messages.SFTPDeleteFolderContentsFmt, view.dialogEntry.Name)

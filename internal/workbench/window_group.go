@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"fmt"
 	"slices"
 	"sync"
 
@@ -22,31 +23,12 @@ type Group struct {
 	historyClears    map[string]*historyClearJob
 	shareOnce        sync.Once
 	shares           *localProxyManager
-	// frame is where the process's windows were last seen. It lives here, not
-	// in one window, so any window's save writes the newest place rather than
-	// the one it read at start.
-	frame    ui.Rect
-	hasFrame bool
 	// reportProgress is what the desktop is told about the work the windows are
 	// doing, and progressStep is the hundredth of the whole it was last told,
 	// with -1 for no bar; progressReported says it was told anything at all.
 	reportProgress   func(active int, fraction float32)
 	progressStep     int
 	progressReported bool
-}
-
-// setWindowFrame remembers where the windows are, for the next save.
-func (group *Group) setWindowFrame(frame ui.Rect) {
-	group.mu.Lock()
-	defer group.mu.Unlock()
-	group.frame, group.hasFrame = frame, true
-}
-
-// windowFrame is the newest frame any window reported.
-func (group *Group) windowFrame() (ui.Rect, bool) {
-	group.mu.Lock()
-	defer group.mu.Unlock()
-	return group.frame, group.hasFrame
 }
 
 // NewGroup returns an empty group.
@@ -77,6 +59,48 @@ func (group *Group) LocalProxyChanged() {
 		if !member.callbacksClosed.Load() && member.options.Invalidate != nil {
 			member.options.Invalidate()
 		}
+	}
+}
+
+// settingsChanged tells every other window that origin changed configuration
+// they show too. The windows of one process share one store, so each of them
+// reads the change back rather than keeping what it read when it started; what
+// each window has open of its own is left alone.
+func (group *Group) settingsChanged(origin *State) {
+	group.mu.Lock()
+	members := make([]*State, len(group.members))
+	copy(members, group.members)
+	group.mu.Unlock()
+	for _, member := range members {
+		if member == origin || member.closed || member.config == nil || member.callbacksClosed.Load() {
+			continue
+		}
+		if err := member.reloadSettings(); err != nil {
+			// The window keeps what it has; its own next save reports the store
+			// it cannot read.
+			if member.options.Log != nil {
+				fmt.Fprintf(member.options.Log, "settings reload: %v\n", err)
+			}
+		}
+		member.invalidateWindow()
+	}
+}
+
+// assistantChoicesChanged tells every other window that origin changed a
+// database-backed assistant choice that does not reconfigure the MCP servers,
+// such as which client configuration the page shows. A window that has not
+// opened the assistant keeps its store closed and reads the choice when it does.
+func (group *Group) assistantChoicesChanged(origin *State) {
+	group.mu.Lock()
+	members := make([]*State, len(group.members))
+	copy(members, group.members)
+	group.mu.Unlock()
+	for _, member := range members {
+		if member == origin || member.closed || member.callbacksClosed.Load() || member.ai.store == nil {
+			continue
+		}
+		member.reloadAISettings()
+		member.invalidateWindow()
 	}
 }
 
@@ -164,14 +188,14 @@ func (state *State) SetShortcutCapture(capture func(bool) error) {
 // and the live sessions in them. Nothing in it is closed or copied; the sessions
 // are the ones the user was working in.
 type tabPayload struct {
-	title         string
-	dto           layoutcore.WorkspaceDTO
-	sessions      []Session
-	transfers     []transferEntry
-	managed       bool
-	managedCols   uint8
-	temporaryCols uint8
-	temporary     bool
+	title           string
+	dto             layoutcore.WorkspaceDTO
+	sessions        []Session
+	transfers       []transferEntry
+	managed         bool
+	managedLayout   layoutcore.LayoutSpec
+	temporaryLayout layoutcore.LayoutSpec
+	temporary       bool
 }
 
 // detachWorkspace takes a tab out of this window without ending its sessions.
@@ -190,8 +214,8 @@ func (state *State) detachWorkspace(id layoutcore.WorkspaceID) (*tabPayload, boo
 		}
 	}
 	payload := &tabPayload{title: dto.Title, dto: dto}
-	payload.managedCols, payload.managed = state.managedWorkspaceColumns[id]
-	payload.temporaryCols, payload.temporary = state.temporaryWorkspaceColumns[id]
+	payload.managedLayout, payload.managed = state.managedWorkspaceLayouts[id]
+	payload.temporaryLayout, payload.temporary = state.temporaryWorkspaceLayouts[id]
 	for _, pane := range dto.Panes {
 		if pane.SessionID == 0 {
 			continue
@@ -225,8 +249,8 @@ func (state *State) detachWorkspace(id layoutcore.WorkspaceID) (*tabPayload, boo
 		}
 	}
 	_, _ = state.deck.RemoveWorkspace(id, nil)
-	delete(state.temporaryWorkspaceColumns, id)
-	delete(state.managedWorkspaceColumns, id)
+	delete(state.temporaryWorkspaceLayouts, id)
+	delete(state.managedWorkspaceLayouts, id)
 	kept := state.sessions[:0]
 	for _, session := range state.sessions {
 		if !payloadHolds(payload, session.ID) {
@@ -291,7 +315,8 @@ func (state *State) attachPayload(payload *tabPayload, drop tabDrop) bool {
 				session.HostID = host.ID
 			}
 		}
-		session.Title = state.uniqueSessionTitle(session.Title, 0)
+		session.Title = cleanSessionTitle(session.Title)
+		session.Mention = state.uniqueMentionName(session.Title, session.ID)
 		state.sessions = append(state.sessions, session)
 		moved := &state.sessions[len(state.sessions)-1]
 		moved.paneSlot = state.claimPaneSlot()
@@ -321,16 +346,16 @@ func (state *State) attachPayload(payload *tabPayload, drop tabDrop) bool {
 	if docking {
 		destinationIdentity := state.workspaceIdentity(dockInto)
 		sourceIdentity := workspaceIdentity{
-			managed:          payload.managed,
-			managedColumns:   payload.managedCols,
-			temporary:        payload.temporary,
-			temporaryColumns: payload.temporaryCols,
+			managed:         payload.managed,
+			managedLayout:   payload.managedLayout,
+			temporary:       payload.temporary,
+			temporaryLayout: payload.temporaryLayout,
 		}
 		if _, err := state.deck.Dock(dockInto, id, drop.pane, drop.edge.axis(), drop.edge.placement()); err != nil {
 			_, _ = state.deck.RemoveWorkspace(id, nil)
 			state.deck.ActivateWorkspace(dockInto)
-			delete(state.temporaryWorkspaceColumns, id)
-			delete(state.managedWorkspaceColumns, id)
+			delete(state.temporaryWorkspaceLayouts, id)
+			delete(state.managedWorkspaceLayouts, id)
 			keep := len(state.sessions) - len(added)
 			clear(state.sessions[keep:])
 			state.sessions = state.sessions[:keep]
@@ -341,10 +366,10 @@ func (state *State) attachPayload(payload *tabPayload, drop tabDrop) bool {
 		id = dockInto
 	} else {
 		state.restoreWorkspaceIdentity(id, workspaceIdentity{
-			managed:          payload.managed,
-			managedColumns:   payload.managedCols,
-			temporary:        payload.temporary,
-			temporaryColumns: payload.temporaryCols,
+			managed:         payload.managed,
+			managedLayout:   payload.managedLayout,
+			temporary:       payload.temporary,
+			temporaryLayout: payload.temporaryLayout,
 		})
 	}
 	for _, sessionID := range added {
@@ -368,29 +393,29 @@ func (state *State) attachPayload(payload *tabPayload, drop tabDrop) bool {
 
 // workspaceIdentity is the in-memory metadata attached to one workspace tab.
 type workspaceIdentity struct {
-	managed          bool
-	managedColumns   uint8
-	temporary        bool
-	temporaryColumns uint8
+	managed         bool
+	managedLayout   layoutcore.LayoutSpec
+	temporary       bool
+	temporaryLayout layoutcore.LayoutSpec
 }
 
 func (state *State) workspaceIdentity(id layoutcore.WorkspaceID) workspaceIdentity {
-	columns, managed := state.managedWorkspaceColumns[id]
-	temporaryColumns, temporary := state.temporaryWorkspaceColumns[id]
+	layout, managed := state.managedWorkspaceLayouts[id]
+	temporaryLayout, temporary := state.temporaryWorkspaceLayouts[id]
 	return workspaceIdentity{
-		managed: managed, managedColumns: columns,
-		temporary: temporary, temporaryColumns: temporaryColumns,
+		managed: managed, managedLayout: layout,
+		temporary: temporary, temporaryLayout: temporaryLayout,
 	}
 }
 
 func (state *State) restoreWorkspaceIdentity(id layoutcore.WorkspaceID, identity workspaceIdentity) {
-	delete(state.managedWorkspaceColumns, id)
-	delete(state.temporaryWorkspaceColumns, id)
+	delete(state.managedWorkspaceLayouts, id)
+	delete(state.temporaryWorkspaceLayouts, id)
 	if identity.managed {
-		state.managedWorkspaceColumns[id] = identity.managedColumns
+		state.managedWorkspaceLayouts[id] = identity.managedLayout
 	}
 	if identity.temporary {
-		state.temporaryWorkspaceColumns[id] = identity.temporaryColumns
+		state.temporaryWorkspaceLayouts[id] = identity.temporaryLayout
 	}
 }
 
@@ -399,20 +424,20 @@ func (state *State) restoreWorkspaceIdentity(id layoutcore.WorkspaceID, identity
 func mergeWorkspaceIdentities(destination, source workspaceIdentity) workspaceIdentity {
 	result := destination
 	if !result.managed && source.managed {
-		result.managed, result.managedColumns = true, source.managedColumns
+		result.managed, result.managedLayout = true, source.managedLayout
 	}
 	if source.temporary || destination.temporary {
 		result.temporary = true
 		if !result.managed {
 			result.managed = true
 			switch {
-			case destination.temporary && destination.temporaryColumns != 0:
-				result.managedColumns = destination.temporaryColumns
-			case source.temporary && source.temporaryColumns != 0:
-				result.managedColumns = source.temporaryColumns
+			case destination.temporary && destination.temporaryLayout.Kind != 0:
+				result.managedLayout = destination.temporaryLayout
+			case source.temporary && source.temporaryLayout.Kind != 0:
+				result.managedLayout = source.temporaryLayout
 			}
 		}
-		result.temporaryColumns = result.managedColumns
+		result.temporaryLayout = result.managedLayout
 	}
 	return result
 }

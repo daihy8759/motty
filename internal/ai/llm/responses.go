@@ -21,7 +21,11 @@ type openAIResponses struct {
 // empty BaseURL selects https://api.openai.com/v1.
 func NewOpenAIResponses(cfg Config) Provider {
 	u, err := openAIBase(cfg.BaseURL)
-	return &openAIResponses{openAI{base: newBase(cfg, u), baseErr: err}}
+	p := &openAIResponses{openAI{base: newBase(cfg, u), baseErr: err}}
+	if strings.TrimSpace(cfg.ModelsURL) != "" {
+		p.modelsEndpoint, p.modelsErr = openAIModelsBase(cfg.ModelsURL)
+	}
+	return p
 }
 
 // rsItem is one element of the request's input list: a message, a function
@@ -69,15 +73,20 @@ type rsTool struct {
 	Strict bool `json:"strict"`
 }
 
+type rsReasoning struct {
+	Effort string `json:"effort,omitempty"`
+}
+
 type rsRequest struct {
-	Model           string   `json:"model"`
-	Instructions    string   `json:"instructions,omitempty"`
-	Input           []rsItem `json:"input"`
-	Tools           []rsTool `json:"tools,omitempty"`
-	Stream          bool     `json:"stream"`
-	Store           bool     `json:"store"`
-	MaxOutputTokens int      `json:"max_output_tokens,omitempty"`
-	Temperature     *float64 `json:"temperature,omitempty"`
+	Model           string       `json:"model"`
+	Instructions    string       `json:"instructions,omitempty"`
+	Input           []rsItem     `json:"input"`
+	Tools           []rsTool     `json:"tools,omitempty"`
+	Stream          bool         `json:"stream"`
+	Store           bool         `json:"store"`
+	MaxOutputTokens int          `json:"max_output_tokens,omitempty"`
+	Temperature     *float64     `json:"temperature,omitempty"`
+	Reasoning       *rsReasoning `json:"reasoning,omitempty"`
 }
 
 func (p *openAIResponses) buildBody(req Request) ([]byte, error) {
@@ -88,6 +97,9 @@ func (p *openAIResponses) buildBody(req Request) ([]byte, error) {
 	// be kept on the provider's side.
 	out := rsRequest{Model: req.Model, Instructions: req.System, Stream: true, Store: false,
 		MaxOutputTokens: req.MaxTokens, Temperature: req.Temperature, Input: []rsItem{}}
+	if req.ReasoningEffort != "" && req.ReasoningEffort != "default" {
+		out.Reasoning = &rsReasoning{Effort: req.ReasoningEffort}
+	}
 	str := func(s string) *string { return &s }
 	for _, m := range req.Messages {
 		switch m.Role {

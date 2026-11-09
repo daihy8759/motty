@@ -152,7 +152,7 @@ func (state *State) applyHostCatalog(document hostCatalogDocument) (added, dupli
 		}
 	}
 	for _, group := range document.Groups {
-		name := strings.TrimSpace(group.Name)
+		name := normalizeHostGroupPath(group.Name)
 		if index := state.hostGroupIndex(name); index >= 0 {
 			state.hostGroups[index].Explicit = state.hostGroups[index].Explicit || group.Explicit
 		} else {
@@ -164,7 +164,7 @@ func (state *State) applyHostCatalog(document hostCatalogDocument) (added, dupli
 		if !ok {
 			continue
 		}
-		if state.hostIndexByEndpoint(host) >= 0 {
+		if state.hostIndexSame(host) >= 0 {
 			duplicates++
 			continue
 		}

@@ -176,11 +176,15 @@ func (state *State) mergeRemote(remote backup.Document, missing bool) (*backup.D
 	}
 
 	holdable, _ := holdableRecords(remote.Records)
+	notesChanged, err := state.preserveNoteConflicts(holdable)
+	if err != nil {
+		return nil, err
+	}
 	result, err := state.config.Merge(holdable)
 	if err != nil {
 		return nil, err
 	}
-	if len(result.Applied) > 0 {
+	if len(result.Applied) > 0 || notesChanged {
 		if err := state.reloadShared(); err != nil {
 			return nil, err
 		}
@@ -305,6 +309,9 @@ func (state *State) refreshShared() error {
 		return err
 	}
 	base.development = development
+	// This window's own value is nobody else's to rewrite: it is carried over so
+	// the next save patches its own record rather than emptying it.
+	base.windowName, base.window = state.configBase.windowName, state.configBase.window
 	if saved.AIProviders == nil && state.recordedProviders(kindAIProvider) > 0 {
 		saved.AIProviders = &[]savedAIProvider{} // all it had recorded are gone
 	}

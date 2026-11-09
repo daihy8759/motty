@@ -90,6 +90,8 @@ type Messages struct {
 	Autofill AutofillMessages
 	// LoginExpect holds a host's Expect/Send rules' texts; see login_expect.go.
 	LoginExpect LoginExpectMessages
+	// Credentials holds the saved passwords' texts; see credentials.go.
+	Credentials CredentialMessages
 	// History holds the command history's texts; see history.go.
 	History HistoryMessages
 	// SessionLogs holds the local session-log page's texts; see session_logs.go.
@@ -136,6 +138,9 @@ type Messages struct {
 	WorkspaceSingleHost                   string
 	WorkspaceSingleColumn                 string
 	WorkspaceColumnsFmt                   string
+	WorkspaceLayoutMainRight              string
+	WorkspaceLayoutMainBottom             string
+	WorkspaceLayoutTabs                   string
 	WorkspaceTemplateHostCountFmt         string
 	WorkspaceTemplateMissingFmt           string
 	WorkspaceTemplateMissingListFmt       string
@@ -201,25 +206,9 @@ type Messages struct {
 	WorkspaceHeaderEmptyFmt               string
 	WorkspaceHeaderLayout                 string
 
-	// Debug workspace: a preview surface for the framework's components.
-	DebugTitle                  string
-	DebugDescription            string
-	DebugComponents             string
-	DebugButtonGroupTitle       string
-	DebugButtonGroupDescription string
-	DebugButtonGroupChoice      string
-	DebugAlignLeft              string
-	DebugAlignCenter            string
-	DebugAlignRight             string
-	DebugSelectTitle            string
-	DebugSelectDescription      string
-	DebugSelectChoice           string
-	DebugEnvironmentDevelopment string
-	DebugEnvironmentStaging     string
-	DebugEnvironmentProduction  string
-	DebugColorSwatchTitle       string
-	DebugColorSwatchDescription string
-	DebugColorSwatchChoice      string
+	// Debug workspace: an editor surface for trying the framework's code editor.
+	DebugTitle       string
+	DebugDescription string
 
 	// What the user is told when the saved state could not be loaded as it was.
 	// The Fmt strings take the file names or versions named in persist.go.
@@ -240,8 +229,9 @@ type Messages struct {
 	DevelopmentImportFailedFmt           string
 	DevelopmentImportNotEmpty            string
 
-	// The status-area icon and the panel beside it. TrayTooltipFmt takes the
-	// number of open sessions.
+	// The status-area icon and the panel beside it. TrayTooltipEmpty and
+	// TrayTooltipFmt take the version; the format then takes the number of open
+	// sessions.
 	TrayTitle         string
 	TrayEmpty         string
 	TrayQuit          string
@@ -250,6 +240,11 @@ type Messages struct {
 	TrayCheckUpdates  string
 	TrayTooltipFmt    string
 	TrayTooltipEmpty  string
+	// TrayHintTitle and TrayHintBody are the notification shown the first time
+	// closing a window leaves the application running in the status area, which
+	// is otherwise indistinguishable from quitting.
+	TrayHintTitle string
+	TrayHintBody  string
 
 	// Settings workspace.
 	SettingsTitle                          string
@@ -268,9 +263,7 @@ type Messages struct {
 	SettingsTextSizeRegular                string
 	SettingsTextSizeLarge                  string
 	SettingsInterfaceFont                  string
-	SettingsInterfaceFontDescription       string
 	SettingsInterfaceFontDefault           string
-	SettingsInterfaceFontCurrentFmt        string
 	SettingsInterfaceFontUnsupportedFmt    string
 	SettingsOutputAlerts                   string
 	SettingsOutputAlertsDescription        string
@@ -278,6 +271,10 @@ type Messages struct {
 	SettingsTabOrientationDescription      string
 	SettingsTabsHorizontal                 string
 	SettingsTabsVertical                   string
+	SettingsTabNumbers                     string
+	SettingsTabNumbersDescription          string
+	SettingsTabNumberKeys                  string
+	SettingsTabNumberKeysDescription       string
 	SettingsTabsAutoHide                   string
 	SettingsTabsAutoHideDescription        string
 	SettingsTabsGrouping                   string
@@ -379,6 +376,10 @@ type Messages struct {
 	SettingsRestoreOff                     string
 	SettingsRestoreActive                  string
 	SettingsRestoreAll                     string
+	SettingsLocalStart                     string
+	SettingsLocalStartDescription          string
+	SettingsLocalStartRemember             string
+	SettingsLocalStartHome                 string
 	SessionRestoreNeedsYou                 string
 	TipSFTPClose                           string
 	TipFiles                               string
@@ -440,6 +441,7 @@ type Messages struct {
 	DeleteHost       string
 	MoveHostGroup    string
 	HostGroupActions HostGroupMessages
+	HostCatalog      HostCatalogMessages
 	ExportHosts      string
 	ImportCatalog    string
 	ImportMenu       string
@@ -526,6 +528,7 @@ type Messages struct {
 	IconAuto                    string
 	IconServer                  string
 	IconTerminal                string
+	IconSerial                  string
 	IconGlobe                   string
 	IconKey                     string
 	IconDesktop                 string
@@ -639,17 +642,18 @@ type Messages struct {
 	NewTabPickerPlaceholder       string
 	NewTabPickerEmpty             string
 
-	NewTabSortDefault    string
-	NewTabSortRecent     string
-	NewTabNeverConnected string
-	NewTabJustNow        string
-	NewTabSecondsAgo     string
-	NewTabMinutesAgo     string
-	NewTabHoursAgo       string
-	NewTabDaysAgo        string
-	NewTabWeeksAgo       string
-	NewTabMonthsAgo      string
-	NewTabYearsAgo       string
+	NewTabSortDefault          string
+	NewTabWorkspacePlaceholder string
+	NewTabSortRecent           string
+	NewTabNeverConnected       string
+	NewTabJustNow              string
+	NewTabSecondsAgo           string
+	NewTabMinutesAgo           string
+	NewTabHoursAgo             string
+	NewTabDaysAgo              string
+	NewTabWeeksAgo             string
+	NewTabMonthsAgo            string
+	NewTabYearsAgo             string
 
 	LabelCloseTab    string
 	LabelTerminalFmt string
@@ -683,6 +687,10 @@ type Messages struct {
 	SessionRestoredBody   string
 	SessionReconnect      string
 	SessionReconnectHint  string
+	// SessionNoShellInput is shown when someone types into a tab whose shell is
+	// gone: the keys go nowhere, so saying so is what keeps the keyboard from
+	// looking broken.
+	SessionNoShellInput   string
 	ConnClosed            string
 	ConnCanceled          string
 	ConnRejected          string
@@ -703,6 +711,8 @@ type Messages struct {
 	HostKeyTrust                   string
 	HostKeyOnce                    string
 	HostKeyReject                  string
+	HostKeyForget                  string
+	HostKeyForgetHint              string
 	PasswordTitle                  string
 	PasswordDescription            string
 	PasswordLabel                  string
@@ -880,10 +890,16 @@ type Messages struct {
 	ForwardFieldRemotePort        string
 	ForwardFieldDestination       string
 	ForwardFieldDestinationPort   string
+	ForwardFieldResume            string
+	ForwardResumeHelp             string
 	ForwardDestinationPlaceholder string
 	ForwardLocalDestinationHint   string
 	ForwardRemoteListenerFmt      string
 	ForwardCreate                 string
+	ForwardEdit                   string
+	ForwardEditDialogTitle        string
+	ForwardSave                   string
+	ForwardUpdated                string
 	ErrForwardNameRequired        string
 	ErrForwardHostRequired        string
 	ErrForwardPortInvalid         string
@@ -891,11 +907,14 @@ type Messages struct {
 	ErrForwardNameTaken           string
 	ErrForwardLocalTaken          string
 	ErrForwardRemoteTaken         string
+	ErrForwardEditMissing         string
+	ErrForwardHostMissing         string
 
 	// SSH jump-host routing.
 	ProxyTitle                 string
 	ProxyDescription           string
 	ProxyAdd                   string
+	ProxyEdit                  string
 	ProxyStart                 string
 	ProxyStop                  string
 	ProxyRemove                string
@@ -914,15 +933,19 @@ type Messages struct {
 	ProxyStoppedStatus         string
 	ProxyRemoved               string
 	ProxyDialogTitle           string
+	ProxyEditDialogTitle       string
 	ProxyFieldTarget           string
 	ProxyFieldJump             string
 	ProxyCreate                string
+	ProxyRouteSave             string
+	ProxyUpdated               string
 	ErrProxyHostsRequired      string
 	ErrProxyTargetRequired     string
 	ErrProxyJumpRequired       string
 	ErrProxySameHost           string
 	ErrProxyCycle              string
 	ErrProxyTargetTaken        string
+	ErrProxyEditMissing        string
 	ProxyFieldViaShell         string
 	ProxyViaShellHelp          string
 	ProxyFieldRelay            string
@@ -932,6 +955,10 @@ type Messages struct {
 	ProxyViaShellTag           string
 	ErrProxyRelay              string
 	ConnDetailConnectingViaFmt string
+	// Host pickers shared by the jump-route and port-forwarding dialogs: the
+	// placeholder of the search field and the row shown when nothing matches.
+	HostPickerSearch    string
+	HostPickerNoMatches string
 
 	// SFTP remote-file page.
 	SFTPFiles                   string
@@ -941,6 +968,18 @@ type Messages struct {
 	SFTPUpload                  string
 	SFTPUploadDirectory         string
 	SFTPNewDirectory            string
+	SFTPSudoEnable              string
+	SFTPSudoDisable             string
+	SFTPModeToggle              string
+	SFTPSudoHint                string
+	SFTPSudoPassword            string
+	SFTPSudoBusy                string
+	SudoCommandsEnable          string
+	SudoCommandsDisable         string
+	SudoCommandsHint            string
+	DashboardSudoEnable         string
+	DashboardSudoDisable        string
+	DashboardSudoHint           string
 	SFTPOpen                    string
 	SFTPRename                  string
 	SFTPMove                    string
@@ -998,6 +1037,9 @@ type Messages struct {
 	SFTPMovedFmt                string
 	SFTPDeleteFileTitle         string
 	SFTPDeleteDirectoryTitle    string
+	SFTPDeleteSelectionTitle    string
+	SFTPDeleteSelectionFmt      string
+	SFTPDeleteSelectionPartial  string
 	SFTPDeleteDescriptionFmt    string
 	// SFTPDeleteFolderContentsFmt says a folder goes with everything inside it:
 	// the panel deletes a folder's contents too, not only an empty folder.
@@ -1008,6 +1050,7 @@ type Messages struct {
 	SFTPDeleteConfirm           string
 	SFTPDeletingFmt             string
 	SFTPDeletedFmt              string
+	SFTPDeletedCountFmt         string
 	SFTPPermissionsTitle        string
 	SFTPPermissionsDescription  string
 	SFTPPermissionsMode         string
@@ -1106,6 +1149,7 @@ func For(language Language) Messages {
 		messages.Toolbars = chineseToolbars
 		messages.Autofill = chineseAutofill
 		messages.LoginExpect = chineseLoginExpect
+		messages.Credentials = chineseCredentials
 		messages.History = chineseHistory
 		messages.Completion = chineseCompletion
 		messages.SSHSync = chineseSSHSync
@@ -1117,6 +1161,7 @@ func For(language Language) Messages {
 		messages.AIPanel, messages.AISettings, messages.Tools = traditionalAIPanel, traditionalAISettings, traditionalTools
 		messages.Toolbars = traditionalToolbars
 		messages.Autofill = traditionalAutofill
+		messages.Credentials = traditionalCredentials
 		messages.History = traditionalHistory
 		messages.Completion = traditionalCompletion
 		messages.SSHSync = traditionalSSHSync
@@ -1129,6 +1174,7 @@ func For(language Language) Messages {
 		messages.Toolbars = englishToolbars
 		messages.Autofill = englishAutofill
 		messages.LoginExpect = englishLoginExpect
+		messages.Credentials = englishCredentials
 		messages.History = englishHistory
 		messages.Completion = englishCompletion
 		messages.SSHSync = englishSSHSync

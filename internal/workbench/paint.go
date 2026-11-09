@@ -29,6 +29,7 @@ const (
 	iconSettings
 	iconSearch
 	iconTerminal
+	iconSerial
 	iconPlus
 	iconSun
 	iconMoon
@@ -93,6 +94,7 @@ const (
 	iconGitHub
 	iconChevronLeft
 	iconNote
+	iconNotebook
 	iconSFTPTransfer
 	iconSFTPBrowseSync
 	iconSFTPProfiles
@@ -105,6 +107,7 @@ const (
 	iconImage
 	iconSave
 	iconProcess
+	iconDirectoryTree
 )
 
 // terminalPage reports whether the window shows the panes of a workspace rather
@@ -116,7 +119,11 @@ func (state *State) terminalPage() bool {
 
 // Paint renders the application from state using stable hit identities.
 func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
+	defer state.devEndPaint(canvas, size)
+	defer state.paintNoteExit(canvas, ui.Rect{Width: size.Width, Height: size.Height})
 	canvas.SetTree(&tree)
+	state.autosaveNotes(canvas)
+	state.syncNoteWindows()
 	state.workspaceCardRegions = state.workspaceCardRegions[:0]
 	state.pixelScale = canvas.PixelScale()
 	// Motty keeps one central click handler. The event pass of a click names its
@@ -167,8 +174,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	// The terminal layout follows the window and the font; remember what it
 	// was painted with so a resize can work out the rows and columns.
 	state.viewport = size
-	state.cellWidth, state.cellHeight = canvas.MonoCellSize(state.terminalFontSize, state.terminalFontFace)
-	state.cellHeight *= state.terminalLineHeight.factor()
+	state.measureTerminalCell(canvas)
 	if session := state.fullscreenDesktop(); session != nil {
 		state.beginMenus()
 		state.paintDesktopPage(canvas, size, session)
@@ -232,7 +238,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		if !fullPage {
 			f.Row().Grow(1).Shrink(1).MarginSides(0, 0, state.toolbarDockBottomReserve(false), 0).Children(func() {
 				f.Slot().Width(state.toolbarDockSideReserveFor(true, false)).Shrink(0)
-				state.declareNavigation(f)
+				state.declareNavigation(f, size.Height)
 				workspaceSlot = f.Slot().Grow(1).MarginSides(0, cardRight, sectionCardMargin, 0).
 					Radius(radius.surface).Border(workspaceBorder, pal.windowStroke).Background(pal.workspace)
 			})
@@ -249,6 +255,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	state.beginMenus()
 	if terminal {
 		state.paintWorkspacePanes(canvas, size)
+		state.paintNotesPanel(canvas, size)
 		state.paintIndependentMonitor(canvas, size)
 		state.paintWorkspaceSideRail(canvas, size)
 		state.paintWorkspacePaneTools(canvas)
@@ -277,6 +284,8 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 				state.paintSettingsWorkspace(canvas, workspace)
 			case sectionKnownHosts:
 				state.paintKnownHostsWorkspace(canvas, workspace)
+			case sectionNotes:
+				state.paintNotesWorkspace(canvas, workspace)
 			case sectionSnippets:
 				state.paintSnippetsWorkspace(canvas, workspace)
 			case sectionSessionLogs:
@@ -293,6 +302,13 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	}
 	state.paintToolbarDockBottom(canvas, size)
 	state.paintVerticalTabs(canvas, size)
+	if state.activeSection == sectionSettings &&
+		state.settingsCategory == settingsTerminal &&
+		!state.settingsSearching() &&
+		state.schemeBrowserOpen &&
+		state.modal == modalNone {
+		state.paintSchemeDrawer(canvas, state.baseWorkspacePixelBounds(size))
+	}
 	viewport := state.windowRect()
 	state.paintAITargetSelect(canvas)
 	state.paintMCPClientSelect(canvas)
@@ -303,10 +319,6 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	state.paintDashboardMenu(canvas)
 	state.paintSessionLogFilters(canvas)
 	state.paintTransferCenter(canvas)
-	// The gallery's select is painted here, outside the workspace's clip and
-	// inside the frame's menu pass, so its popup can leave the page and keeps the
-	// menu state its keyboard handling needs.
-	state.devPaintOverlay(canvas)
 	switch state.modal {
 	case modalTerminalInput:
 		state.paintTerminalInputConfirm(canvas, viewport)
@@ -352,6 +364,8 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintHighlightDialog(canvas, viewport)
 	case modalAutofillRule:
 		state.paintAutofillDialog(canvas, viewport)
+	case modalCredential:
+		state.paintCredentialDialog(canvas, viewport)
 	case modalAutofillConfirm:
 		state.paintAutofillConfirm(canvas, viewport)
 	case modalDeleteRule:
@@ -372,6 +386,8 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 		state.paintToolbarSettings(canvas, viewport)
 	case modalSFTPColumns:
 		state.paintSFTPColumnSettings(canvas, viewport)
+	case modalSudoSFTP:
+		state.paintSudoSFTP(canvas, viewport)
 	case modalRemoteClipboard:
 		state.paintRemoteClipboardDialog(canvas, viewport)
 	case modalFileTransfer:
@@ -424,6 +440,7 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	state.paintLocalShellPicker(canvas, viewport)
 	state.paintSnippetMenu(canvas, viewport)
 	state.paintSFTPMenu(canvas, viewport)
+	state.paintQueuedSFTPHeaderMenu(canvas)
 	state.paintHostMenus(canvas, viewport)
 	state.endMenus()
 	state.requestReconnectFrames(canvas)
@@ -432,7 +449,9 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 	state.requestLoginCommandFrames(canvas)
 	state.paintLocalProxyFocus(canvas)
 	// Last, so a tooltip is never covered by what it describes.
-	state.tooltip.Paint(canvas, state.Theme(), viewport, components.TooltipOptions{Layer: tooltipLayer, SideOffset: tooltipGap}, components.HoverTooltipDelay)
+	if _, formatting := canvas.Hovered().In(hitNoteFormats); !formatting {
+		state.tooltip.Paint(canvas, state.Theme(), viewport, components.TooltipOptions{Layer: tooltipLayer, SideOffset: tooltipGap}, components.HoverTooltipDelay)
+	}
 	state.fileNotices.paint(canvas, state.Theme(), ui.Rect{Y: windowBarHeight, Width: size.Width, Height: max(size.Height-windowBarHeight, 0)})
 	if !state.workspaceTemplateFocusPending.IsZero() {
 		if state.activeSection == sectionWorkspaces && state.modal == modalNone {
@@ -445,6 +464,9 @@ func (state *State) Paint(canvas *ui.Canvas, size ui.Size) {
 // windowRect is the whole window as last painted: the viewport a popup gives
 // its Viva component so a press anywhere outside it dismisses it.
 func (state *State) windowRect() ui.Rect {
+	if state.noteTarget != nil && state.noteTarget.windowView {
+		return state.noteTarget.viewport
+	}
 	return ui.Rect{Width: state.viewport.Width, Height: state.viewport.Height}
 }
 
@@ -503,9 +525,12 @@ type windowBar struct {
 
 type barTab struct {
 	badge, light flex.Box
+	pathLabel    string
+	foreground   ui.Color
 	title        flex.Box
 	output       outputAlertKind
 	label        string
+	number       string // the tab's number, empty for a tab no number key reaches
 	workspace    layoutcore.WorkspaceInfo
 	fileSession  uint32
 	id, closeID  ui.ID
@@ -522,6 +547,7 @@ type barGeometry struct {
 	tabCount          int
 	barButtons        int
 	locked            bool
+	numbers           bool
 	orientation       tabOrientation
 	leading, trailing float32
 	valid             bool
@@ -546,17 +572,19 @@ func (state *State) windowBarGeometry(canvas *ui.Canvas, width float32) barGeome
 		geometry.barButtons == buttons &&
 		geometry.orientation == state.tabOrientation &&
 		geometry.locked == locked &&
+		geometry.numbers == state.tabNumbers &&
 		geometry.leading == leading && geometry.trailing == trailing {
 		return *geometry
 	}
 	f := chrome.probe.Begin(canvas, state.Theme(), ui.Rect{Width: width, Height: windowBarHeight})
 	f.Column().Fill().Children(func() {
-		state.declareWindowBar(f, &chrome.probeBar, true, false, barGeometry{locked: locked}, 0)
+		state.declareWindowBar(f, &chrome.probeBar, true, false, barGeometry{locked: locked, numbers: state.tabNumbers}, 0)
 	})
 	f.End()
 	*geometry = barGeometry{
 		width: width, tabCount: tabCount, barButtons: buttons, leading: leading, trailing: trailing, valid: true,
 		locked:      locked,
+		numbers:     state.tabNumbers,
 		orientation: state.tabOrientation,
 		area:        chrome.probeArea.Rect(), row: chrome.probeRow.Rect(), tabWidth: barTabMax,
 	}
@@ -641,6 +669,10 @@ func (state *State) declareWindowBar(f *flex.Frame, bar *windowBar, probe, pictu
 								// lock beside it. The strip uses a uniform tab pitch.
 								minimum += 18
 							}
+							if geometry.numbers {
+								// The number sits beside the name, which keeps its room.
+								minimum += tabNumberMinExtra
+							}
 							tab = f.Slot().Width(barTabMax).MinWidth(minimum).Height(barTabHeight).Shrink(1).MarginSides(0, barGap, 0, 0)
 							chrome.probeTabs = append(chrome.probeTabs, tab)
 							bar.tabs = append(bar.tabs, barTab{})
@@ -650,7 +682,7 @@ func (state *State) declareWindowBar(f *flex.Frame, bar *windowBar, probe, pictu
 						if index == 0 {
 							first = -scroll
 						}
-						entry := state.declareWorkspaceTab(f, workspace, geometry.tabWidth, barTabHeight, first, false, false)
+						entry := state.declareWorkspaceTab(f, workspace, geometry.tabWidth, barTabHeight, first, false, false, index+1)
 						bar.tabs = append(bar.tabs, entry)
 					}
 					for fileIndex, fileTab := range state.sftpTabs {
@@ -664,12 +696,18 @@ func (state *State) declareWindowBar(f *flex.Frame, bar *windowBar, probe, pictu
 							if geometry.locked {
 								minimum += 18
 							}
+							if geometry.numbers {
+								minimum += tabNumberMinExtra
+							}
 							tab := f.Slot().Width(barTabMax).MinWidth(minimum).Height(barTabHeight).Shrink(1).MarginSides(0, barGap, 0, 0)
 							chrome.probeTabs = append(chrome.probeTabs, tab)
 							bar.tabs = append(bar.tabs, barTab{})
 							continue
 						}
 						entry := barTab{fileSession: fileTab.session.ID, id: id, closeID: closeID}
+						if state.tabNumbers {
+							entry.number = tabNumber(index + 1)
+						}
 						active := state.activeSection == sectionSFTP && state.activeSFTPTab == fileTab.session.ID
 						hovered := f.Canvas().Hovered() == id || f.Canvas().Hovered() == closeID
 						foreground := pal.muted
@@ -702,6 +740,11 @@ func (state *State) declareWindowBar(f *flex.Frame, bar *windowBar, probe, pictu
 							HitOutset(barTabReach, 0, barTabReach, 0).PadSides(0, 3, 0, 4).Items(flex.Center).Radius(radius.item).Border(1, edge).Background(fill).
 							HitWith(id, label, ui.HitOptions{Role: ui.RoleTab, Selected: active}).Children(func() {
 							entry.badge = f.Slot().Size(20, 20).MarginSides(0, 7, 0, 0)
+							if state.tabNumbers && entry.number != "" {
+								// File tabs follow the session tabs in the number row,
+								// as they do for the number shortcuts.
+								f.Text(entry.number).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(tabNumberColor(foreground)).LineHeight(20).Shrink(0).MarginSides(0, tabNumberGap, 0, 0)
+							}
 							f.Text(label).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(foreground).LineHeight(20).Ellipsis()
 							entry.light = f.Slot().Size(9, 20).MarginSides(0, 0, 0, 7)
 							f.Spacer()
@@ -734,11 +777,17 @@ func (state *State) declareWindowBar(f *flex.Frame, bar *windowBar, probe, pictu
 	})
 }
 
-// declareWorkspaceTab shares tab styling and hit identities between both orientations.
-func (state *State) declareWorkspaceTab(f *flex.Frame, workspace layoutcore.WorkspaceInfo, width, height, first float32, vertical, compact bool) barTab {
+// declareWorkspaceTab shares tab styling and hit identities between both
+// orientations. number is the tab's place in the number row, zero for a tab no
+// number key reaches.
+func (state *State) declareWorkspaceTab(f *flex.Frame, workspace layoutcore.WorkspaceInfo, width, height, first float32, vertical, compact bool, number int) barTab {
 	m, pal := state.messages, state.pal
 	id, closeID := hitTabList.At(int(workspace.ID)), hitTabCloseList.At(int(workspace.ID))
 	entry := barTab{workspace: workspace, id: id, closeID: closeID}
+	if state.tabNumbers {
+		// Numbering costs a string per tab, so a bar without numbers pays none.
+		entry.number = tabNumber(number)
+	}
 	active := state.activeSection == sectionTerminal && state.deck.ActiveWorkspace() == workspace.ID
 	hovered := f.Canvas().Hovered() == id || f.Canvas().Hovered() == closeID
 	foreground := pal.muted
@@ -760,6 +809,7 @@ func (state *State) declareWorkspaceTab(f *flex.Frame, workspace layoutcore.Work
 		edge = tintHostSurface(edge, session.host.Color, .35)
 	}
 	entry.background = fill
+	entry.foreground = foreground
 	label := state.tabLabel(workspace)
 	entry.label = label
 	entry.output = state.workspaceOutputAlert(workspace.ID)
@@ -770,6 +820,13 @@ func (state *State) declareWorkspaceTab(f *flex.Frame, workspace layoutcore.Work
 	tabOptions.Hint = label
 	if workspace.Locked {
 		tabOptions.Hint = m.TabLockedHint
+	}
+	if directory := state.tabDirectory(workspace); directory != "" {
+		if tabOptions.Hint != "" && workspace.Locked {
+			tabOptions.Hint += "\n" + directory
+		} else {
+			tabOptions.Hint = directory
+		}
 	}
 	// A desktop keeps its size and protection in the status line under the
 	// picture, which the host may have hidden: the tab says it on hover instead.
@@ -794,11 +851,23 @@ func (state *State) declareWorkspaceTab(f *flex.Frame, workspace layoutcore.Work
 			return
 		}
 		entry.badge = f.Slot().Size(20, 20).MarginSides(0, 7, 0, 0)
+		if state.tabNumbers && entry.number != "" {
+			// The number names the name beside it, so it carries less ink.
+			f.Text(entry.number).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(tabNumberColor(foreground)).LineHeight(20).Shrink(0).MarginSides(0, tabNumberGap, 0, 0)
+		}
 		titleColor := foreground
 		if entry.output != outputAlertNone {
 			titleColor.Alpha = 0
 		}
-		title := f.Text(label).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(titleColor).LineHeight(20).Ellipsis()
+		var title flex.Box
+		if state.tabDirectory(workspace) != "" {
+			// Reserve the same layout space as text, then shorten the path once
+			// the actual width is known. Ordinary names keep tail ellipsis.
+			entry.pathLabel = label
+			title = f.Slot().Size(f.Canvas().TextWidthWeight(label, metrics.FontSizeS, ui.WeightMedium), 20).Shrink(1)
+		} else {
+			title = f.Text(label).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(titleColor).LineHeight(20).Ellipsis()
+		}
 		entry.title = title
 		if vertical {
 			title.Grow(1).Basis(0)
@@ -966,8 +1035,12 @@ type chromeLayout struct {
 
 // declareNavigation declares the sidebar: the name of the application over the
 // pages, and the way to a shell on this computer and to the settings at the bottom.
-func (state *State) declareNavigation(f *flex.Frame) {
+func (state *State) declareNavigation(f *flex.Frame, height float32) {
 	m := state.messages
+	logoGap := float32(20)
+	if height < 640 {
+		logoGap = 0
+	}
 
 	items := [...]struct {
 		id     ui.ID
@@ -984,10 +1057,11 @@ func (state *State) declareNavigation(f *flex.Frame) {
 		{hitPortForwarding, iconForward, m.NavPortForwarding, state.activeSection == sectionForwards},
 		{hitKnownHosts, iconKnown, m.NavKnownHosts, state.activeSection == sectionKnownHosts},
 		{hitSnippets, iconNote, m.NavSnippets, state.activeSection == sectionSnippets},
+		{hitNotes, iconNotebook, state.noteText("Notes", "笔记"), state.activeSection == sectionNotes},
 	}
 	f.Column().Width(navigationWidth).Shrink(0).Children(func() {
 		// The logo with the name beside it, painted into this slot after layout.
-		state.chrome.lockup = f.Slot().Size(lockupWidth, lockupHeight).MarginSides(15, 0, 20, 0).Self(flex.Center)
+		state.chrome.lockup = f.Slot().Size(lockupWidth, lockupHeight).MarginSides(15, 0, logoGap, 0).Self(flex.Center)
 		for _, item := range items {
 			state.navigationItem(f, item.id, item.icon, item.label, item.active, 4)
 		}
@@ -1055,9 +1129,13 @@ func (state *State) paintHostMenus(canvas *ui.Canvas, viewport ui.Rect) {
 	if state.hostFilterMenu {
 		state.paintHostFilterMenu(canvas, viewport)
 	}
+	if state.chipMenu.open {
+		state.paintHostChipMenu(canvas, viewport)
+	}
 	if state.importMenu {
 		state.paintImportMenu(canvas, viewport)
 	}
+	state.paintHostOrder(canvas, viewport)
 }
 
 // paintHostsHeader is the toolbar, persistent group filters and, while hosts
@@ -1107,6 +1185,7 @@ func (state *State) paintHostsHeader(canvas *ui.Canvas, bounds ui.Rect) ui.Rect 
 		danger  bool
 	}{
 		{hitExportHosts, m.ExportHosts, iconFileDown, len(state.hosts) > 0, false},
+		{hitConnectSelectedHosts, state.messages.WorkspaceDraftTemporary, iconPlug, false, false},
 		{hitEditHost, m.EditHost, iconPencil, false, false},
 		{hitCopyHost, m.CopyHost, iconCopy, false, false},
 		{hitMoveHostGroup, m.MoveHostGroup, iconFolderOpen, false, false},
@@ -1122,6 +1201,8 @@ func (state *State) paintHostsHeader(canvas *ui.Canvas, bounds ui.Rect) ui.Rect 
 		single := enabled && len(state.hostSelections) <= 1
 		for i := range actions {
 			switch actions[i].id {
+			case hitConnectSelectedHosts:
+				actions[i].enabled = state.selectedHostsWorkspaceEligible()
 			case hitEditHost, hitCopyHost:
 				actions[i].enabled = single
 			case hitMoveHostGroup, hitDeleteHost:
@@ -1147,19 +1228,29 @@ func (state *State) paintHostsHeader(canvas *ui.Canvas, bounds ui.Rect) ui.Rect 
 	// Which chips fit decides what is declared; where they sit is the row's.
 	showChips := state.hasHostFilter()
 	showGroupControls := showChips && !state.hostFilterOn
+	compactHostControls := bounds.Width < 450
+	viewControlsWidth := toggleWidth + 6 + 26
+	selectionControlsWidth := float32(0)
+	if !compactHostControls {
+		viewControlsWidth += 32
+		selectionControlsWidth = 52
+	}
 	headerHeight := float32(hostListTop)
+	if compactHostControls {
+		headerHeight += rowHeight + rowGap
+	}
 	if anySelected {
 		headerHeight += rowHeight + rowGap
 	}
 	if showChips {
-		room := bounds.Width - 2*rowPad - toggleWidth - rowGap
+		room := bounds.Width - 2*rowPad - viewControlsWidth - rowGap - selectionControlsWidth
 		if showGroupControls {
 			room -= groupControlsWidth + rowGap
 		}
 		state.fitHostChips(canvas, room)
 	}
 
-	var search, connect, importButton, newHost, toggle, list flex.Box
+	var search, connect, importButton, newHost, toggle, list, selectAll, orderButton flex.Box
 	var buttons [len(actions)]flex.Box
 	var groupControls [2]flex.Box
 	f := chrome.header.Begin(canvas, state.Theme(), bounds)
@@ -1174,14 +1265,17 @@ func (state *State) paintHostsHeader(canvas *ui.Canvas, bounds ui.Rect) ui.Rect 
 			})
 			// Filters and view controls stay in place when the selection changes.
 			f.Row().Height(rowHeight).MarginSides(12, 0, 0, 0).PadSides(0, 18, 0, 18).Gap(12).Items(flex.Center).Children(func() {
+				if !compactHostControls {
+					selectAll = f.Slot().Size(40, rowHeight).Shrink(0)
+				}
 				if showChips {
 					f.Row().Gap(6).Children(func() {
 						chrome.chips = chrome.chips[:0]
 						chrome.chips = append(chrome.chips, f.Slot().Size(state.filterChipWidth(canvas, m.HostFilterAll, state.hostTotalDigits), rowHeight))
-						for _, group := range state.hostGroups[:state.hostFilterHidden] {
-							chrome.chips = append(chrome.chips, f.Slot().Size(state.filterChipWidth(canvas, state.hostGroupLabel(group), group.Digits), rowHeight))
+						for _, index := range state.hostChips[:state.hostFilterHidden] {
+							chrome.chips = append(chrome.chips, f.Slot().Size(state.hostChipWidth(canvas, index), rowHeight))
 						}
-						if state.hostFilterHidden < len(state.hostGroups) {
+						if state.hostFilterHidden < len(state.hostChips) {
 							chrome.chips = append(chrome.chips, f.Slot().Size(state.filterChipWidth(canvas, m.HostFilterMore, ""), rowHeight))
 						}
 					})
@@ -1194,8 +1288,16 @@ func (state *State) paintHostsHeader(canvas *ui.Canvas, bounds ui.Rect) ui.Rect 
 						}
 					})
 				}
-				toggle = f.Slot().Size(toggleWidth-2, rowHeight).MarginSides(0, 0, 0, 2)
+				toggle = f.Slot().Size(viewControlsWidth, rowHeight).MarginSides(0, 0, 0, 2)
 			})
+			if compactHostControls {
+				f.Row().Height(rowHeight).MarginSides(rowGap, 0, 0, 0).PadSides(0, rowPad, 0, rowPad).Gap(8).Items(flex.Center).Children(func() {
+					selectAll = f.Slot().Size(40, rowHeight).Shrink(0)
+					f.Spacer()
+					f.Text(m.HostCatalog.Order).FontSize(metrics.FontSizeS).Color(pal.muted).Ellipsis().Shrink(1)
+					orderButton = f.Slot().Size(26, 26).Shrink(0)
+				})
+			}
 			if anySelected {
 				f.Row().Height(rowHeight).MarginSides(rowGap, 0, 0, 0).PadSides(0, rowPad, 0, rowPad).Gap(rowGap).Items(flex.Center).Children(func() {
 					actionsLeft := -quietPadding
@@ -1222,7 +1324,8 @@ func (state *State) paintHostsHeader(canvas *ui.Canvas, bounds ui.Rect) ui.Rect 
 	value := state.search.String()
 	components.PaintInputGroup(canvas, state.Theme(), search.Rect(), components.InputGroupSnapshot{
 		ID: hitSearch, Label: m.NavSearch, Value: value, Placeholder: m.SearchPlaceholder,
-		NativeEditing: canvas.Focused() == hitSearch && value != "",
+		Disabled:      state.hostSort.enabled,
+		NativeEditing: !state.hostSort.enabled && canvas.Focused() == hitSearch && value != "",
 		InlineStart:   components.InputGroupSlot{Kind: components.InputGroupSlotIcon, Icon: lucideIcons[iconSearch]},
 	})
 	// Connect needs something to connect to.
@@ -1231,7 +1334,11 @@ func (state *State) paintHostsHeader(canvas *ui.Canvas, bounds ui.Rect) ui.Rect 
 	chrome.importButton = importButton.Rect()
 	state.paintToolbarButtonIn(canvas, hitImportMenu, chrome.importButton, m.ImportMenu, importIcon, false, true, condensed)
 
-	state.paintHostViewToggle(canvas, toggle.Rect().X, toggle.Rect().Y+toggle.Rect().Height/2)
+	state.paintHostViewToggle(canvas, toggle.Rect().X, toggle.Rect().Y+toggle.Rect().Height/2, !compactHostControls)
+	if compactHostControls {
+		state.paintHostOrderButton(canvas, orderButton.Rect())
+	}
+	state.paintHostScopeCheckbox(canvas, hitHostSelectAll, selectAll.Rect(), state.hostScopeSelection.all)
 	if showGroupControls {
 		expand, collapse := state.hostGroupsExpansionActions()
 		state.paintIconButton(canvas, hitHostGroupsExpandAll, iconChevronDown, groupControls[0].Rect(), m.HostGroupActions.ExpandAll, !expand, iconButtonQuiet, pal.workspace)
@@ -1312,26 +1419,27 @@ func (state *State) popupAt(canvas *ui.Canvas, viewport ui.Rect, at ui.Point, wi
 }
 
 // fitHostChips decides how many group chips fit in room, leaving the rest to the
-// More menu: hostFilterHidden is the index of the first group left out.
+// More menu: hostFilterHidden is the position in hostChips of the first one left out.
 func (state *State) fitHostChips(canvas *ui.Canvas, room float32) {
 	const gap = float32(6)
+	state.fitChipGroups()
 	moreWidth := state.filterChipWidth(canvas, state.messages.HostFilterMore, "")
-	state.hostFilterHidden = len(state.hostGroups)
+	state.hostFilterHidden = len(state.hostChips)
 
 	// Do they all fit? If not, room is kept for More.
 	used := state.filterChipWidth(canvas, state.messages.HostFilterAll, state.hostTotalDigits)
-	for _, group := range state.hostGroups {
-		used += gap + state.filterChipWidth(canvas, state.hostGroupLabel(group), group.Digits)
+	for _, index := range state.hostChips {
+		used += gap + state.hostChipWidth(canvas, index)
 	}
 	limit := room
 	if used > room {
 		limit = room - moreWidth - gap
 	}
 	x := state.filterChipWidth(canvas, state.messages.HostFilterAll, state.hostTotalDigits) + gap
-	for index, group := range state.hostGroups {
-		width := state.filterChipWidth(canvas, state.hostGroupLabel(group), group.Digits)
+	for position, index := range state.hostChips {
+		width := state.hostChipWidth(canvas, index)
 		if x+width > limit {
-			state.hostFilterHidden = index
+			state.hostFilterHidden = position
 			return
 		}
 		x += width + gap
@@ -1342,19 +1450,30 @@ func (state *State) fitHostChips(canvas *ui.Canvas, room float32) {
 // then each group with how many hosts it holds, then More when some did not fit.
 func (state *State) paintHostFilterChips(canvas *ui.Canvas, chips []flex.Box) {
 	m := state.messages
-	state.paintFilterChip(canvas, hitHostFilterAll, chips[0].Rect(), m.HostFilterAll, state.hostTotalDigits, !state.hostFilterOn)
-	for index, group := range state.hostGroups[:state.hostFilterHidden] {
-		state.paintFilterChip(canvas, hitHostFilterList.At(index), chips[1+index].Rect(),
-			state.hostGroupLabel(group), group.Digits, state.hostFilterOn && state.hostFilter == group.Name)
+	state.paintFilterChip(canvas, filterChip{id: hitHostFilterAll, bounds: chips[0].Rect(), label: m.HostFilterAll, digits: state.hostTotalDigits, chosen: !state.hostFilterOn})
+	for position, index := range state.hostChips[:state.hostFilterHidden] {
+		label, digits, chosen := state.hostChipView(index)
+		var chevron ui.ID
+		if state.hostChipHasMenu(index) {
+			chevron = hitHostFilterChevronList.At(index)
+			if state.chipMenu.open && state.chipMenu.root == state.hostGroups[index].Name {
+				state.chipMenu.anchor = chips[1+position].Rect()
+			}
+		}
+		state.paintFilterChip(canvas, filterChip{id: hitHostFilterList.At(index), chevron: chevron, bounds: chips[1+position].Rect(), label: label, digits: digits, pinned: state.hostGroups[index].Pinned, chosen: chosen})
 		state.openHostGroupActionsOn(canvas, hitHostFilterList.At(index), index)
 	}
-	if state.hostFilterHidden < len(state.hostGroups) {
+	if state.hostFilterHidden < len(state.hostChips) {
 		hiddenChosen := false
 		if state.hostFilterOn {
-			hiddenChosen = state.hostGroupIndex(state.hostFilter) >= state.hostFilterHidden
+			for _, index := range state.hostChips[state.hostFilterHidden:] {
+				if _, _, chosen := state.hostChipView(index); chosen {
+					hiddenChosen = true
+				}
+			}
 		}
 		state.filterMoreButton = chips[1+state.hostFilterHidden].Rect()
-		state.paintFilterChip(canvas, hitHostFilterMore, state.filterMoreButton, m.HostFilterMore, "", hiddenChosen)
+		state.paintFilterChip(canvas, filterChip{id: hitHostFilterMore, bounds: state.filterMoreButton, label: m.HostFilterMore, chosen: hiddenChosen})
 	}
 }
 
@@ -1368,43 +1487,90 @@ func (state *State) filterChipWidth(canvas *ui.Canvas, label, digits string) flo
 	return width + 2
 }
 
+// hostChipWidth is the width of the chip of the group at index: its label, its
+// count, and room for the chevron that opens its nested groups.
+func (state *State) hostChipWidth(canvas *ui.Canvas, index int) float32 {
+	label, digits, _ := state.hostChipView(index)
+	width := state.filterChipWidth(canvas, label, digits)
+	if state.hostGroups[index].Pinned {
+		width += chipPinWidth
+	}
+	if state.hostChipHasMenu(index) {
+		width += chipChevronWidth
+	}
+	return width
+}
+
+// chipPinWidth is what the pin marker adds to a chip: the gap before it and its glyph.
+const chipPinWidth float32 = 18
+
+// chipChevronWidth is what a chevron adds to a chip: the gap before it and its glyph.
+const chipChevronWidth = 18
+
+// filterChip is one chip to paint: where it goes, what it shows, the control it
+// answers on, the second target that opens its menu, and the two states it can
+// be in. Named fields keep those two states from being swapped by a caller.
+type filterChip struct {
+	id, chevron ui.ID
+	bounds      ui.Rect
+	label       string
+	digits      string
+	pinned      bool
+	chosen      bool
+}
+
 // paintFilterChip draws one chip: a pill that is filled while it is the choice.
-func (state *State) paintFilterChip(canvas *ui.Canvas, id ui.ID, bounds ui.Rect, label, digits string, chosen bool) {
+// A pinned chip carries an accent star before its name. A chip with a chevron ID
+// has a second target at its end that opens a menu.
+func (state *State) paintFilterChip(canvas *ui.Canvas, chip filterChip) {
 	pal := state.pal
 	foreground := pal.muted
 	var fill ui.Color
 	switch {
-	case chosen:
+	case chip.chosen:
 		fill, foreground = pal.surfaceHot, pal.text
-	case canvas.Pressed() == id:
+	case canvas.Pressed() == chip.id:
 		fill = pal.surfaceHot
-	case canvas.Hovered() == id:
+	case canvas.Hovered() == chip.id:
 		fill, foreground = pal.surfaceSoft, pal.text
 	}
-	f := state.chrome.widget.Begin(canvas, state.Theme(), bounds)
-	f.Row().Fill().PadSides(0, 14, 0, 12).Gap(6).Items(flex.Center).Radius(bounds.Height/2).Background(fill).
-		HitWith(id, label, ui.HitOptions{Role: ui.RoleButton, Selected: chosen}).Children(func() {
-		f.Text(label).FontSize(metrics.FontSizeS).Weight(ui.WeightSemibold).Color(foreground)
-		if digits != "" {
-			f.Text(digits).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(pal.faint)
+	f := state.chrome.widget.Begin(canvas, state.Theme(), chip.bounds)
+	f.Row().Fill().PadSides(0, 14, 0, 12).Gap(6).Items(flex.Center).Radius(chip.bounds.Height/2).Background(fill).
+		HitWith(chip.id, chip.label, ui.HitOptions{Role: ui.RoleButton, Selected: chip.chosen}).Children(func() {
+		if chip.pinned {
+			f.Icon(lucideIcons[iconStar]).Size(12, 12).Color(pal.accent).Shrink(0)
+		}
+		f.Text(chip.label).FontSize(metrics.FontSizeS).Weight(ui.WeightSemibold).Color(foreground)
+		if chip.digits != "" {
+			f.Text(chip.digits).FontSize(metrics.FontSizeS).Weight(ui.WeightMedium).Color(pal.faint)
+		}
+		if !chip.chevron.IsZero() {
+			tint := foreground
+			if canvas.Hovered() == chip.chevron || state.chipMenu.open {
+				tint = pal.text
+			}
+			f.Icon(lucideIcons[iconChevronDown]).Size(12, 12).Color(tint).Shrink(0)
 		}
 	})
 	f.End()
-	if canvas.FocusVisible() == id {
-		canvas.RoundedBorder(bounds, bounds.Height/2, 1.5, pal.accent, ui.Color{})
+	if !chip.chevron.IsZero() {
+		canvas.HitWithOptions(chip.chevron, ui.Rect{X: chip.bounds.X + chip.bounds.Width - 28, Y: chip.bounds.Y, Width: 28, Height: chip.bounds.Height}, chip.label, ui.HitOptions{Role: ui.RoleButton, Expanded: state.chipMenu.open})
+	}
+	if canvas.FocusVisible() == chip.id {
+		canvas.RoundedBorder(chip.bounds, chip.bounds.Height/2, 1.5, pal.accent, ui.Color{})
 	}
 }
 
 // paintHostFilterMenu lists the groups whose chips did not fit.
 func (state *State) paintHostFilterMenu(canvas *ui.Canvas, viewport ui.Rect) {
-	hidden := len(state.hostGroups) - state.hostFilterHidden
+	hidden := len(state.hostChips) - state.hostFilterHidden
 	if hidden <= 0 {
 		return
 	}
 	menu := components.BeginDropdownMenu(canvas, state.Theme(), state.popupBelow(canvas, state.filterMoreButton, 202, float32(32*hidden+8), flex.Start),
 		components.DropdownMenuOptions{Layer: dialogLayer, Scope: dialogScope, DismissID: hitHostFilterMenuDismiss, Viewport: viewport, Scroll: state.menuScrollFor(hitHostFilterMenuDismiss)})
 	state.menuPlaced(menu.Bounds())
-	for index := state.hostFilterHidden; index < len(state.hostGroups); index++ {
+	for _, index := range state.hostChips[state.hostFilterHidden:] {
 		menu.AddItem(components.DropdownMenuItem{ID: hitHostFilterMenuList.At(index), Label: state.hostGroupLabel(state.hostGroups[index])})
 		state.openHostGroupActionsOn(canvas, hitHostFilterMenuList.At(index), index)
 	}
@@ -1611,12 +1777,21 @@ func (state *State) paintHostTable(canvas *ui.Canvas, treeBounds ui.Rect) {
 	if state.hostRevealID != 0 {
 		// The revealed row is found at the width the list really has, bar included.
 		state.hostsScroll = state.sessionLogHostOffset(state.hostRevealID, geometry.Viewport.Width)
-		canvas.RequestFocus(hitHostList.At(int(state.hostRevealID)))
+		focus := hitHostList.At(int(state.hostRevealID))
+		if state.hostSort.enabled {
+			focus = hitHostSortHandles.At(int(state.hostRevealID))
+		}
+		canvas.RequestFocus(focus)
 		state.hostRevealID = 0
 		area, geometry = hostListScrollArea(canvas, state.Theme(), treeBounds, content, state.hostsScroll)
 	}
 	state.hostsContent, state.hostsScroll = content, geometry.OffsetY
 	viewport := geometry.Viewport
+	if state.hostSortAutoScrollFrame(canvas, viewport, content) {
+		area, geometry = hostListScrollArea(canvas, state.Theme(), treeBounds, content, state.hostsScroll)
+		state.hostsScroll = geometry.OffsetY
+		viewport = geometry.Viewport
+	}
 	canvas.Clip(viewport)
 	if state.hostView == hostViewGrid {
 		state.paintHostGrid(canvas, viewport)
@@ -1628,6 +1803,7 @@ func (state *State) paintHostTable(canvas *ui.Canvas, treeBounds ui.Rect) {
 	tree := components.BeginTree(canvas, state.Theme(), ui.Rect{
 		X: viewport.X, Y: viewport.Y - state.hostsScroll, Width: viewport.Width, Height: viewport.Height + state.hostsScroll,
 	}).Indent(22)
+	state.beginHostSortPaint(canvas, viewport)
 	filtering := strings.TrimSpace(state.visibleQuery) != ""
 	for _, entry := range state.hostTreeRows {
 		switch entry.Kind {
@@ -1639,6 +1815,7 @@ func (state *State) paintHostTable(canvas *ui.Canvas, treeBounds ui.Rect) {
 				Label: state.hostGroupLabel(group), Depth: entry.Depth, Branch: true, Expanded: group.Expanded || filtering,
 			})
 			if row.Bounds.Y >= viewport.Y+viewport.Height {
+				state.endHostSortPaint()
 				state.paintHostGroupDrop(canvas)
 				canvas.Unclip()
 				area.EndContent()
@@ -1646,8 +1823,10 @@ func (state *State) paintHostTable(canvas *ui.Canvas, treeBounds ui.Rect) {
 			}
 			content := row.Content
 			content.Width = max(0, content.Width-38)
+			var groupCheck flex.Box
 			f := state.chrome.hostRow.Begin(canvas, state.Theme(), content)
 			f.Row().Fill().PadSides(0, 0, 0, 2).Gap(6).Items(flex.Center).Children(func() {
+				groupCheck = f.Slot().Size(40, 28).Shrink(0)
 				if group.Pinned {
 					f.Icon(lucideIcons[iconStar]).Size(14, 14).Color(pal.accent)
 				}
@@ -1660,12 +1839,18 @@ func (state *State) paintHostTable(canvas *ui.Canvas, treeBounds ui.Rect) {
 			})
 			f.End()
 			state.hostGroupRowEvents(canvas, hitHostGroupRowList.At(entry.GroupIndex), entry.GroupIndex, row.Bounds)
+			state.paintHostScopeCheckbox(canvas, hitHostGroupCheck.At(entry.GroupIndex), groupCheck.Rect(), state.hostScopeSelection.groups[entry.GroupIndex])
 		case hostTreeHost:
 			host := state.hosts[entry.HostIndex]
 			id := hitHostList.At(int(host.ID))
 			tree = tree.RowHeight(hostRowHeight)
-			row := tree.Item(components.TreeItem{ID: id, Label: host.Label, Depth: entry.Depth, Selected: host.ID == state.selectedHostID})
+			rowID := id
+			if state.hostSort.enabled {
+				rowID = ui.ID{}
+			}
+			row := tree.Item(components.TreeItem{ID: rowID, Label: host.Label, Depth: entry.Depth, Selected: host.ID == state.selectedHostID})
 			if row.Bounds.Y >= viewport.Y+viewport.Height {
+				state.endHostSortPaint()
 				state.paintHostGroupDrop(canvas)
 				canvas.Unclip()
 				area.EndContent()
@@ -1675,6 +1860,7 @@ func (state *State) paintHostTable(canvas *ui.Canvas, treeBounds ui.Rect) {
 			state.hostRowEvents(canvas, id, host)
 		}
 	}
+	state.endHostSortPaint()
 	state.paintHostGroupDrop(canvas)
 	canvas.Unclip()
 	area.EndContent()
@@ -1734,14 +1920,31 @@ func (state *State) paintHostTreeRow(canvas *ui.Canvas, row, content ui.Rect, ho
 	// still reads as selected, not as merely hovered.
 	rowBackground := pal.workspace
 	switch {
+	case state.hostSortDragging(host.ID):
+		rowBackground = pal.accentSoft
+	case state.hostSortTarget(host.ID):
+		rowBackground = pal.surfaceSoft
 	case host.ID == state.selectedHostID:
 		rowBackground = pal.surfaceHot
+	case state.hostSortHovered(canvas, host.ID):
+		rowBackground = pal.accentSoft
 	case canvas.Hovered() == id:
 		rowBackground = pal.surfaceSoft
 	}
-	if hostAccent(host.Color).Alpha > 0 {
+	hasColor := hostAccent(host.Color).Alpha > 0
+	if hasColor {
 		rowBackground = tintHostSurface(rowBackground, host.Color, .10)
+	}
+	if state.hostSortDragging(host.ID) {
+		canvas.Elevate(row, radius.control, ui.ShadowMD)
+	}
+	switch {
+	case state.hostSortTarget(host.ID):
+		canvas.RoundedBorder(row, radius.control, 2, pal.accent, rowBackground)
+	case rowBackground != pal.workspace || hasColor:
 		canvas.Rounded(row, radius.control, rowBackground)
+	}
+	if hasColor {
 		paintHostColorMark(canvas, row, host.Color)
 	}
 	// The columns follow the row's width: the name, then the address and the tags
@@ -1751,9 +1954,9 @@ func (state *State) paintHostTreeRow(canvas *ui.Canvas, row, content ui.Rect, ho
 	const (
 		statusLeast = float32(124) // the status in words, with the light before it
 		lightWidth  = float32(7)   // the size of the connection light
-		leadWidth   = float32(92)  // the check box, the system and the gaps before the name
 		nameLeast   = float32(170)
 	)
+	leadWidth := float32(92) // the leading control, the system and the gaps before the name
 	indent := content.X - row.X
 	// A row too narrow to hold the name beside the status in words shows the
 	// light alone: the name is what the row is for.
@@ -1782,12 +1985,20 @@ func (state *State) paintHostTreeRow(canvas *ui.Canvas, row, content ui.Rect, ho
 	if tagsWidth >= 60 {
 		tagCount = state.fitHostTags(canvas, host, tagsWidth, &tagList)
 	}
-	var avatar, light flex.Box
+	var grip, avatar, light flex.Box
 	f := state.chrome.hostRow.Begin(canvas, state.Theme(), area)
 	f.Stack().Fill().Children(func() {
 		f.Row().Fill().Items(flex.Center).Children(func() {
 			f.Row().Width(addressStart).Shrink(0).Items(flex.Center).Children(func() {
-				f.Checkbox(hitHostCheckList.At(int(host.ID)), state.hostSelected(host.ID)).Label(host.Label).MarginSides(0, checkMargin, 0, 10)
+				if state.hostSort.enabled {
+					// Flex measures a checkbox by its full desktop interaction
+					// region, not by the 16px square it paints. Reserve that exact
+					// box for the grip so every following column stays pixel-stable.
+					checkWidth, checkHeight := components.CheckboxHitExtent(state.Theme())
+					grip = f.Slot().Size(checkWidth, checkHeight).MarginSides(0, checkMargin, 0, 10)
+				} else {
+					f.Checkbox(hitHostCheckList.At(int(host.ID)), state.hostSelected(host.ID)).Label(host.Label).MarginSides(0, checkMargin, 0, 10)
+				}
 				avatar = f.Slot().Size(36, 36).MarginSides(0, 10, 0, 0)
 				f.Column().Width(nameWidth).Shrink(0).Gap(2).Children(func() {
 					f.Text(host.Label).FontSize(metrics.FontSizeM).Weight(ui.WeightSemibold).Color(pal.text).LineHeight(22).Ellipsis()
@@ -1821,6 +2032,9 @@ func (state *State) paintHostTreeRow(canvas *ui.Canvas, row, content ui.Rect, ho
 		})
 	})
 	f.End()
+	if state.hostSort.enabled {
+		state.declareHostSortItem(host, row, grip.Rect())
+	}
 	state.paintHostCatalogIcon(canvas, host, avatar.Rect(), rowBackground)
 	lightRect := light.Rect()
 	paintLight(canvas, lightRect.X+lightRect.Width/2, lightRect.Y+lightRect.Height/2, kind, dot, rowBackground)
@@ -1865,6 +2079,8 @@ func (state *State) paintHostCatalogIcon(canvas *ui.Canvas, host Host, bounds ui
 	switch host.Icon {
 	case hostIconTerminal:
 		kind = iconTerminal
+	case hostIconSerial:
+		kind = iconSerial
 	case hostIconGlobe:
 		kind = iconGlobe
 	case hostIconKey:
@@ -1919,6 +2135,7 @@ var lucideIcons = [...]ui.Icon{
 	iconSettings: icons.Settings,
 	iconSearch:   icons.Search,
 	iconTerminal: icons.Terminal,
+	iconSerial:   icons.Serial,
 	iconPlus:     icons.Plus,
 	iconSun:      icons.Sun,
 	iconMoon:     icons.Moon,
@@ -1978,6 +2195,7 @@ var lucideIcons = [...]ui.Icon{
 	iconEllipsis:       icons.Ellipsis,
 	iconWrench:         icons.Wrench,
 	iconProcess:        icons.Process,
+	iconDirectoryTree:  icons.PanelLeft,
 	iconCloseOthers:    icons.ListX,
 	iconCloseRight:     icons.ArrowRightToLine,
 	iconSparkles:       icons.Sparkles,
@@ -1989,6 +2207,7 @@ var lucideIcons = [...]ui.Icon{
 	iconDiscord:        icons.Discord,
 	iconGitHub:         icons.Github,
 	iconNote:           icons.StickyNote,
+	iconNotebook:       icons.Notebook,
 	iconSFTPTransfer:   icons.SftpTransfer,
 	iconSFTPBrowseSync: icons.SftpSync,
 	iconSFTPProfiles:   icons.SftpProfiles,
@@ -2032,7 +2251,7 @@ func (state *State) paintHostDialog(canvas *ui.Canvas, viewport ui.Rect) {
 	ssh := sshHost
 	vncHost := state.editor.protocol == protocolVNC || state.editor.protocol == protocolRDP
 	var vncRows flex.Box
-	var protocol, label, endpoint, group, tags, iconField, colorField, transfer, proxy, advanced, loginScript flex.Box
+	var protocol, label, endpoint, group, tags, iconField, colorField, transfer, proxy, jump, advanced, loginScript flex.Box
 	form := &state.editor.form
 	form.count = 0
 	if form.lastError != state.dialogError {
@@ -2076,6 +2295,7 @@ func (state *State) paintHostDialog(canvas *ui.Canvas, viewport ui.Rect) {
 			proxy = f.Slot().Height(rowHeight)
 		}
 		if ssh {
+			jump = f.Slot().Height(rowHeight)
 			advanced = f.Slot().Height(state.advancedSectionHeight())
 		}
 		if !vncHost {
@@ -2104,6 +2324,7 @@ func (state *State) paintHostDialog(canvas *ui.Canvas, viewport ui.Rect) {
 		state.paintVNCRows(canvas, vncRows.Rect())
 	}
 	if ssh {
+		state.paintHostJumpRow(canvas, jump.Rect())
 		state.paintTransferChoice(canvas, transfer.Rect())
 		state.paintAdvancedSection(canvas, advanced.Rect())
 	}
@@ -2253,6 +2474,8 @@ func (state *State) hostIconLabel(icon hostIcon) string {
 		return m.IconServer
 	case hostIconTerminal:
 		return m.IconTerminal
+	case hostIconSerial:
+		return m.IconSerial
 	case hostIconGlobe:
 		return m.IconGlobe
 	case hostIconKey:
@@ -2284,6 +2507,8 @@ func (state *State) hostIconArt(icon hostIcon, detected sshconn.RemoteSystem, de
 	switch icon {
 	case hostIconTerminal:
 		return icons.Terminal
+	case hostIconSerial:
+		return icons.Serial
 	case hostIconGlobe:
 		return icons.Globe
 	case hostIconKey:
@@ -2296,12 +2521,12 @@ func (state *State) hostIconArt(icon hostIcon, detected sshconn.RemoteSystem, de
 
 // hostIconChoices are the icons the list offers, in order.
 func hostIconChoices() []hostIcon {
-	choices := make([]hostIcon, 0, 1+len(hostSystemChoices)+5)
+	choices := make([]hostIcon, 0, 1+len(hostSystemChoices)+6)
 	choices = append(choices, hostIconAuto)
 	for _, choice := range hostSystemChoices {
 		choices = append(choices, hostIconOf(choice.system))
 	}
-	return append(choices, hostIconServer, hostIconTerminal, hostIconGlobe, hostIconKey, hostIconDesktop)
+	return append(choices, hostIconServer, hostIconTerminal, hostIconSerial, hostIconGlobe, hostIconKey, hostIconDesktop)
 }
 
 // paintHostIconChoice paints the list of icons a host can have.
@@ -2367,6 +2592,10 @@ func (state *State) paintDialogFieldWithSecurity(canvas *ui.Canvas, id ui.ID, fi
 	theme := state.Theme()
 	content := components.BeginField(canvas, theme, bounds).For(id).Paint(title, "", "")
 	state.revealHostField(canvas, id, content)
+	if id == hitDialogPassword && state.hostOffersCredential() {
+		state.paintHostPasswordWithCredential(canvas, content, title, placeholder)
+		return
+	}
 	value := state.editor.field(field).String()
 	focused := canvas.Focused() == id
 	state.paintSecretInput(canvas, content, components.InputSnapshot{
@@ -2409,11 +2638,17 @@ func (state *State) paintHostKeyDialog(canvas *ui.Canvas, viewport ui.Rect) {
 		}
 	})
 	f.End()
-	dialog.Actions(layout,
-		components.ButtonAction{ID: hitHostKeyReject, Label: m.HostKeyReject, Variant: components.ButtonSecondary},
-		components.ButtonAction{ID: hitHostKeyOnce, Label: m.HostKeyOnce, Variant: components.ButtonOutline},
-		components.ButtonAction{ID: hitHostKeyTrust, Label: m.HostKeyTrust},
-	)
+	actions := [...]components.ButtonAction{
+		{ID: hitHostKeyReject, Label: m.HostKeyReject, Variant: components.ButtonSecondary},
+		{ID: hitHostKeyOnce, Label: m.HostKeyOnce, Variant: components.ButtonOutline},
+		{ID: hitHostKeyTrust, Label: m.HostKeyTrust},
+		{ID: hitHostKeyForget, Label: m.HostKeyForget, Variant: components.ButtonOutline},
+	}
+	actionCount := 3
+	if canForgetServerIdentity(session) {
+		actionCount++
+	}
+	dialog.Actions(layout, actions[:actionCount]...)
 	dialog.End()
 }
 

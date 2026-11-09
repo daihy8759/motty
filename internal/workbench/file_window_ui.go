@@ -68,9 +68,18 @@ type fileDocumentUI struct {
 	pan                                       ui.Point
 	imageGeometry                             components.ImageViewGeometry
 	tooltip                                   components.HoverTooltip
+	// caret is the phase of the caret both views draw: the one in the editor and
+	// the one in the comparison, which never shows together.
+	caret components.CaretBlink
 }
 
 func (d *fileDocument) paint(canvas *ui.Canvas, size ui.Size) {
+	defer d.owner.paintNoteExit(canvas, ui.Rect{Width: size.Width, Height: size.Height})
+	if d.note != nil {
+		d.paintNoteWindow(canvas, size)
+		return
+	}
+
 	canvas.SetTree(&tree)
 	if id, ok := canvas.ClickTarget(); ok {
 		canvas.AfterPaint(func() { d.click(id) })
@@ -201,18 +210,34 @@ func (d *fileDocument) paintComparison(canvas *ui.Canvas, size ui.Size) {
 	uiState.editorBounds = content.Rect()
 	value := d.editor.String()
 	selection := d.editor.Selection()
+	caret := d.editor.ByteOffset(d.editor.Caret())
 	focused := canvas.Focused() == hitDocumentInput
+	showCaret := false
+	if focused && selection.Start == selection.End {
+		showCaret = uiState.caret.Lit(canvas, caret)
+	} else {
+		uiState.caret.Rest()
+	}
 	snapshot := components.CodeDiffSnapshot{
 		Result: d.comparison.result, ID: hitDocumentInput, Label: m.DiffLabel,
 		Value: value, Language: documentLanguage(d.name), Highlight: uiState.highlighter,
 		AddedColor: theme.Success, RemovedColor: theme.Danger,
 		FontSize: d.owner.terminalFontSize, MonoFace: d.owner.terminalFontFace, TabWidth: d.edit.options.TabWidth,
 		Disabled: d.busy || d.comparison.loading || d.comparison.confirm, Focused: focused,
-		ShowCaret:      selection.Start == selection.End,
-		Caret:          d.editor.ByteOffset(d.editor.Caret()),
+		ShowCaret:      showCaret,
+		Caret:          caret,
 		SelectionStart: d.editor.ByteOffset(selection.Start), SelectionEnd: d.editor.ByteOffset(selection.End),
+		CaretColor:          d.owner.pal.cursor,
 		VerticalScrollbarID: hitDocumentDiffScroll, HorizontalScrollbarID: hitDocumentDiffScrollX,
 		ViewportID: hitDocumentDiffViewport,
+	}
+	fontSize := d.owner.terminalFontSize
+	if fontSize <= 0 {
+		fontSize = theme.Metrics.FontSizeM
+	}
+	cellWidth, _ := canvas.MonoCellSize(fontSize, d.owner.terminalFontFace)
+	if content.Rect().Width < 2*(40*cellWidth+72) {
+		snapshot.Layout = components.CodeDiffStacked
 	}
 	if marked, ok := d.editor.Composition(); ok {
 		snapshot.CompositionStart = d.editor.ByteOffset(marked.Start)
@@ -374,7 +399,14 @@ func (d *fileDocument) paintConfirmation(canvas *ui.Canvas) {
 	dialog.End()
 }
 func (d *fileDocument) click(id ui.ID) {
+	if d.owner.clickNoteExit(id) {
+		return
+	}
 	if d.owner.fileWindows.clickTab(id) {
+		return
+	}
+	if d.note != nil {
+		d.clickNoteWindow(id)
 		return
 	}
 	if d.notices.click(id) {
@@ -542,6 +574,13 @@ func (view *fileDocumentUI) pixelScale() float32 {
 }
 
 func (d *fileDocument) textInput(context app.TextInputContext) *app.TextInput {
+	if d.owner.noteExit != nil {
+		return nil
+	}
+	if d.note != nil {
+		return d.noteWindowTextInput(context)
+	}
+
 	if input := d.barTextInput(context.ID); input != nil {
 		return input
 	}
@@ -590,6 +629,13 @@ func (d *fileDocument) comparisonTextInput(context app.TextInputContext) *app.Te
 }
 
 func (d *fileDocument) key(event ui.KeyEvent) ui.EventResult {
+	if d.owner.noteExit != nil {
+		return d.owner.noteExitKey(event)
+	}
+	if d.note != nil {
+		return d.noteWindowKey(event)
+	}
+
 	if event.Release {
 		return ui.EventResult{}
 	}
@@ -680,6 +726,13 @@ func (d *fileDocument) comparisonKey(event ui.KeyEvent) ui.EventResult {
 }
 
 func (d *fileDocument) shortcut(event ui.KeyEvent) ui.EventResult {
+	if d.owner.noteExit != nil {
+		return ui.EventResult{Handled: true, Repaint: true}
+	}
+	if d.note != nil {
+		return d.noteWindowShortcut(event)
+	}
+
 	if event.Modifiers&(ui.ModifierControl|ui.ModifierMeta) == 0 || event.Release {
 		return ui.EventResult{}
 	}
@@ -724,6 +777,13 @@ func (d *fileDocument) comparisonShortcut(event ui.KeyEvent) ui.EventResult {
 }
 
 func (d *fileDocument) scroll(event ui.ScrollEvent) ui.EventResult {
+	if d.owner.noteExit != nil {
+		return ui.EventResult{Handled: true, Repaint: true}
+	}
+	if d.note != nil {
+		return d.noteWindowScroll(event)
+	}
+
 	if d.confirm != "" {
 		return ui.EventResult{Handled: true}
 	}
@@ -754,6 +814,13 @@ func (d *fileDocument) scroll(event ui.ScrollEvent) ui.EventResult {
 }
 
 func (d *fileDocument) pointer(event ui.PointerEvent) ui.EventResult {
+	if d.owner.noteExit != nil {
+		return ui.EventResult{Handled: true, Repaint: true}
+	}
+	if d.note != nil {
+		return d.noteWindowPointer(event)
+	}
+
 	if d.confirm != "" {
 		return ui.EventResult{}
 	}
@@ -779,7 +846,11 @@ func (d *fileDocument) comparisonPointer(event ui.PointerEvent) ui.EventResult {
 }
 
 func (d *fileDocument) codeColors() [components.MarkdownCodeClasses]ui.Color {
-	pal := d.owner.pal
+	return d.owner.codeColors()
+}
+
+func (s *State) codeColors() [components.MarkdownCodeClasses]ui.Color {
+	pal := s.pal
 	ansi := func(index int) ui.Color { return ui.RGB(pal.ansi[index][0], pal.ansi[index][1], pal.ansi[index][2]) }
 	return [components.MarkdownCodeClasses]ui.Color{components.CodeComment: pal.faint, components.CodeString: ansi(2), components.CodeNumber: ansi(3), components.CodeKeyword: ansi(5), components.CodeFunction: ansi(4), components.CodeVariable: ansi(6), components.CodeFlag: ansi(6), components.CodeKey: ansi(4), components.CodeAdded: ansi(2), components.CodeRemoved: ansi(1)}
 }

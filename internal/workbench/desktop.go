@@ -12,6 +12,7 @@ import (
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/flex"
+	"github.com/vivaui/viva/keymap"
 	"github.com/vivaui/viva/ui"
 	"motty/internal/desktop"
 	"motty/internal/sessionlog"
@@ -362,7 +363,14 @@ func (state *State) pumpDesktop(session *Session) {
 	}
 	view.session.Bells() // a bell has no sound to make here
 	state.finishFileOffers(view)
-	if text, ok := view.session.RemoteClipboard(); ok && view.clipboard {
+	receivedFiles := false
+	if receiver, ok := view.session.(desktop.FileReceiver); ok {
+		if files, ok := receiver.RemoteFiles(); ok {
+			state.receiveDesktopFiles(view, files)
+			receivedFiles = len(files.Paths) > 0
+		}
+	}
+	if text, ok := view.session.RemoteClipboard(); ok && view.clipboard && !receivedFiles {
 		view.sentClip = text // what the remote has: not to be sent back
 		if err := state.options.SetClipboardText(text); err != nil {
 			state.status = fmt.Sprintf(state.messages.StatusClipboardFailedFmt, err)
@@ -464,15 +472,29 @@ func (view *desktopView) remoteHolds(event desktop.KeyEvent, except int) bool {
 	return false
 }
 
-// press sends a key going down once; a key that is already down is the system's
-// repeat, which the remote makes for itself while it holds the key.
+// press sends a key going down. A press that repeats a key already down is sent
+// again with Repeat set: RDP servers do not repeat a key they see held, and a
+// backend whose server does repeat it ignores the flag. A repeat whose first
+// press went to a shortcut of Motty's is not sent, because the remote never had
+// the key down.
 func (view *desktopView) press(local ui.Key, text string, event desktop.KeyEvent) {
-	if view.holding(local, text) >= 0 {
+	index := view.holding(local, text)
+	if index < 0 {
+		if event.Repeat {
+			return
+		}
+		view.held = append(view.held, heldKey{local: local, text: text, remote: event})
+		event.Down = true
+		_ = view.session.SendKey(event)
 		return
 	}
-	view.held = append(view.held, heldKey{local: local, text: text, remote: event})
-	event.Down = true
-	_ = view.session.SendKey(event)
+	if !event.Repeat {
+		return
+	}
+	repeat := view.held[index].remote
+	repeat.Down = true
+	repeat.Repeat = true
+	_ = view.session.SendKey(repeat)
 }
 
 // release sends the end of a key that press sent, and nothing for any other.
@@ -629,7 +651,7 @@ func (state *State) desktopShortcut(view *desktopView, event ui.KeyEvent) ui.Eve
 	// text system would paste text (and nothing at all from a clipboard that has
 	// none, as a file manager's copy on Windows is), so Motty presses the remote's
 	// own paste instead. Held until the files are offered, in an event of its own.
-	if !event.Release && event.Modifiers == defaultShortcutModifier() && strings.EqualFold(event.Text, "v") {
+	if !event.Release && event.Modifiers == keymap.Primary && strings.EqualFold(event.Text, "v") {
 		if !event.Repeat && state.pasteFiles(view) {
 			return ui.EventResult{Handled: true}
 		}
@@ -657,7 +679,7 @@ func (state *State) desktopKey(session *Session, event ui.KeyEvent) ui.EventResu
 		if event.Release {
 			view.release(event.Key, event.Text)
 		} else {
-			view.press(event.Key, event.Text, desktop.KeyEvent{Key: modifier})
+			view.press(event.Key, event.Text, desktop.KeyEvent{Key: modifier, Repeat: event.Repeat})
 		}
 		return ui.EventResult{Handled: true}
 	}
@@ -669,6 +691,7 @@ func (state *State) desktopKey(session *Session, event ui.KeyEvent) ui.EventResu
 		if event.Modifiers&(ui.ModifierControl|ui.ModifierMeta) != 0 && key.Rune == 'v' {
 			state.syncClipboard(view)
 		}
+		key.Repeat = event.Repeat
 		view.press(event.Key, event.Text, key)
 	}
 	return ui.EventResult{Handled: true}
@@ -1070,7 +1093,11 @@ func (state *State) desktopStripLeft(view *desktopView, session *Session) string
 	case session.host.tunneled():
 		parts = append(parts, m.StripEncrypted)
 	case view.session.Info().Encrypted:
-		parts = append(parts, m.StripTLS)
+		if session.host.Protocol == protocolVNC {
+			parts = append(parts, m.StripVNCEncrypted)
+		} else {
+			parts = append(parts, m.StripTLS)
+		}
 	default:
 		parts = append(parts, m.StripPlain)
 	}
@@ -1112,7 +1139,7 @@ func (state *State) hostSubtitle(host Host) string {
 			return state.messages.Desktop.ProtocolRDP
 		}
 		return host.User
-	case host.isDesktop() && !host.ViaSSH:
+	case host.isDesktop() && !host.ViaSSH && host.User == "":
 		return state.messages.Desktop.ProtocolVNC
 	}
 	return state.login(host)
@@ -1127,4 +1154,12 @@ func (state *State) rdpCertificateDescription(key sshconn.HostKeyInfo) string {
 		return fmt.Sprintf(m.CertChangedFmt, key.Address, key.Known[0])
 	}
 	return fmt.Sprintf(m.CertNewFmt, key.Address)
+}
+
+func (state *State) vncKeyDescription(key sshconn.HostKeyInfo) string {
+	m := state.messages.Desktop
+	if len(key.Known) > 0 {
+		return fmt.Sprintf(m.VNCKeyChangedFmt, key.Address, key.Known[0])
+	}
+	return fmt.Sprintf(m.VNCKeyNewFmt, key.Address)
 }

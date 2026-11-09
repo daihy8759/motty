@@ -44,8 +44,9 @@ const (
 // paintTerminalPage draws a session. Active panes get a configurable tool rail
 // with only connection latency and actions. Every split pane reserves the same
 // bar height and identifies its own session there, so switching focus cannot
-// move or resize a PTY. Find mode temporarily replaces the bar with its search
-// controls.
+// move or resize a PTY. Find mode puts its search controls in that strip, as a
+// macOS terminal puts its search bar above the text rather than over it, and
+// leaves the shared rail where it is.
 func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *Session) {
 	state.wantLatencyProbe(session, canvas)
 	chrome, ok := state.terminalChromeForSession(session.ID)
@@ -63,7 +64,7 @@ func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *
 	finding := !inactive && session.term.find.open
 	showingInputNotice := !inactive && !finding && state.terminalInputNoticeVisible(session)
 	status, _ := state.sessionStatus(session)
-	if inactive || finding {
+	if inactive {
 		state.clearTerminalRail(session)
 	}
 	title := session.Title
@@ -75,31 +76,22 @@ func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *
 
 	f := state.terminalPageLayout.Begin(canvas, state.Theme(), ui.Rect{Width: size.Width, Height: size.Height})
 	f.Column().Fill().PadSides(windowBarHeight, 0, 0, 0).Children(func() {
-		switch {
-		case inSplit || finding:
+		if inSplit || finding {
 			f.Stack().Height(infoBarHeight).Shrink(0).Background(barBackground).Children(func() {
-				switch {
-				case finding:
+				if finding {
 					find = state.declareFindBar(f, session)
-				default:
+				} else {
 					spinner, light = state.declarePaneBar(f, size.Width, title, status, session, !inactive)
 				}
 				f.Row().FillWidth().Height(1).Self(flex.End).Background(barBorder)
 			})
-			f.Column().Grow(1).FillHeight().Children(func() {
-				if showingInputNotice {
-					inputNotice = f.Slot().Height(inputNoticeHeight).FillWidth().Shrink(0)
-				}
-				f.Row().Grow(1).Background(state.ground(state.termPal.terminal))
-			})
-		default:
-			f.Column().Grow(1).FillHeight().Children(func() {
-				if showingInputNotice {
-					inputNotice = f.Slot().Height(inputNoticeHeight).FillWidth().Shrink(0)
-				}
-				f.Row().Grow(1).Background(state.ground(state.termPal.terminal))
-			})
 		}
+		f.Column().Grow(1).FillHeight().Children(func() {
+			if showingInputNotice {
+				inputNotice = f.Slot().Height(inputNoticeHeight).FillWidth().Shrink(0)
+			}
+			f.Row().Grow(1).Background(state.ground(state.termPal.terminal))
+		})
 	})
 	f.End()
 
@@ -107,11 +99,12 @@ func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *
 	case finding:
 		state.paintFindBarSlots(canvas, session, find)
 	case inSplit:
-		if session.busy {
+		switch {
+		case session.busy:
 			phase := components.SpinnerPhase(canvas.Now() / spinnerStep)
 			components.PaintSpinner(canvas, state.Theme(), spinner.Rect(), phase)
 			canvas.RequestFrameIn(spinnerStep)
-		} else if !inactive {
+		case !inactive:
 			// Only the active pane declares the status-light slot. Calling Rect on
 			// the empty box used by an inactive pane would dereference nil.
 			spot := light.Rect()
@@ -128,10 +121,15 @@ func (state *State) paintTerminalPage(canvas *ui.Canvas, size ui.Size, session *
 }
 
 func (state *State) activeTerminalTools(session *Session, toolList *[maxBarTools]barTool) []barTool {
-	if session == nil || session.term == nil || state.paneIsInactive(session.ID) || session.term.find.open {
+	if session == nil || session.term == nil || state.paneIsInactive(session.ID) {
 		return nil
 	}
 	tools := toolList[:0]
+	notesStyle := iconButtonQuiet
+	if state.notes.panel {
+		notesStyle = iconButtonActive
+	}
+	tools = append(tools, barTool{id: hitNotesPanel, icon: iconNotebook, hint: state.noteText("Notes", "笔记"), style: notesStyle})
 	if session.host.isSSH() && !session.isLocal() {
 		tools = append(tools, barTool{id: hitSFTPDetach, icon: iconSFTPTransfer, hint: state.messages.SFTPWindow.Open, disabled: !session.hasServer() || session.phase != sshconn.PhaseConnected || !state.sftpManagersAvailable(), style: iconButtonQuiet})
 	}
@@ -197,6 +195,13 @@ func (state *State) activeTerminalTools(session *Session, toolList *[maxBarTools
 	if managed {
 		ordered = state.compactWorkspacePaneTools(ordered, session.ID, state.viewport.Width)
 	}
+	// The latency readout is a status, not an action: it stays on the shared
+	// rail (compaction keeps it visible) and is placed by the toolbar layout.
+	// The value is formatted by the badge's own paint, not here: this list is
+	// rebuilt several times per frame.
+	if state.latencyAvailable(session) {
+		ordered = append(ordered, barTool{id: hitToolbarLatency, icon: iconActivity})
+	}
 	return ordered
 }
 
@@ -207,7 +212,8 @@ func (state *State) setTerminalRailTools(session *Session, tools []barTool) {
 	session.term.railCount = min(len(tools), maxBarTools)
 	for index := 0; index < session.term.railCount; index++ {
 		session.term.railIDs[index] = tools[index].id
-		session.term.railEnabled[index] = !tools[index].disabled
+		// The readout has no action: the keyboard visits only real controls.
+		session.term.railEnabled[index] = !tools[index].disabled && tools[index].id != hitToolbarLatency
 	}
 }
 
@@ -229,23 +235,15 @@ func (state *State) paintWorkspaceSideRail(canvas *ui.Canvas, size ui.Size) {
 	state.paintToolbarDockSide(canvas, size)
 }
 
-// paintTerminalSideRail draws the vertical tool rail. Latency occupies the
-// first compact slot, followed by the scrollable actions.
+// paintTerminalSideRail draws the vertical tool rail. The latency readout is
+// an ordinary layout entry now, so it scrolls and moves with the actions.
 func (state *State) paintTerminalSideRail(canvas *ui.Canvas, bounds ui.Rect, session *Session, tools []barTool, background, border ui.Color, left bool) {
 	if bounds.Width <= 0 || bounds.Height <= 0 || session.term == nil {
 		return
 	}
 	fullBounds := bounds
-	metrics := state.terminalToolbarMetrics()
 	session.term.railBounds = bounds
 	canvas.Fill(fullBounds, background)
-	if text, color, ok := state.latencyInfo(session); ok {
-		latency := ui.Rect{X: bounds.X + 4, Y: bounds.Y + 4, Width: bounds.Width - 8, Height: metrics.toolSize}
-		state.paintRailLatency(canvas, text, color, latency, true)
-		top := metrics.toolSize + 8
-		bounds.Y += top
-		bounds.Height = max(bounds.Height-top, 0)
-	}
 	viewport := ui.Rect{X: bounds.X + 4, Y: bounds.Y + 4, Width: max(bounds.Width-8, 0), Height: max(bounds.Height-8, 0)}
 	state.paintTerminalRailTools(canvas, session, viewport, tools, background)
 	x := bounds.X
@@ -288,10 +286,16 @@ func (state *State) paintTerminalRailTools(canvas *ui.Canvas, session *Session, 
 			tool.rect.Y+tool.rect.Height <= viewport.Y || tool.rect.Y >= viewport.Y+viewport.Height {
 			continue
 		}
-		state.paintIconButtonSized(canvas, tool.id, tool.icon, tool.rect, tool.hint, tool.disabled, tool.style, background, metrics.iconSize)
 		zone := toolbarDockSideTop
 		if state.terminalToolbarPosition == terminalToolbarLeft {
 			zone = toolbarDockLeftTop
+		}
+		if tool.id == hitToolbarLatency {
+			if !state.paintToolbarLatency(canvas, tool.rect, session) {
+				continue
+			}
+		} else {
+			state.paintIconButtonSized(canvas, tool.id, tool.icon, tool.rect, tool.hint, tool.disabled, tool.style, background, metrics.iconSize)
 		}
 		state.registerToolbarDockTool(canvas, *tool, zone, intersectRect(tool.rect, viewport))
 		if tool.id == hitWorkspacePaneTools {
@@ -320,25 +324,56 @@ func (state *State) terminalRailItemStart(tools []barTool, index int) float32 {
 	return start
 }
 
+// paintRailLatency paints the RTT badge as a dockable status control. The
+// target is the same id the dock uses for its drag and context menu.
 func (state *State) paintRailLatency(canvas *ui.Canvas, text string, color ui.Color, bounds ui.Rect, compact bool) {
 	if bounds.Width <= 0 || bounds.Height <= 0 {
 		return
 	}
-	accessibilityText := text
+	state.paintRailLatencyVisual(canvas, text, color, bounds, compact)
+	canvas.HitWithOptions(hitToolbarLatency, bounds, text, ui.HitOptions{
+		Role: ui.RoleStatus, SkipFocus: true, Value: text, Hint: text,
+	})
+}
+
+// paintRailLatencyVisual paints only the badge. The drag preview uses it so the
+// floating copy does not declare a second target under the pointer.
+func (state *State) paintRailLatencyVisual(canvas *ui.Canvas, text string, color ui.Color, bounds ui.Rect, compact bool) {
+	if bounds.Width <= 0 || bounds.Height <= 0 {
+		return
+	}
+	label := text
 	if compact {
-		text = strings.TrimPrefix(text, "RTT ")
+		label = strings.TrimPrefix(text, "RTT ")
 	}
 	canvas.Rounded(bounds, min(radius.control, bounds.Height/2), withAlpha(color, 0.14))
-	state.paintRailLabelCenter(canvas, text, bounds, color, compact)
-	canvas.ContainerWithOptions(bounds, ui.RoleStatus, accessibilityText, ui.HitOptions{Value: accessibilityText})
+	state.paintRailLabelCenter(canvas, label, bounds, color, compact)
+}
+
+// paintToolbarLatency paints a docked latency readout and reports whether a
+// sample existed. A reading that went away between layout and paint leaves no
+// empty slot behind.
+func (state *State) paintToolbarLatency(canvas *ui.Canvas, bounds ui.Rect, session *Session) bool {
+	text, color, ok := state.latencyInfo(session)
+	if !ok {
+		return false
+	}
+	state.paintRailLatency(canvas, text, color, bounds, true)
+	return true
 }
 
 func (state *State) paintRailLabelCenter(canvas *ui.Canvas, text string, bounds ui.Rect, color ui.Color, compact bool) {
 	size := metrics.FontSizeS
+	available := max(bounds.Width-4, 0)
 	if compact {
 		size = 10
+		// The titlebar slot is narrower than a rail's; one step down keeps the
+		// number readable there instead of eliding "42ms" to "42…".
+		if size > 9 && canvas.TextWidthWeight(text, size, ui.WeightMedium) > available {
+			size = 9
+		}
 	}
-	fitted := elide(canvas, text, size, ui.WeightMedium, bounds.Width-4)
+	fitted := elide(canvas, text, size, ui.WeightMedium, available)
 	canvas.LabelCenter(fitted, bounds, ui.TextStyle{Size: size, Weight: ui.WeightMedium, Color: color})
 }
 
@@ -442,18 +477,27 @@ func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometr
 	if t.sync != nil && t.clock != nil {
 		canvas.RequestFrameIn(t.syncRemaining())
 	}
+	// caretX is where the next character goes: past the text typed ahead of the
+	// echo, so every cursor shape keeps showing an insertion point while the
+	// server catches up. It is the emulator's own column once nothing is pending.
+	caretX := cursor.X
+	if predicting {
+		caretX += predictionCells
+	}
 	// The cursor blinks while the terminal has the keyboard and something is
 	// happening; it is solid from the moment it moves or the pane is entered.
 	blinkOn := true
 	if cursor.Visible && focused && !composing && !state.terminalCursorSteady && !cursor.Steady {
-		blinkOn = t.blink.on(canvas, cursor.X, cursor.Y)
+		blinkOn = t.blink.on(canvas, caretX, cursor.Y)
 	} else {
-		t.blink.rest(cursor.X, cursor.Y)
+		t.blink.rest(caretX, cursor.Y)
 	}
 	if t.sync != nil {
 		blinkOn = true
 	}
-	block := cursor.Visible && cursor.Style == term.CursorBlock && focused && !composing && !predicting && blinkOn
+	// A block cursor is an inverted cell prepared by the row cache, so it follows
+	// the caret rather than being dropped while a guess is on screen.
+	block := cursor.Visible && cursor.Style == term.CursorBlock && focused && !composing && blinkOn
 	// The input method draws its composition over the cells from the cursor on,
 	// where it replaces whatever the program put there. A program that draws its
 	// own cursor (a prompt with placeholder text) hides the real one, so the
@@ -490,7 +534,7 @@ func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometr
 	for row := 0; row < rows; row++ {
 		column := -1
 		if block && row == cursor.Y {
-			column = cursor.X
+			column = caretX
 		}
 		line := t.presentedRow(row)
 		t.rowIDs[row] = line.ID
@@ -516,7 +560,7 @@ func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometr
 	for row := 0; row < rows; row++ {
 		column := -1
 		if block && row == cursor.Y {
-			column = cursor.X
+			column = caretX
 		}
 		entry := t.cache.row(t.presentedRow(row), cols, column, coveredOn(covered, row == cursor.Y), pal, inactive)
 		y := geometry.top + float32(row)*cellHeight
@@ -535,7 +579,14 @@ func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometr
 			}
 		}
 		if len(entry.runs) > 0 {
-			canvas.LabelRuns(entry.text, ui.Rect{X: geometry.left, Y: y, Width: labelWidth, Height: cellHeight}, style, cellWidth, entry.runs)
+			last := entry.runs[len(entry.runs)-1]
+			rowCols := min(int(last.Column+last.Cells)+1, cols)
+			rowWidth := min(float32(math.Ceil(float64(float32(rowCols)*cellWidth)))+1, labelWidth)
+			identity := ui.TextIdentity{}
+			if t.rowIDs[row] != 0 {
+				identity = ui.TextIdentity{Owner: session.ID, Item: t.rowIDs[row]}
+			}
+			canvas.LabelRunsWithIdentity(identity, entry.text, ui.Rect{X: geometry.left, Y: y, Width: rowWidth, Height: cellHeight}, style, cellWidth, entry.runs)
 		}
 		if t.sync == nil {
 			state.paintTerminalLink(canvas, t, geometry, row)
@@ -550,18 +601,17 @@ func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometr
 	t.cache.end(rows)
 	if predicting && cursor.Y < rows {
 		// Typed text the server has not echoed yet, drawn at once over the cursor
-		// cell and the cells after it, muted so it reads as provisional. It is not
-		// underlined: on a slow link a held key keeps that mark on screen. It never
-		// enters the terminal's own buffer.
+		// cell and the cells after it in the terminal's own color, so the echo
+		// that replaces it changes nothing a reader could see. The block cursor
+		// stays visible past the text. It never enters the terminal's own buffer.
 		x := geometry.left + float32(cursor.X)*cellWidth
 		y := geometry.top + float32(cursor.Y)*cellHeight
 		width := float32(predictionCells) * cellWidth
 		canvas.Fill(ui.Rect{X: x, Y: y, Width: width, Height: cellHeight}, pal.terminal)
 		for index := range predictionRuns {
-			predictionRuns[index].Color = pal.muted
+			predictionRuns[index].Color = pal.termFG
 		}
 		canvas.LabelRuns(predictionText, ui.Rect{X: x, Y: y, Width: width, Height: cellHeight}, style, cellWidth, predictionRuns)
-		cursor.X += predictionCells
 	}
 
 	if cursor.Visible && cursor.Y < rows {
@@ -569,7 +619,7 @@ func (state *State) paintGridWithID(canvas *ui.Canvas, session *Session, geometr
 		if inactive {
 			cursorColor.Alpha *= 0.45
 		}
-		x := geometry.left + float32(cursor.X)*cellWidth
+		x := geometry.left + float32(caretX)*cellWidth
 		y := geometry.top + float32(cursor.Y)*cellHeight
 		switch {
 		case !blinkOn:

@@ -17,6 +17,7 @@ var (
 	hitTabMenuCloseOthers   = tree.ID(tabMenuHits, "tab-menu-close-others")
 	hitTabMenuCloseRight    = tree.ID(tabMenuHits, "tab-menu-close-right")
 	hitTabMenuDuplicate     = tree.ID(tabMenuHits, "tab-menu-duplicate")
+	hitTabMenuEditHost      = tree.ID(tabMenuHits, "tab-menu-edit-host")
 	hitTabMenuNewWindow     = tree.ID(tabMenuHits, "tab-menu-new-window")
 	hitTabMenuCopyAddress   = tree.ID(tabMenuHits, "tab-menu-copy-address")
 	hitTabMenuCopyName      = tree.ID(tabMenuHits, "tab-menu-copy-name")
@@ -117,6 +118,18 @@ func (state *State) tabMenuSession() (*Session, bool) {
 	return state.sessionByIDPointer(uint32(pane.SessionID))
 }
 
+func (state *State) tabMenuHost(session *Session) (Host, bool) {
+	if session == nil || session.host.CatalogID == "" {
+		return Host{}, false
+	}
+	for _, host := range state.hosts {
+		if host.CatalogID == session.host.CatalogID {
+			return host, true
+		}
+	}
+	return Host{}, false
+}
+
 func (state *State) paintTabMenu(canvas *ui.Canvas, viewport ui.Rect) {
 	if !state.tabMenu.open {
 		return
@@ -132,13 +145,14 @@ func (state *State) paintTabMenu(canvas *ui.Canvas, viewport ui.Rect) {
 	restart := hasSession && state.canReconnectLive(session)
 	disconnect := hasSession && state.canDisconnect(session)
 	var keys [6]string
-	closeKeys := state.shortcuts.chords[shortcutCloseTab].keys(keys[:0])
+	closeKeys := state.shortcuts.chords.Chord(shortcutCloseTab).Keycaps(keys[:0])
 	icon := func(kind uint8) ui.Icon { return lucideIcons[kind] }
 	var rows menuRows
 	address, name := "", ""
 	if hasSession {
 		address, name = connectionAddressAndPort(session.host), session.host.Label
 	}
+	_, hasHost := state.tabMenuHost(session)
 	rows.add(components.ContextMenuItem{ID: hitTabMenuRename, Label: messages.MenuRenameTab, Icon: icon(iconPencil)})
 	lockLabel := messages.MenuLockTab
 	if state.deck.Locked(state.tabMenu.workspace) {
@@ -146,6 +160,7 @@ func (state *State) paintTabMenu(canvas *ui.Canvas, viewport ui.Rect) {
 	}
 	rows.add(components.ContextMenuItem{ID: hitTabMenuLock, Label: lockLabel, Icon: icon(iconLock)})
 	rows.add(components.ContextMenuItem{ID: hitTabMenuDuplicate, Label: messages.MenuDuplicateTab, Icon: icon(iconCopy), Disabled: !hasSession})
+	rows.add(components.ContextMenuItem{ID: hitTabMenuEditHost, Label: messages.EditHostTitle, Icon: icon(iconPencil), Disabled: !hasHost})
 	rows.add(components.ContextMenuItem{ID: hitTabMenuNewWindow, Label: messages.MenuMoveTabToNewWindow, Icon: icon(iconExternal), Disabled: !state.canTearOffTab()})
 	rows.separate()
 	rows.add(components.ContextMenuItem{ID: hitTabMenuCopyAddress, Label: messages.CopyAddressAndPort, Icon: icon(iconCopy), Disabled: address == ""})
@@ -186,7 +201,7 @@ func (state *State) paintTabMenu(canvas *ui.Canvas, viewport ui.Rect) {
 	if disconnect {
 		rows.add(components.ContextMenuItem{ID: hitTabMenuDisconnect, Label: messages.MenuDisconnect, Icon: icon(iconPlug)})
 	}
-	if _, temporary := state.temporaryWorkspaceColumns[state.tabMenu.workspace]; temporary {
+	if _, temporary := state.temporaryWorkspaceLayouts[state.tabMenu.workspace]; temporary {
 		rows.separate()
 		rows.add(components.ContextMenuItem{ID: hitTabMenuSaveWorkspace, Label: messages.WorkspaceSaveMenu, Icon: icon(iconArchive)})
 	}
@@ -234,7 +249,18 @@ func (state *State) clickTabMenu(id ui.ID) bool {
 	case hitTabMenuDuplicate:
 		if session, ok := state.tabMenuSessionFor(workspace); ok {
 			state.pendingWorkspace, state.pendingPane = 0, 0
+			if session.isLocal() && state.localStart == localStartRemember {
+				// A copy of a local tab is opened beside it, so it starts in
+				// the same folder, the way a split does.
+				state.pendingDirectory = session.localDirectory
+			}
 			state.newHostSession(session.host)
+		}
+	case hitTabMenuEditHost:
+		if session, ok := state.tabMenuSessionFor(workspace); ok {
+			if host, found := state.tabMenuHost(session); found {
+				state.openEditHostID(host.ID)
+			}
 		}
 	case hitTabMenuFit, hitTabMenuActual, hitTabMenuCtrlAltDel, hitTabMenuHideBars, hitTabMenuFullscreen, hitTabMenuLatency:
 		session, ok := state.tabMenuSessionFor(workspace)
@@ -257,6 +283,7 @@ func (state *State) clickTabMenu(id ui.ID) bool {
 			state.toggleDesktopFullscreen(session)
 		case hitTabMenuLatency:
 			state.terminalShowLatency = !state.terminalShowLatency
+			state.syncLatencyToolbarEntry()
 			state.save()
 		}
 	case hitTabMenuClose:

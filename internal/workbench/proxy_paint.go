@@ -24,14 +24,15 @@ func (state *State) paintProxiesWorkspace(canvas *ui.Canvas, bounds ui.Rect) {
 		titleLeast = float32(220)
 		gap        = float32(10)
 	)
-	labeled := toolbarButtonWidth(canvas, messages.ProxyRemove, false) + gap + toolbarButtonWidth(canvas, actionLabel, false) +
-		gap + toolbarButtonWidth(canvas, messages.ProxyAdd, true) + gap + titleLeast
+	labeled := toolbarButtonWidth(canvas, messages.ProxyRemove, false) + gap + toolbarButtonWidth(canvas, messages.ProxyEdit, false) +
+		gap + toolbarButtonWidth(canvas, actionLabel, false) + gap + toolbarButtonWidth(canvas, messages.ProxyAdd, true) + gap + titleLeast
 	condensed := labeled > bounds.Width-36
 	removeWidth, removeIcon := toolbarButtonLayout(canvas, messages.ProxyRemove, 0, iconTrash, condensed)
+	editWidth, editIcon := toolbarButtonLayout(canvas, messages.ProxyEdit, 0, iconPencil, condensed)
 	actionWidth, realActionIcon := toolbarButtonLayout(canvas, actionLabel, 0, actionIcon, condensed)
 	addWidth, addIcon := toolbarButtonLayout(canvas, messages.ProxyAdd, iconPlus, iconPlus, condensed)
 
-	var content, emptyIcon, emptyAdd, remove, action, add flex.Box
+	var content, emptyIcon, emptyAdd, remove, edit, action, add flex.Box
 	f := state.proxyLayout.Begin(canvas, state.Theme(), bounds)
 	f.Column().Fill().PadSides(12, 18, 0, 18).Children(func() {
 		f.Row().MinHeight(58).Gap(gap).MarginSides(0, 0, 12, 0).Items(flex.Start).Children(func() {
@@ -40,6 +41,7 @@ func (state *State) paintProxiesWorkspace(canvas *ui.Canvas, bounds ui.Rect) {
 				f.Paragraph(messages.ProxyDescription, 2).FontSize(metrics.FontSizeS).Color(pal.muted)
 			})
 			remove = f.Slot().Size(removeWidth, toolbarHeight)
+			edit = f.Slot().Size(editWidth, toolbarHeight)
 			action = f.Slot().Size(actionWidth, toolbarHeight)
 			add = f.Slot().Size(addWidth, toolbarHeight)
 		})
@@ -59,6 +61,7 @@ func (state *State) paintProxiesWorkspace(canvas *ui.Canvas, bounds ui.Rect) {
 	f.End()
 
 	state.paintToolbarButton(canvas, hitProxyRemove, remove.Rect().X, remove.Rect().Y, removeWidth, messages.ProxyRemove, removeIcon, false, hasSelection, condensed)
+	state.paintToolbarButton(canvas, hitProxyEdit, edit.Rect().X, edit.Rect().Y, editWidth, messages.ProxyEdit, editIcon, false, hasSelection, condensed)
 	state.paintToolbarButton(canvas, hitProxyStartStop, action.Rect().X, action.Rect().Y, actionWidth, actionLabel, realActionIcon, false, hasSelection, condensed)
 	state.paintToolbarButton(canvas, hitProxyAdd, add.Rect().X, add.Rect().Y, addWidth, messages.ProxyAdd, addIcon, true, canAdd, condensed)
 
@@ -85,7 +88,13 @@ func (state *State) paintProxyDialog(canvas *ui.Canvas, viewport ui.Rect) {
 		Layer: dialogLayer, Scope: dialogScope, CloseID: hitProxyDialogClose,
 		InitialFocusID: hitProxyDialogTarget, ContentSize: ui.Size{Width: 500}, FitBody: true, BodyHeight: withError(state.proxyDialogBodyHeight(), state.proxyDialogError),
 	})
-	layout := dialog.Begin(messages.ProxyDialogTitle, "")
+	dialogTitle := messages.ProxyDialogTitle
+	submitLabel := messages.ProxyCreate
+	if state.proxyEditor.editing {
+		dialogTitle = messages.ProxyEditDialogTitle
+		submitLabel = messages.ProxyRouteSave
+	}
+	layout := dialog.Begin(dialogTitle, "")
 	const rowHeight = 64
 	var target, jump, via, viaHelp, relay flex.Box
 	viaShell := state.proxyEditor.viaShell
@@ -118,7 +127,7 @@ func (state *State) paintProxyDialog(canvas *ui.Canvas, viewport ui.Rect) {
 	}
 	dialog.Actions(layout,
 		components.ButtonAction{ID: hitProxyDialogCancel, Label: messages.Cancel, Variant: components.ButtonSecondary},
-		components.ButtonAction{ID: hitProxyDialogSubmit, Label: messages.ProxyCreate},
+		components.ButtonAction{ID: hitProxyDialogSubmit, Label: submitLabel},
 	)
 	dialog.End()
 }
@@ -142,64 +151,34 @@ func (state *State) proxyRelayNote() string {
 	return state.messages.ProxyRelayNoPrelude
 }
 
+// paintProxyHostField paints one searchable host picker. Typing in the field
+// filters the list by name, address, account and group, so a long catalog is
+// still reachable without scrolling.
 func (state *State) paintProxyHostField(canvas *ui.Canvas, bounds ui.Rect, target bool) {
 	theme := state.Theme()
 	label := state.messages.ProxyFieldJump
-	triggerID, dismissID, itemBase := hitProxyDialogJump, hitProxyJumpDismiss, hitProxyJumpItemList
-	selectedID, open := state.proxyEditor.jumpID, state.proxyEditor.jumpOpen
+	inputID, triggerID, dismissID := hitProxyDialogJump, hitProxyJumpTrigger, hitProxyJumpDismiss
+	scrollID, itemBase := hitProxyJumpScroll, hitProxyJumpItemList
+	scope := hitProxyJumpPickerScope
+	control := &state.proxyEditor.jumpSelect
 	if target {
 		label = state.messages.ProxyFieldTarget
-		triggerID, dismissID, itemBase = hitProxyDialogTarget, hitProxyTargetDismiss, hitProxyTargetItemList
-		selectedID, open = state.proxyEditor.targetID, state.proxyEditor.targetOpen
+		inputID, triggerID, dismissID = hitProxyDialogTarget, hitProxyTargetTrigger, hitProxyTargetDismiss
+		scrollID, itemBase = hitProxyTargetScroll, hitProxyTargetItemList
+		scope = hitProxyTargetPickerScope
+		control = &state.proxyEditor.targetSelect
 	}
 	content := components.BeginField(canvas, theme, bounds).Paint(label, "", "")
-	selected, selectedOK := state.hostByID(selectedID)
-	value, hint := "", ""
-	if selectedOK {
-		value, hint = selected.Label, selected.target
-	}
-	count := len(state.hosts)
-	visible := min(count, proxyHostVisible)
-	popupHeight := float32(8 + visible*32)
-	// Add every host and let MenuScroll own the wheel, same pattern as the
-	// transfer-center host select. The old page window only painted six rows and
-	// wired ScrollUp/ScrollDown buttons, so trackpad gestures moved MenuScroll
-	// over a list that already fit and never changed which hosts were shown.
-	opening := open && state.popups.owner != dismissID
-	scroll := state.selectScroll(open, dismissID)
-	if opening && scroll != nil {
-		selectedIndex := 0
-		for index, host := range state.hosts {
-			if host.ID == selectedID {
-				selectedIndex = index
-				break
-			}
-		}
-		scroll.Offset = max(0, min(float32(selectedIndex)*32, float32(count)*32+8-popupHeight))
-		// RequestFocus, not SetInitialFocus: the dialog claims its trigger as the
-		// initial focus after this field paints, at the same trap depth, so an initial
-		// focus set here would be overridden. A request is applied once, and the list
-		// follows the focused row from then on.
-		canvas.RequestFocus(itemBase.At(int(selectedID)))
-	}
-	selectControl := components.BeginSelect(canvas, theme, content, components.SelectOptions{
-		TriggerID: triggerID, Label: label, Value: value, Hint: hint, Open: open, Invalid: !selectedOK,
-		Content: ui.Rect{X: content.X, Y: content.Y + content.Height + 4, Width: content.Width, Height: popupHeight},
-		Layer:   dialogLayer + 1, Scope: dialogScope, DismissID: dismissID, Viewport: state.windowRect(),
-		Scroll: scroll,
+	layout := components.PaintSingleSelect(canvas, theme, content, control, components.SingleSelectOptions{
+		InputID: inputID, TriggerID: triggerID, DismissID: dismissID, Scope: scope,
+		ScrollID: scrollID, OptionIDs: itemBase,
+		Label: label, Placeholder: state.messages.HostPickerSearch,
+		EmptyLabel: state.messages.HostPickerNoMatches,
+		Viewport:   state.windowRect(), Layer: dialogLayer + 1,
 	})
-	defer selectControl.End()
-	if open {
-		state.menuPlaced(selectControl.ContentBounds())
+	if target {
+		state.proxyEditor.targetPopup = layout.Popup
+		return
 	}
-	for _, host := range state.hosts {
-		disabled := !host.isSSH()
-		if target && state.proxyTargetConfigured(host.ID) {
-			disabled = true
-		}
-		selectControl.AddItem(components.SelectItem{
-			ID: itemBase.At(int(host.ID)), Label: host.Label, Value: host.target,
-			Selected: host.ID == selectedID, Disabled: disabled,
-		})
-	}
+	state.proxyEditor.jumpPopup = layout.Popup
 }

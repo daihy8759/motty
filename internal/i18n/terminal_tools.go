@@ -4,11 +4,24 @@ package i18n
 // keyword highlighting, snippets and broadcast input.
 type ToolsMessages struct {
 	// Color schemes.
-	SchemeGroup       string
-	SchemeDescription string
-	SchemeDefault     string
-	SchemeLookDark    string
-	SchemeLookLight   string
+	SchemeGroup             string
+	SchemeDescription       string
+	SchemeDefault           string
+	SchemeLookDark          string
+	SchemeLookLight         string
+	SchemeDark              string
+	SchemeLight             string
+	SchemeSearchPlaceholder string
+	SchemeNoMatches         string
+	SchemeDirHintFmt        string
+	SchemeQuickPicks        string
+	SchemeMoreFmt           string
+	SchemeAll               string
+	SchemeCountFmt          string
+	SchemeBuiltin           string
+	SchemeCommunity         string
+	SchemeMine              string
+	SchemeResultsFmt        string
 
 	// Keyword highlighting.
 	HighlightGroup               string
@@ -60,7 +73,16 @@ type ToolsMessages struct {
 	SnippetCountFmt           string
 	SnippetColumnName         string
 	SnippetColumnShortcut     string
+	SnippetColumnGroup        string
+	SnippetFilterAll          string
+	SnippetFilterNone         string
+	SnippetCountFilteredFmt   string
 	SnippetColumnCommand      string
+	SnippetSortAction         string
+	SnippetSortAscending      string
+	SnippetSortDescending     string
+	SnippetMoveUp             string
+	SnippetMoveDown           string
 	StatusSnippetRemovedFmt   string
 	SnippetAdd                string
 	SnippetEdit               string
@@ -87,6 +109,19 @@ type ToolsMessages struct {
 	StatusSnippetSentFmt      string
 	StatusSnippetNoTerminal   string
 	StatusSnippetNotConnected string
+	SendCommandLabel          string
+	SendCommandPlaceholder    string
+	SendCommandButton         string
+	SendTargetCurrent         string
+	SendTargetAll             string
+	SendTargetChosen          string
+	SendRun                   string
+	SendChosenFmt             string
+	SendTargetsPlaceholder    string
+	SendTargetsEmpty          string
+	StatusSendSentFmt         string
+	StatusSendNoTarget        string
+	StatusSendChooseNone      string
 
 	// The categories of the settings page, and what each holds.
 	CatGeneral    string
@@ -133,12 +168,20 @@ type ToolsMessages struct {
 	ScrollbarLabel             string
 	CopyOnSelectRow            string
 	CopyOnSelectDescription    string
+	WordSeparatorsRow          string
+	WordSeparatorsDescription  string
+	WordSeparatorsPlaceholder  string
 	RightClickPasteRow         string
 	RightClickPasteDescription string
+	InputClickRow              string
+	InputClickDescription      string
 	LinkPlainClickRow          string
 	LinkPlainClickDescription  string
 	BellRow                    string
 	BellDescription            string
+	TabTitleConnection         string
+	TabTitleTerminal           string
+	TabTitleDirectory          string
 	TabTitleRow                string
 	TabTitleDescription        string
 	LatencyRow                 string
@@ -213,6 +256,14 @@ type ToolsMessages struct {
 	HostProxyDialogTitle        string
 	HostProxyDialogDescription  string
 	HostProxyPasswordNotCarried string
+	// The host form's jump route row: whether the host is reached through
+	// another, and the way to add or edit that route.
+	HostJumpRow                    string
+	HostJumpDescriptionDirect      string
+	HostJumpDescriptionFmt         string // the jump host's label
+	HostJumpDescriptionUnsaved     string
+	HostJumpDescriptionUnavailable string
+	HostJumpDescriptionMissing     string
 
 	// A proxy command: a local program that carries a host's first connection.
 	ProxyCommand                   string
@@ -313,6 +364,8 @@ type ToolsMessages struct {
 	CatFiles                        string
 	FilesPanelAutoOpen              string
 	FilesPanelAutoOpenDescription   string
+	FilesDirectoryTree              string
+	FilesDirectoryTreeDescription   string
 	FilesPanelPosition              string
 	FilesPanelPositionDescription   string
 	FilesPanelLeft, FilesPanelRight string
@@ -477,6 +530,9 @@ type ToolsMessages struct {
 	DesktopFilesTooManyFmt          string // limit
 	DesktopFilesPathTooLongFmt      string // path
 	DesktopFilesFailedFmt           string // error
+	DesktopFilesReceivedFmt         string // count, size
+	DesktopFilesReceivedSkippedFmt  string // count
+	DesktopFilesReceiveFailedFmt    string // error
 	LaunchTitle                     string
 	LaunchWarning                   string
 	LaunchDescriptionFmt            string
@@ -489,6 +545,10 @@ type ToolsMessages struct {
 	GeneralCloseDescription         string
 	GeneralCloseTray                string
 	GeneralCloseQuit                string
+	GeneralRelaunch                 string
+	GeneralRelaunchDescription      string
+	GeneralRelaunchRaise            string
+	GeneralRelaunchNewWindow        string
 	GeneralUpdate                   string
 	GeneralUpdateDescription        string
 	GeneralUpdateCheck              string
@@ -506,10 +566,12 @@ type ToolsMessages struct {
 	UpdateSkip                      string
 	UpdateInstall                   string
 	UpdateInstallDescriptionFmt     string
+	UpdateDebDescriptionFmt         string
 	UpdateWhyNotUserInstall         string
 	UpdateWhyNotWritable            string
 	UpdateWhyTranslocated           string
 	UpdateWhySystemInstall          string
+	UpdateWhyNoPolkit               string
 	UpdateWhyNoPackage              string
 	UpdateWhyPackageUnknown         string
 	UpdateWhyUnsigned               string
@@ -610,6 +672,7 @@ type ToolsMessages struct {
 	SyncErrAddress                  string
 	SyncConfigureS3                 string
 	SyncConfigureGist               string
+	SyncConfigureGitee              string
 	SyncErrTooLarge                 string
 	S3DialogTitle                   string
 	S3DialogDescription             string
@@ -631,6 +694,10 @@ type ToolsMessages struct {
 	GistAPI                         string
 	GistErrFields                   string
 	GistErrTooLarge                 string
+	GiteeDialogTitle                string
+	GiteeDialogDescription          string
+	GiteeID                         string
+	GiteeErrTooLarge                string
 	MenuSaveOutput                  string
 	MenuSearchSelection             string
 	OutputSaveTitle                 string
@@ -808,6 +875,8 @@ type ToolsMessages struct {
 	ExtEditReplace                  string
 	HostViewList                    string
 	HostViewGrid                    string
+	HostSort                        string
+	HostSortDone                    string
 	BgGroup                         string
 	BgRow                           string
 	BgRowNone                       string

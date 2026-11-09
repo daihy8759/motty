@@ -35,6 +35,10 @@ type Host struct {
 	// an empty value lets that mode try the default and imported keys.
 	Auth     hostAuth
 	Identity string
+	// Credential is the id of the saved password (see credentials.go) the host
+	// takes its password from; empty keeps the host's own. An id that no saved
+	// password has is treated as empty.
+	Credential string
 	// ForwardX11 asks the server to forward the X11 connections of this host's
 	// shells to the local display. Off unless the user turned it on.
 	ForwardX11 bool
@@ -86,6 +90,7 @@ const defaultPort = 22
 
 // finish fills the derived fields.
 func (host *Host) finish() {
+	host.Group = normalizeHostGroupPath(host.Group)
 	if host.CatalogID == "" {
 		host.CatalogID = catalogIDFor(*host)
 	}
@@ -98,16 +103,20 @@ func (host *Host) finish() {
 type Session struct {
 	outputAlert terminalOutputAlert // runtime only; connection status stays independent
 
-	ID       uint32
-	HostID   uint32
-	Title    string
+	ID     uint32
+	HostID uint32
+	Title  string
+	// Mention is this session's unique @ name. Titles may repeat; the mention
+	// stays distinct so a message names exactly one terminal.
+	Mention  string
 	Address  string // dialed address; changes to a saved host take effect on reconnect
 	paneSlot uint8
 	// localDirectory is this shell's last reported directory, independent of
 	// the files panel and of other sessions on the same machine.
 	localDirectory string
-	// startDirectory is where this remote shell starts, when it was split off a
-	// pane that was somewhere: a hint to the server, which may not have it.
+	// startDirectory is where this remote shell starts: the last directory a
+	// trusted prompt reported, or the place a split asked for. It is a hint to
+	// the server, which may no longer have that directory.
 	startDirectory string
 
 	host     Host // what was dialed, to dial again
@@ -118,6 +127,8 @@ type Session struct {
 	endpoint     sshconn.Endpoint
 	role         sshconn.EndpointRole
 	conn         Connection
+	sudoCommands bool
+	sudoPassword string
 	recordRecent bool // this user dial may update its recent success once
 	shared       bool // conn is a tab on another tab's connection
 	// An interactive remote command for this tab only; it is not persisted as a host setting.

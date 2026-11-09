@@ -15,9 +15,11 @@ import (
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/text"
 	"motty/internal/ai/agent"
+	"motty/internal/ai/attach"
 	"motty/internal/ai/cli"
 	"motty/internal/ai/gate"
 	"motty/internal/ai/llm"
+	"motty/internal/ai/reasoning"
 	"motty/internal/ai/risk"
 	"motty/internal/ai/store"
 	"motty/internal/ai/tools"
@@ -101,6 +103,7 @@ type aiSettings struct {
 	autoUpTo     risk.Level
 	maxSteps     int
 	contextLines int
+	maxTextBytes int
 	redact       bool
 	keepHistory  bool
 	// External access (MCP): whether it is enabled and the shared access level.
@@ -113,7 +116,7 @@ type aiSettings struct {
 }
 
 func defaultAISettings() aiSettings {
-	return aiSettings{autoUpTo: risk.Low, maxSteps: 12, contextLines: 60, redact: true, keepHistory: true, mcpMode: gate.ModeObserve, agentMode: gate.ModeObserve}
+	return aiSettings{autoUpTo: risk.Low, maxSteps: 12, contextLines: 60, maxTextBytes: attach.MaxTextBytes, redact: true, keepHistory: true, mcpMode: gate.ModeObserve, agentMode: gate.ModeObserve}
 }
 
 // aiState is everything the assistant keeps in a window. It costs nothing until
@@ -128,6 +131,7 @@ type aiState struct {
 	inbox     *aiInbox
 	drained   []func(*State)
 	backend   *aiBackend
+	jobs      map[string]*aiJob // background terminal commands, by id
 
 	open bool
 	mode agent.Mode
@@ -203,6 +207,13 @@ type aiState struct {
 	authChecks map[string]*aiCLIAuthCheck
 	// panel is the assistant panel's own state (ai_panel.go).
 	panel aiPanel
+
+	// Cached reasoning effort state for current model to avoid per-frame allocations during paint.
+	reasoningCachedModel    string
+	reasoningCachedConfig   *store.ReasoningConfig
+	reasoningCachedDisabled bool
+	reasoningCachedLevels   []string
+	reasoningCachedOK       bool
 }
 
 func (state *State) initAI() {
@@ -271,39 +282,12 @@ func (state *State) reloadAI() {
 	ai.providers, _ = ai.store.Providers()
 	state.aiAdoptKeys()
 	ai.models, _ = ai.store.Models()
-	ai.settings = defaultAISettings()
+	state.reloadAISettings()
 	read := func(key string, apply func(string)) {
 		if value, ok, err := ai.store.Setting(key); err == nil && ok {
 			apply(value)
 		}
 	}
-	read("ai.auto_up_to", func(v string) {
-		switch v {
-		case "medium":
-			ai.settings.autoUpTo = risk.Medium
-		case "high":
-			ai.settings.autoUpTo = risk.High
-		default:
-			ai.settings.autoUpTo = risk.Low
-		}
-	})
-	read("ai.max_steps", func(v string) {
-		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 50 {
-			ai.settings.maxSteps = n
-		}
-	})
-	read("ai.context_lines", func(v string) {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 500 {
-			ai.settings.contextLines = n
-		}
-	})
-	read("ai.redact", func(v string) { ai.settings.redact = v != "off" })
-	read("ai.history", func(v string) { ai.settings.keepHistory = v != "off" })
-	read("ai.mcp.enabled", func(v string) { ai.settings.mcpEnabled = v == "on" })
-	read("ai.mcp.mode", func(v string) { ai.settings.mcpMode = mcpModeFromSetting(v) })
-	read(aiMCPClientSetting, func(v string) { ai.cfg.mcpClient = aiMCPClientFromKey(v) })
-	read(aiAgentClientSetting, func(v string) { ai.cfg.agentClient = aiMCPClientFromKey(v) })
-	read(agentModeSetting, func(v string) { ai.settings.agentMode = mcpModeFromSetting(v) })
 	ai.agentAudit, _ = ai.store.Audit(agentAuditShown)
 	ai.agentSummary.lines = nil
 	read("ai.mode", func(v string) {
@@ -313,11 +297,73 @@ func (state *State) reloadAI() {
 			ai.mode = agent.ModeAsk
 		}
 	})
-	if provider, model, ok, err := ai.store.DefaultModel(); err == nil && ok {
-		ai.settings.defaultProvider, ai.settings.defaultModel = provider, model
-	}
 	// The providers changed, or were just read: the records follow.
 	state.save()
+}
+
+// reloadAISettings refreshes choices shared by already-open windows. It reads
+// only an opened store and never saves or changes a conversation, a running
+// request, or a settings dialog's draft.
+func (state *State) reloadAISettings() {
+	ai := &state.ai
+	if ai.store == nil {
+		return
+	}
+	settings := defaultAISettings()
+	failed := false
+	read := func(key string, apply func(string)) {
+		value, ok, err := ai.store.Setting(key)
+		if err != nil {
+			failed = true
+		} else if ok {
+			apply(value)
+		}
+	}
+	read("ai.auto_up_to", func(v string) {
+		switch v {
+		case "medium":
+			settings.autoUpTo = risk.Medium
+		case "high":
+			settings.autoUpTo = risk.High
+		default:
+			settings.autoUpTo = risk.Low
+		}
+	})
+	read("ai.max_steps", func(v string) {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 50 {
+			settings.maxSteps = n
+		}
+	})
+	read("ai.context_lines", func(v string) {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 500 {
+			settings.contextLines = n
+		}
+	})
+	read("ai.redact", func(v string) { settings.redact = v != "off" })
+	read("ai.attachment_text_mib", func(v string) {
+		switch v {
+		case "1", "4", "8":
+			settings.maxTextBytes, _ = strconv.Atoi(v)
+			settings.maxTextBytes <<= 20
+		}
+	})
+	read("ai.history", func(v string) { settings.keepHistory = v != "off" })
+	read("ai.mcp.enabled", func(v string) { settings.mcpEnabled = v == "on" })
+	read("ai.mcp.mode", func(v string) { settings.mcpMode = mcpModeFromSetting(v) })
+	read(agentModeSetting, func(v string) { settings.agentMode = mcpModeFromSetting(v) })
+	// Export client choices live beside the settings in ai.db but not in
+	// aiSettings: they change which configuration the page shows, not what the
+	// assistant or the MCP servers do.
+	read(aiMCPClientSetting, func(v string) { ai.cfg.mcpClient = aiMCPClientFromKey(v) })
+	read(aiAgentClientSetting, func(v string) { ai.cfg.agentClient = aiMCPClientFromKey(v) })
+	if provider, model, ok, err := ai.store.DefaultModel(); err != nil {
+		failed = true
+	} else if ok {
+		settings.defaultProvider, settings.defaultModel = provider, model
+	}
+	if !failed {
+		ai.settings = settings
+	}
 }
 
 // aiVaultUsable reports whether the vault can be read and written right now: it
@@ -410,7 +456,7 @@ func (state *State) aiProvider(provider store.Provider) llm.Provider {
 	if store.IsCLIKind(provider.Kind) || !store.ValidProviderKind(provider.Kind) {
 		return cli.New(provider.Kind, provider.CLIPath)
 	}
-	config := llm.Config{BaseURL: provider.BaseURL, APIKey: provider.APIKey, AuthStyle: provider.AuthStyle}
+	config := llm.Config{BaseURL: provider.BaseURL, ModelsURL: provider.ModelsURL, APIKey: provider.APIKey, AuthStyle: provider.AuthStyle}
 	if provider.Kind == store.KindAnthropic {
 		return llm.NewAnthropic(config)
 	}
@@ -702,6 +748,10 @@ func (state *State) aiSend() bool {
 	if (question == "" && len(ai.attachments) == 0) || ai.attaching > 0 && !ai.retry {
 		return false
 	}
+	if ai.mode != agent.ModeAgent && slices.ContainsFunc(ai.attachments, func(attachment aiAttachment) bool { return attachment.upload }) {
+		ai.notice = state.messages.AIPanel.UploadNeedsAgent
+		return false
+	}
 	provider, model, err := state.aiModel()
 	if err != nil {
 		ai.notice = err.Error()
@@ -779,10 +829,22 @@ func (state *State) aiSend() bool {
 		MaxSteps:          ai.settings.maxSteps,
 		StepTimeout:       15 * time.Minute, // includes the time a person takes to answer
 		RedactToolResults: ai.settings.redact,
+		ReasoningEffort:   state.aiEffectiveReasoningEffort(),
 	}
 	config.Gate.Target = &target
 	if ai.mode == agent.ModeAgent {
 		config.Tools = tools.Targeted()
+		for index, attachment := range attachments {
+			if attachment.upload {
+				if backend.uploads == nil {
+					backend.uploads = make(map[string]aiUploadFile)
+				}
+				backend.uploads[strconv.Itoa(index+1)] = aiUploadFile{path: attachment.path, name: attachment.file.Name, size: attachment.size, modified: attachment.modified, info: attachment.info}
+			}
+		}
+		if len(backend.uploads) > 0 {
+			config.Tools = append(config.Tools, tools.SelectedUpload())
+		}
 	}
 	config.Gate.References = references
 	config.Gate.Backend = backend
@@ -803,6 +865,7 @@ func (state *State) aiSend() bool {
 		target: target, extras: extras, targetKey: targetKey, attachments: refs,
 	}
 	ai.run = run
+	backend.uploadRun = run
 	ai.lastRun = nil
 	ai.panel.autoMenu = false // the scope is fixed while the request runs
 	if backend.defaultDone != nil && len(backend.bindings) == 1 {
@@ -1202,4 +1265,112 @@ func stripContext(text string) string {
 		}
 	}
 	return text[:end]
+}
+
+// aiCurrentModel 返回当前选中的模型（从已常驻内存的模型列表与设置中获取，避免在绘制循环中触发数据库查询）。
+func (state *State) aiCurrentModel() *store.Model {
+	ai := &state.ai
+	if ai.settings.defaultModel == "" || ai.settings.defaultProvider == "" {
+		return nil
+	}
+	for i := range ai.models {
+		if ai.models[i].ProviderID == ai.settings.defaultProvider && ai.models[i].Name == ai.settings.defaultModel {
+			return &ai.models[i]
+		}
+	}
+	return nil
+}
+
+// aiCurrentModelReasoning 返回当前模型及其支持的思考档位列表，以及是否支持思考控制。
+func (state *State) aiCurrentModelReasoning() (*store.Model, []string, bool) {
+	m := state.aiCurrentModel()
+	if m == nil {
+		return nil, nil, false
+	}
+	if state.ai.reasoningCachedModel == m.Name &&
+		state.ai.reasoningCachedConfig == m.Reasoning &&
+		state.ai.reasoningCachedDisabled == m.ReasoningDisabled {
+		return m, state.ai.reasoningCachedLevels, state.ai.reasoningCachedOK
+	}
+
+	state.ai.reasoningCachedModel = m.Name
+	state.ai.reasoningCachedConfig = m.Reasoning
+	state.ai.reasoningCachedDisabled = m.ReasoningDisabled
+
+	if m.ReasoningDisabled {
+		state.ai.reasoningCachedLevels, state.ai.reasoningCachedOK = nil, false
+		return m, nil, false
+	}
+	if m.Reasoning != nil && len(m.Reasoning.Levels) > 0 {
+		state.ai.reasoningCachedLevels, state.ai.reasoningCachedOK = m.Reasoning.Levels, true
+		return m, m.Reasoning.Levels, true
+	}
+	if inferred := reasoning.InferReasoning(m.Name); inferred != nil && len(inferred.Levels) > 0 {
+		state.ai.reasoningCachedLevels, state.ai.reasoningCachedOK = inferred.Levels, true
+		return m, inferred.Levels, true
+	}
+	state.ai.reasoningCachedLevels, state.ai.reasoningCachedOK = nil, false
+	return m, nil, false
+}
+
+// aiModelReasoningInfo 返回任意模型的思考水平状态：档位列表、默认档位、是否支持思考、是否为用户覆写、是否被用户强制禁用。
+func (state *State) aiModelReasoningInfo(m *store.Model) (levels []string, def string, isReasoning bool, isOverride bool, isDisabled bool) {
+	if m == nil {
+		return nil, "", false, false, false
+	}
+	if m.ReasoningDisabled {
+		return nil, "", false, true, true
+	}
+	if m.Reasoning != nil && len(m.Reasoning.Levels) > 0 {
+		return m.Reasoning.Levels, m.Reasoning.Default, true, true, false
+	}
+	if inferred := reasoning.InferReasoning(m.Name); inferred != nil && len(inferred.Levels) > 0 {
+		return inferred.Levels, inferred.Default, true, false, false
+	}
+	return nil, "", false, false, false
+}
+
+// aiEffectiveReasoningEffort 计算当前请求应该发送给 LLM 的具体思考档位。
+func (state *State) aiEffectiveReasoningEffort() string {
+	m, levels, ok := state.aiCurrentModelReasoning()
+	if !ok || len(levels) == 0 {
+		return ""
+	}
+	override := state.ai.panel.reasoningEffort
+	if override != "" && slices.Contains(levels, override) {
+		return override
+	}
+	if m.Reasoning != nil {
+		if eff, ok := m.Reasoning.EffectiveLevel(override); ok {
+			return eff
+		}
+	} else if inferred := reasoning.InferReasoning(m.Name); inferred != nil {
+		return inferred.Default
+	}
+	return ""
+}
+
+// aiReasoningEffortLabel 返回指定档位的国际化展示名称。
+func (state *State) aiReasoningEffortLabel(effort string) string {
+	m := state.messages.AIPanel
+	switch effort {
+	case reasoning.LevelNone:
+		return m.ReasoningNone
+	case reasoning.LevelMinimal:
+		return m.ReasoningMinimal
+	case reasoning.LevelLow:
+		return m.ReasoningLow
+	case reasoning.LevelMedium:
+		return m.ReasoningMedium
+	case reasoning.LevelHigh:
+		return m.ReasoningHigh
+	case reasoning.LevelXHigh:
+		return m.ReasoningXHigh
+	case reasoning.LevelMax:
+		return m.ReasoningMax
+	case reasoning.LevelDefault:
+		return m.ReasoningDefault
+	default:
+		return m.ReasoningAuto
+	}
 }

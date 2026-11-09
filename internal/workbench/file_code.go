@@ -197,11 +197,13 @@ func (d *fileDocument) paintCodeEditor(canvas *ui.Canvas, theme ui.Theme, bounds
 	selection := d.editor.Selection()
 	start, end, caret := d.editor.ByteOffset(selection.Start), d.editor.ByteOffset(selection.End), d.editor.ByteOffset(d.editor.Caret())
 	focused := canvas.Focused() == hitDocumentInput
+	d.ui.caret.Rest()
 	snapshot := components.CodeEditorSnapshot{
 		ID: hitDocumentInput, Label: m.Title, Value: value, Placeholder: m.ChooseEncoding,
-		ReadOnly: d.busy || !d.ready, Focused: focused, ShowCaret: selection.Start == selection.End,
+		ReadOnly: d.busy || !d.ready, Focused: focused, ShowCaret: focused && selection.Start == selection.End,
 		SelectionStart: start, SelectionEnd: end, Caret: caret,
-		FontSize: d.owner.terminalFontSize, MonoFace: d.owner.terminalFontFace, TabWidth: d.edit.options.TabWidth,
+		CaretColor: d.owner.pal.cursor,
+		FontSize:   d.owner.terminalFontSize, MonoFace: d.owner.terminalFontFace, TabWidth: d.edit.options.TabWidth,
 		Wrap: !d.edit.noWrap, LineNumbers: true, CurrentLine: true, MatchBrackets: true,
 		Language: documentLanguage(d.name), Highlight: d.ui.highlighter,
 		ScrollbarID: hitDocumentScroll, HorizontalScrollbarID: hitDocumentEditorScrollX,

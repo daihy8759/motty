@@ -104,6 +104,7 @@ type sftpView struct {
 	detached                        *sftpWindow // optional native dual-pane owner; transport/navigation stay per view
 	worker                          *sftpclient.Worker
 	openFiles                       func() (sftpclient.Remote, error) // the server's files again, outside the worker's queue; nil when unavailable
+	sudo                            bool
 	transferScan                    uint64
 	transferHost                    *transferHost
 	transferServer, transferAddress string
@@ -153,6 +154,9 @@ type sftpView struct {
 	editorResults         chan editorResult
 	cancelExtract         context.CancelFunc
 	dialogEntry           sftpclient.Entry
+	dialogEntries         []sftpclient.Entry
+	deleteRemaining       []sftpclient.Entry
+	deleteCompleted       int
 	dialogError           string
 	moveAfterRename       bool
 	transfers             []sftpclient.TransferSnapshot
@@ -264,6 +268,11 @@ func (state *State) closeSFTP(session *Session) {
 		state.refreshSFTPTransfers(session.files)
 		state.archiveTransfers(session.files)
 	}
+	if session.files.sudo {
+		state.forgetSFTPDocumentAccess(session.files)
+	}
+	session.files.openFiles = nil
+	session.files.sudo = false
 	state.forgetTerminalUploads(session.files)
 	session.files = nil
 }
@@ -332,6 +341,10 @@ func (state *State) clickSFTP(id ui.ID) {
 	}
 	view := session.files
 	if view == nil {
+		return
+	}
+	if id == hitSFTPMenuSudo {
+		state.toggleSudoSFTP(session, view)
 		return
 	}
 	if view.dialog != sftpDialogNone {
@@ -918,6 +931,14 @@ func (state *State) applySFTPListingNavigation(view *sftpView, remotePath string
 	}
 	view.allRows = rows
 	view.crumbs = prepareSFTPCrumbs(view.crumbs, remotePath)
+	if view.detached != nil {
+		entries := make([]sftpclient.Entry, len(rows))
+		for index := range rows {
+			entries[index] = rows[index].entry
+		}
+		view.detached.observeDirectoryTreeListing(false, remotePath, entries)
+		view.detached.syncDirectoryTreeToPath(false, remotePath)
+	}
 	state.applySFTPFilter(view, &view.sftpFolder, true)
 	state.finishSFTPNavigation(view, false, place, restore, nav)
 	view.errorText = ""
@@ -967,6 +988,9 @@ func (state *State) finishSFTPPrefetch(view *sftpView, result sftpclient.Result)
 		return
 	}
 	view.remember(result.Path, result.Entries)
+	if view.detached != nil {
+		view.detached.observeDirectoryTreeListing(false, result.Path, result.Entries)
+	}
 	switch {
 	case waited:
 		state.showSFTPListingNavigation(view, result.Path, result.Entries, nav, result.ListID)
@@ -996,6 +1020,9 @@ func (state *State) updateSFTPRows(view *sftpView, entries []sftpclient.Entry) {
 		}
 	}
 	view.allRows = prepareSFTPRows(view.allRows, entries)
+	if view.detached != nil {
+		view.detached.observeDirectoryTreeListing(false, view.path, entries)
+	}
 	for index := range view.allRows {
 		if _, ok := selected[view.allRows[index].entry.Name]; ok {
 			view.allRows[index].selected = true
@@ -1200,13 +1227,23 @@ func (state *State) refreshSFTPTransfers(view *sftpView) {
 func (state *State) openSFTPDialog(view *sftpView, dialog sftpDialogKind) {
 	view.dialogEditor = text.Editor{}
 	view.dialogEntry = sftpclient.Entry{}
+	view.dialogEntries = nil
 	view.dialogError = ""
 	if dialog != sftpDialogCreateDirectory {
+		if dialog == sftpDialogDelete {
+			for _, row := range selectedSFTPRows(view) {
+				view.dialogEntries = append(view.dialogEntries, row.entry)
+			}
+		}
 		entry, ok := state.selectedSFTPEntry(view)
-		if !ok {
+		if !ok && len(view.dialogEntries) == 0 {
 			return
 		}
-		view.dialogEntry = entry
+		if len(view.dialogEntries) > 0 {
+			view.dialogEntry = view.dialogEntries[0]
+		} else {
+			view.dialogEntry = entry
+		}
 	}
 	switch dialog {
 	case sftpDialogRename:
@@ -1227,7 +1264,59 @@ func (state *State) closeSFTPDialog(view *sftpView) {
 	view.dialog = sftpDialogNone
 	view.dialogEditor, view.dialogEditor2 = text.Editor{}, text.Editor{}
 	view.dialogEntry = sftpclient.Entry{}
+	view.dialogEntries = nil
 	view.dialogError = ""
+}
+
+func (state *State) queueNextSFTPDelete(view *sftpView) bool {
+	entry := view.deleteRemaining[0]
+	remotePath := path.Join(view.path, entry.Name)
+	var queued bool
+	if entry.IsDir() && !entry.IsLink() {
+		queued = view.worker.RemoveDirectory(remotePath)
+		view.operation = sftpclient.OperationRemoveDirectory
+	} else {
+		queued = view.worker.RemoveFile(remotePath)
+		view.operation = sftpclient.OperationRemoveFile
+	}
+	if queued {
+		view.deleteRemaining = view.deleteRemaining[1:]
+		view.busy = true
+		view.status = fmt.Sprintf(state.messages.SFTPDeletingFmt, entry.Name)
+	}
+	return queued
+}
+
+func (state *State) finishSFTPDelete(view *sftpView, result sftpclient.Result) {
+	if result.Err == nil {
+		view.deleteCompleted++
+	}
+	if result.Err == nil && len(view.deleteRemaining) > 0 && state.queueNextSFTPDelete(view) {
+		return
+	}
+	remaining := len(view.deleteRemaining)
+	completed := view.deleteCompleted
+	failedPath := result.Path
+	if result.Err == nil && remaining > 0 {
+		failedPath = path.Join(view.path, view.deleteRemaining[0].Name)
+	}
+	view.deleteRemaining = nil
+	view.deleteCompleted = 0
+	view.forgetListings()
+	if result.Err != nil || remaining > 0 {
+		detail := state.messages.SFTPDeleteSelectionPartial
+		if result.Err != nil {
+			detail = fmt.Sprintf("%s: %s %s", failedPath, fmt.Sprintf(state.messages.SFTPErrorFmt, result.Err), detail)
+		} else {
+			detail = fmt.Sprintf("%s: %s %s", failedPath, state.messages.SFTPUnavailable, detail)
+		}
+		state.fileOpenNotice(view.detached, state.messages.SFTPDeleteSelectionTitle, detail, components.ToastError)
+	} else if completed > 1 {
+		view.refreshStatus = fmt.Sprintf(state.messages.SFTPDeletedCountFmt, completed)
+	} else {
+		view.refreshStatus = fmt.Sprintf(state.messages.SFTPDeletedFmt, result.Path)
+	}
+	state.listSFTP(view, view.path)
 }
 
 func (state *State) clickSFTPDialog(view *sftpView, id ui.ID) {
@@ -1357,6 +1446,18 @@ func (state *State) submitSFTPDialog(view *sftpView) {
 		status = fmt.Sprintf(state.messages.SFTPMovingFmt, view.dialogEntry.Name)
 		view.moveAfterRename = queued
 	case sftpDialogDelete:
+		if len(view.dialogEntries) > 1 {
+			view.deleteRemaining = slices.Clone(view.dialogEntries)
+			view.deleteCompleted = 0
+			if !state.queueNextSFTPDelete(view) {
+				view.deleteRemaining = nil
+				view.dialogError = state.messages.SFTPUnavailable
+				return
+			}
+			state.closeSFTPDialog(view)
+			view.errorText = ""
+			return
+		}
 		remotePath := path.Join(view.path, view.dialogEntry.Name)
 		if view.dialogEntry.IsDir() && !view.dialogEntry.IsLink() {
 			// A folder is removed with its contents; the worker walks the tree.
@@ -1437,6 +1538,9 @@ func (state *State) pumpSFTP(session *Session) {
 			if result.Operation == sftpclient.OperationList && result.Err == nil {
 				view.approximate = result.Approximate
 			}
+			if result.Operation == sftpclient.OperationList && result.Background && view.detached != nil && view.detached.acceptDirectoryTreeResult(result) {
+				continue
+			}
 			if result.FollowUp {
 				if result.ListID != 0 {
 					shown := result.ListID == view.acceptedListID && result.Path == view.path && !view.busy
@@ -1484,6 +1588,10 @@ func (state *State) pumpSFTP(session *Session) {
 					view.status = fmt.Sprintf(state.messages.SFTPDownloadedFmt, formatBytes(result.Bytes), result.LocalPath)
 				}
 				state.refreshSFTPTransfers(view)
+				continue
+			}
+			if (result.Operation == sftpclient.OperationRemoveFile || result.Operation == sftpclient.OperationRemoveDirectory) && (view.deleteRemaining != nil || view.deleteCompleted > 0) {
+				state.finishSFTPDelete(view, result)
 				continue
 			}
 			if view.detached != nil && view.detached.browseDirectoryCreated(result) {

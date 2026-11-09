@@ -131,9 +131,6 @@ func (state *State) setTerminalFontSize(value float32) bool {
 		return false
 	}
 	state.terminalFontSize = value
-	state.cellWidth, state.cellHeight = (&ui.Canvas{}).MonoCellSize(value, state.terminalFontFace)
-	state.cellHeight *= state.terminalLineHeight.factor()
-	state.fitTerminals()
 	return true
 }
 
@@ -145,9 +142,6 @@ func (state *State) setTerminalFontFace(face ui.MonoFace) bool {
 		return false
 	}
 	state.terminalFontFace = face
-	state.cellWidth, state.cellHeight = (&ui.Canvas{}).MonoCellSize(state.terminalFontSize, face)
-	state.cellHeight *= state.terminalLineHeight.factor()
-	state.fitTerminals()
 	return true
 }
 
@@ -209,6 +203,27 @@ func closeActionFromString(value string) closeAction {
 	return closeToTray
 }
 
+type relaunchAction uint8
+
+const (
+	relaunchRaise relaunchAction = iota
+	relaunchNewWindow
+)
+
+func (action relaunchAction) String() string {
+	if action == relaunchNewWindow {
+		return "new-window"
+	}
+	return "raise"
+}
+
+func relaunchActionFromString(value string) relaunchAction {
+	if value == relaunchNewWindow.String() {
+		return relaunchNewWindow
+	}
+	return relaunchRaise
+}
+
 // networkProxyMode is which proxy a local terminal's programs are told to use.
 // Direct, the default, sets nothing: the terminal behaves as it would if it
 // were started from any other terminal, with the environment it inherits.
@@ -249,6 +264,7 @@ func (state *State) openSettings() {
 	state.settingsScroll = 0
 	state.settings.navScroll = 0
 	state.settings.aboutCopied = false
+	state.schemeBrowserOpen = false
 	state.revealSettingsCategory()
 	state.aiSettingsOpened()
 	state.save()
@@ -259,6 +275,14 @@ func (state *State) openSettings() {
 // of travel; a trackpad moves it by exactly what it reports.
 func (state *State) scrollSettings(event ui.ScrollEvent) ui.EventResult {
 	step := event.StepY(24)
+	if state.schemeBrowserOpen {
+		if pointInRect(event.X, event.Y, state.schemeDrawerBody) {
+			result := state.schemeDrawerView.Wheel(event)
+			result.Handled = true
+			return result
+		}
+		return ui.EventResult{Handled: true}
+	}
 	view := &state.settings
 	nav := view.navRect
 	if nav.Width > 0 && event.X >= nav.X && event.X < nav.X+nav.Width && event.Y >= nav.Y && event.Y < nav.Y+nav.Height {
@@ -366,6 +390,10 @@ func (state *State) clickSettings(id ui.ID) bool {
 		changed = state.setTabOrientation(tabsHorizontal)
 	case hitSettingsTabsVertical:
 		changed = state.setTabOrientation(tabsVertical)
+	case hitSettingsTabNumbers:
+		changed = state.setTabNumbers(!state.tabNumbers)
+	case hitSettingsTabNumbersPrimary, hitSettingsTabNumbersAlt, hitSettingsTabNumbersShift:
+		changed = state.setTabNumberModifier(id)
 	case hitSettingsOutputAlerts:
 		state.backgroundOutputAlerts = !state.backgroundOutputAlerts
 		state.clearOutputAlerts()
@@ -390,6 +418,12 @@ func (state *State) clickSettings(id ui.ID) bool {
 	case hitSettingsCloseQuit:
 		changed = state.closeAction != closeQuits
 		state.closeAction = closeQuits
+	case hitSettingsRelaunchRaise:
+		changed = state.relaunchAction != relaunchRaise
+		state.relaunchAction = relaunchRaise
+	case hitSettingsRelaunchNewWindow:
+		changed = state.relaunchAction != relaunchNewWindow
+		state.relaunchAction = relaunchNewWindow
 	case hitSettingsOptionText:
 		changed = state.terminalOption != terminalOptionText
 		state.terminalOption = terminalOptionText
@@ -487,6 +521,10 @@ func (state *State) clickSettings(id ui.ID) bool {
 		changed = state.setRestoreConnectPolicy(restoreConnectOff)
 	case hitSettingsRestoreAll:
 		changed = state.setRestoreConnectPolicy(restoreConnectAll)
+	case hitSettingsLocalStartRemember:
+		changed = state.setLocalStartPolicy(localStartRemember)
+	case hitSettingsLocalStartHome:
+		changed = state.setLocalStartPolicy(localStartHome)
 	case hitSettingsAgentSystem:
 		changed = state.setSSHAgent(agentChoice{})
 	case hitSettingsAgentOnePassword:
@@ -580,6 +618,14 @@ func (state *State) settingsCloseOptions() [2]components.SegmentOption {
 	return [...]components.SegmentOption{
 		{ID: hitSettingsCloseTray, Label: m.GeneralCloseTray},
 		{ID: hitSettingsCloseQuit, Label: m.GeneralCloseQuit},
+	}
+}
+
+func (state *State) settingsRelaunchOptions() [2]components.SegmentOption {
+	m := state.messages.Tools
+	return [...]components.SegmentOption{
+		{ID: hitSettingsRelaunchRaise, Label: m.GeneralRelaunchRaise},
+		{ID: hitSettingsRelaunchNewWindow, Label: m.GeneralRelaunchNewWindow},
 	}
 }
 
@@ -677,6 +723,13 @@ func (state *State) settingsRestoreOptions() [3]components.SegmentOption {
 	}
 }
 
+func (state *State) settingsLocalStartOptions() [2]components.SegmentOption {
+	return [...]components.SegmentOption{
+		{ID: hitSettingsLocalStartRemember, Label: state.messages.SettingsLocalStartRemember},
+		{ID: hitSettingsLocalStartHome, Label: state.messages.SettingsLocalStartHome},
+	}
+}
+
 func (state *State) settingsClipboardOptions() [3]components.SegmentOption {
 	return [...]components.SegmentOption{
 		{ID: hitSettingsClipboardBlock, Label: state.messages.SettingsTerminalClipboardBlock},
@@ -731,6 +784,9 @@ func (state *State) settingsKey(event ui.KeyEvent) (ui.EventResult, bool) {
 	case hitSettingsTabsHorizontal, hitSettingsTabsVertical:
 		options := state.settingsTabOrientationOptions()
 		next, handled = components.SegmentedControlKeyDown(event.Target, options[:], components.DirectionLTR, event.Key)
+	case hitSettingsTabNumbersPrimary, hitSettingsTabNumbersAlt, hitSettingsTabNumbersShift:
+		options := state.tabNumberOptions()
+		next, handled = components.SegmentedControlKeyDown(event.Target, options[:], components.DirectionLTR, event.Key)
 	case hitSettingsNetworkSystem, hitSettingsNetworkDirect:
 		options := state.settingsNetworkProxyOptions()
 		next, handled = components.SegmentedControlKeyDown(event.Target, options[:], components.DirectionLTR, event.Key)
@@ -739,6 +795,9 @@ func (state *State) settingsKey(event ui.KeyEvent) (ui.EventResult, bool) {
 		next, handled = components.SegmentedControlKeyDown(event.Target, options[:], components.DirectionLTR, event.Key)
 	case hitSettingsCloseTray, hitSettingsCloseQuit:
 		options := state.settingsCloseOptions()
+		next, handled = components.SegmentedControlKeyDown(event.Target, options[:], components.DirectionLTR, event.Key)
+	case hitSettingsRelaunchRaise, hitSettingsRelaunchNewWindow:
+		options := state.settingsRelaunchOptions()
 		next, handled = components.SegmentedControlKeyDown(event.Target, options[:], components.DirectionLTR, event.Key)
 	case hitSettingsOptionText, hitSettingsOptionMeta:
 		options := state.settingsOptionOptions()
@@ -778,6 +837,9 @@ func (state *State) settingsKey(event ui.KeyEvent) (ui.EventResult, bool) {
 		next, handled = components.SegmentedControlKeyDown(event.Target, options[:], components.DirectionLTR, event.Key)
 	case hitSettingsRestoreOff, hitSettingsRestoreActive, hitSettingsRestoreAll:
 		options := state.settingsRestoreOptions()
+		next, handled = components.SegmentedControlKeyDown(event.Target, options[:], components.DirectionLTR, event.Key)
+	case hitSettingsLocalStartRemember, hitSettingsLocalStartHome:
+		options := state.settingsLocalStartOptions()
 		next, handled = components.SegmentedControlKeyDown(event.Target, options[:], components.DirectionLTR, event.Key)
 	case hitSettingsAgentSystem, hitSettingsAgentOnePassword, hitSettingsAgentBitwarden, hitSettingsAgentCustom:
 		options := state.settingsAgentOptions()

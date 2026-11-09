@@ -3,10 +3,12 @@ package workbench
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/vivaui/viva/app"
+	"github.com/vivaui/viva/keymap"
 	"github.com/vivaui/viva/ui"
 	"motty/internal/sshconn"
 	"motty/internal/term"
@@ -148,7 +150,16 @@ func TestRawKeysBecomeTheBytesAProgramExpects(t *testing.T) {
 			t.Fatalf("%+v was not taken", event)
 		}
 	}
-	if got, want := shell.typed(), "\r\x1b[A\t\x1b\x7f\x03\x1b[1;3D\x1b[15~\x1b[5~\x1b[3~"; got != want {
+	// Option+Left is the protocol's CSI 1;3D, except on macOS where a shell that
+	// negotiated nothing gets macOS Terminal's word movement instead. The product
+	// decides which (see terminal.go), so the expectation follows the platform
+	// rather than pinning one convention: CI's Linux and Windows shards take the
+	// first form, a Mac the second.
+	optionLeft := "\x1b[1;3D"
+	if runtime.GOOS == "darwin" {
+		optionLeft = "\x1bb"
+	}
+	if got, want := shell.typed(), "\r\x1b[A\t\x1b\x7f\x03"+optionLeft+"\x1b[15~\x1b[5~\x1b[3~"; got != want {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
 
@@ -413,12 +424,13 @@ func TestDigitChordsDriveTheTabs(t *testing.T) {
 	state.Click(hitHostList.At(2))
 	connect(t, state, world)
 	first, second := state.sessions[0].ID, state.sessions[1].ID
+	state.setTabNumbers(true)
 
 	// A tab is a workspace on the tab bar: selecting one has to move the bar,
 	// not only the session the keyboard goes to.
 	workspaces := state.deck.Workspaces(nil)
 	digit := func(text string) ui.EventResult {
-		return state.Shortcut(ui.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: defaultShortcutModifier(), Text: text})
+		return state.Shortcut(ui.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: keymap.Primary, Text: text})
 	}
 	digit("1")
 	if state.activeSessionID != first || state.deck.ActiveWorkspace() != workspaces[0].ID {
@@ -428,18 +440,18 @@ func TestDigitChordsDriveTheTabs(t *testing.T) {
 	if state.activeSessionID != second || state.deck.ActiveWorkspace() != workspaces[1].ID {
 		t.Fatal("the second digit did not select the second tab")
 	}
-	if result := digit("9"); result.Handled != (defaultShortcutModifier() == ui.ModifierMeta) {
+	if result := digit("9"); result.Handled != (keymap.Primary == ui.ModifierMeta) {
 		t.Fatalf("a digit with no tab behind it: handled=%v", result.Handled)
 	}
 	if state.activeSessionID != second {
 		t.Fatal("a missing tab changed the selection")
 	}
-	state.Shortcut(ui.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: defaultShortcutModifier(), Text: "t"})
+	state.Shortcut(ui.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: keymap.Primary, Text: "t"})
 	if state.modal != modalCommandPalette || !state.commandPalette.connect {
 		t.Fatal("new-tab shortcut did not open the connection picker")
 	}
 	state.Click(hitCommandPaletteClose)
-	state.Shortcut(ui.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: defaultShortcutModifier(), Text: "w"})
+	state.Shortcut(ui.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: keymap.Primary, Text: "w"})
 	if len(state.sessions) != 1 || state.activeSessionID != first {
 		t.Fatalf("close-tab shortcut left sessions=%d active=%d", len(state.sessions), state.activeSessionID)
 	}
@@ -579,12 +591,15 @@ func TestALargeFloodIsParsedOverSeveralWakes(t *testing.T) {
 	state, _, _, shell := liveSession(t)
 	invalidations := 0
 	state.options.Invalidate = func() { invalidations++ }
-	// The escape sequence starts exactly on the budget boundary, so the parser
+	session := &state.sessions[0]
+	// No time to spare: a Wake parses one slice and no more, whatever the speed
+	// of the machine running the test.
+	session.term.pumpBudget = 0
+	// The escape sequence starts exactly on a slice boundary, so the parser
 	// has to carry its state into the next pump.
-	payload := strings.Repeat("a", pumpBudget-1) + "\x1b[31mred\x1b[0m\r\n"
+	payload := strings.Repeat("a", pumpSlice-1) + "\x1b[31mred\x1b[0m\r\n"
 	shell.say(payload)
 	state.Wake()
-	session := &state.sessions[0]
 	if session.term.rx == nil || len(session.term.rx) == 0 {
 		t.Fatal("the whole flood was parsed in one Wake")
 	}
@@ -605,7 +620,7 @@ func TestALargeFloodIsParsedOverSeveralWakes(t *testing.T) {
 func TestALargeFloodIsParsedInOneWakeWithoutAnInvalidator(t *testing.T) {
 	state, _, _, shell := liveSession(t)
 	state.options.Invalidate = nil
-	shell.say(strings.Repeat("x", 2*pumpBudget))
+	shell.say(strings.Repeat("x", 2*pumpSlice))
 	state.Wake()
 	if session := &state.sessions[0]; len(session.term.rx) != 0 {
 		t.Fatalf("%d bytes remained without an Invalidator", len(session.term.rx))

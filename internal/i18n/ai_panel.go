@@ -78,6 +78,9 @@ type AIPanelMessages struct {
 	// Files and pictures attached to a message. The Fmt strings take the file's
 	// name first.
 	Attach                   string // the paperclip: its name and tooltip
+	Upload                   string
+	UploadPickerTitle        string
+	UploadNeedsAgent         string
 	AttachPickerTitle        string
 	AttachDropHint           string // over the panel while files are dragged in
 	AttachRemoveFmt          string
@@ -86,6 +89,7 @@ type AIPanelMessages struct {
 	AttachFolderFmt          string
 	AttachEmptyFmt           string
 	AttachTextTooBigFmt      string // takes the name and the size limit
+	AttachReadTooLargeFmt    string // takes the name and the maximum file read size
 	AttachTooLargeFmt        string
 	AttachUnsupportedFmt     string
 	AttachTotalTextFmt       string // takes the name and the size limit of all text
@@ -148,6 +152,18 @@ type AIPanelMessages struct {
 	AutoScopeLowDesc    string
 	AutoScopeMediumDesc string
 	AutoScopeHighDesc   string
+
+	ReasoningEffort     string
+	ReasoningEffortHint string
+	ReasoningNone       string
+	ReasoningMinimal    string
+	ReasoningLow        string
+	ReasoningMedium     string
+	ReasoningHigh       string
+	ReasoningXHigh      string
+	ReasoningMax        string
+	ReasoningDefault    string
+	ReasoningAuto       string
 
 	ApprovalTitle       string
 	ApprovalMoreFmt     string // takes how many more are waiting
