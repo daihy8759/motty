@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/text"
-	"github.com/vivaui/viva/ui"
 	"motty/internal/loginexpect"
 )
 
@@ -261,7 +261,7 @@ func (state *State) feedLoginExpect(session *Session, output []byte) {
 
 // requestLoginExpectFrames asks for the frame that notices a rule's timeout. A
 // shell with no active rules asks for nothing.
-func (state *State) requestLoginExpectFrames(canvas *ui.Canvas) {
+func (state *State) requestLoginExpectFrames(canvas *gfx.Canvas) {
 	now := state.loginExpectNow()
 	for index := range state.sessions {
 		session := &state.sessions[index]
@@ -288,7 +288,7 @@ func (state *State) requestLoginExpectFrames(canvas *ui.Canvas) {
 
 // clickLoginExpectSecret handles the sensitive-response dialog. Dismissing it
 // cancels the run rather than sending anything.
-func (state *State) clickLoginExpectSecret(id ui.ID) {
+func (state *State) clickLoginExpectSecret(id gfx.ID) {
 	session := state.loginExpectAskSession()
 	if session == nil || session.loginExpectAsk == nil {
 		if state.modal == modalLoginExpectSecret {

@@ -2925,14 +2925,14 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		state.submitKeyPassphrase()
 		return gfx.EventResult{Handled: true, Repaint: true}
 	}
-	if state.modal == modalLoginExpectSecret && event.Key == ui.KeyEnter && event.Target == hitLoginExpectField && !event.Repeat {
+	if state.modal == modalLoginExpectSecret && event.Key == gfx.KeyEnter && event.Target == hitLoginExpectField && !event.Repeat {
 		state.clickLoginExpectSecret(hitLoginExpectSubmit)
-		return ui.EventResult{Handled: true, Repaint: true}
+		return gfx.EventResult{Handled: true, Repaint: true}
 	}
-	if state.modal == modalLoginExpectStep && event.Key == ui.KeyEnter && !event.Repeat &&
+	if state.modal == modalLoginExpectStep && event.Key == gfx.KeyEnter && !event.Repeat &&
 		(event.Target == hitLoginExpectStepExpect || event.Target == hitLoginExpectStepSend || event.Target == hitLoginExpectStepTimeout || event.Target == hitLoginExpectStepDelay) {
 		state.saveLoginExpectStep()
-		return ui.EventResult{Handled: true, Repaint: true}
+		return gfx.EventResult{Handled: true, Repaint: true}
 	}
 	if result, handled := state.verticalTabGroupKey(event); handled {
 		return result

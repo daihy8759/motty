@@ -150,7 +150,7 @@ func TestMalformedDisconnectIsNotRetriedAutomaticallyButEnterStillConnects(t *te
 	}
 	// It stays a user-visible failure, and pressing Enter is still the explicit
 	// way to try again after fixing the server.
-	key(state, 0, ui.KeyEvent{Key: ui.KeyEnter})
+	key(state, 0, gfx.KeyEvent{Key: gfx.KeyEnter})
 	if len(world.conns) != 2 {
 		t.Fatalf("Enter dialed %d connections, want 2", len(world.conns))
 	}

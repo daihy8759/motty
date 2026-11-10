@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/vivaui/viva/components"
-	"github.com/vivaui/viva/flex"
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/text"
 	"github.com/vivaui/viva/ui"
 	"motty/internal/loginexpect"
@@ -48,24 +48,24 @@ func (state *State) loginExpectSectionHeight() float32 {
 // paintLoginExpectSection draws the collapsible Expect/Send list in the host
 // dialog. The rules themselves are edited in a dialog of their own; this shows
 // their order and lets them be moved or removed.
-func (state *State) paintLoginExpectSection(canvas *ui.Canvas, bounds ui.Rect) {
+func (state *State) paintLoginExpectSection(canvas *gfx.Canvas, bounds gfx.Rect) {
 	m, pal := state.messages.LoginExpect, state.pal
 	editor := &state.editor
 	open := editor.loginExpectOpen
-	header := ui.Rect{X: bounds.X, Y: bounds.Y + advancedHeaderGap, Width: bounds.Width, Height: 32}
+	header := gfx.Rect{X: bounds.X, Y: bounds.Y + advancedHeaderGap, Width: bounds.Width, Height: 32}
 	state.rememberHostControl(hitDialogLoginExpectHeader, header)
 	chevron := iconChevronRight
 	if open {
 		chevron = iconChevronDown
 	}
-	var icon flex.Box
+	var icon ui.Box
 	f := state.partLayout.Begin(canvas, state.Theme(), header)
-	f.Row().Fill().PadSides(0, 0, 0, 2).Gap(8).Items(flex.Center).
-		Radius(radius.control).Hover(flex.Look{}.Background(pal.surfaceSoft)).
-		HitWith(hitDialogLoginExpectHeader, m.SectionTitle, ui.HitOptions{Role: ui.RoleButton, Expanded: open}).
+	f.Row().Fill().PadSides(0, 0, 0, 2).Gap(8).Items(ui.Center).
+		Radius(radius.control).Hover(ui.Look{}.Background(pal.surfaceSoft)).
+		HitWith(hitDialogLoginExpectHeader, m.SectionTitle, gfx.HitOptions{Role: gfx.RoleButton, Expanded: open}).
 		Children(func() {
 			icon = f.Slot().Size(16, 16)
-			f.Text(m.SectionTitle).FontSize(metrics.FontSizeM).Weight(ui.WeightMedium).Color(pal.muted).LineHeight(20)
+			f.Text(m.SectionTitle).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(pal.muted).LineHeight(20)
 			if count := len(editor.loginExpect.Steps); count > 0 {
 				f.Text(fmt.Sprintf("%d", count)).FontSize(metrics.FontSizeS).Color(pal.muted).LineHeight(20)
 			}
@@ -76,11 +76,11 @@ func (state *State) paintLoginExpectSection(canvas *ui.Canvas, bounds ui.Rect) {
 		return
 	}
 
-	body := ui.Rect{
+	body := gfx.Rect{
 		X: bounds.X, Y: bounds.Y + advancedHeaderHeight,
 		Width: bounds.Width, Height: max(bounds.Height-advancedHeaderHeight, 0),
 	}
-	var enable flex.Box
+	var enable ui.Box
 	f = state.partLayout.Begin(canvas, state.Theme(), body)
 	f.Column().Fill().Children(func() {
 		f.Paragraph(m.SectionHint, 2).FontSize(metrics.FontSizeS).Color(pal.muted).LineHeight(15)
@@ -98,9 +98,9 @@ func (state *State) paintLoginExpectSection(canvas *ui.Canvas, bounds ui.Rect) {
 
 // declareLoginExpectRow lays out one saved rule: its summary, then the buttons
 // that move, edit and remove it. The buttons belong to the form's scroll tree.
-func (state *State) declareLoginExpectRow(f *flex.Frame, index int) {
+func (state *State) declareLoginExpectRow(f *ui.Frame, index int) {
 	m, pal := state.messages.LoginExpect, state.pal
-	row := f.Row().Height(34).Gap(6).Items(flex.Center).Children(func() {
+	row := f.Row().Height(34).Gap(6).Items(ui.Center).Children(func() {
 		f.Text(state.loginExpectStepSummary(index)).FontSize(metrics.FontSizeS).Color(pal.text).Grow(1).LineHeight(18)
 		f.Button(hitDialogLoginExpectUpList.At(index), m.MoveUp).Small().Ghost().Disabled(index == 0)
 		f.Button(hitDialogLoginExpectDownList.At(index), m.MoveDown).Small().Ghost().Disabled(index == len(state.editor.loginExpect.Steps)-1)
@@ -146,7 +146,7 @@ func clipLoginExpectText(value string) string {
 }
 
 // clickLoginExpect handles the section's own controls in the host dialog.
-func (state *State) clickLoginExpect(id ui.ID) bool {
+func (state *State) clickLoginExpect(id gfx.ID) bool {
 	switch id {
 	case hitDialogLoginExpectHeader:
 		state.editor.loginExpectOpen = !state.editor.loginExpectOpen
@@ -287,7 +287,7 @@ func (state *State) closeLoginExpectStepEditor() {
 }
 
 // clickLoginExpectStep handles the rule editor's controls.
-func (state *State) clickLoginExpectStep(id ui.ID) {
+func (state *State) clickLoginExpectStep(id gfx.ID) {
 	editor := &state.loginExpectStep
 	switch id {
 	case hitLoginExpectStepEnter:
@@ -307,7 +307,7 @@ func (state *State) clickLoginExpectStep(id ui.ID) {
 }
 
 // paintLoginExpectStepDialog draws the editor for one rule.
-func (state *State) paintLoginExpectStepDialog(canvas *ui.Canvas, viewport ui.Rect) {
+func (state *State) paintLoginExpectStepDialog(canvas *gfx.Canvas, viewport gfx.Rect) {
 	m, theme := state.messages.LoginExpect, state.Theme()
 	editor := &state.loginExpectStep
 	title := m.StepTitleAdd
@@ -317,10 +317,10 @@ func (state *State) paintLoginExpectStepDialog(canvas *ui.Canvas, viewport ui.Re
 	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
 		Layer: dialogLayer, Scope: dialogScope,
 		DismissID: hitLoginExpectStepDismiss, CloseID: hitLoginExpectStepClose, InitialFocusID: hitLoginExpectStepExpect,
-		ContentSize: ui.Size{Width: 520}, FitBody: true, BodyHeight: withError(356, editor.err),
+		ContentSize: gfx.Size{Width: 520}, FitBody: true, BodyHeight: withError(356, editor.err),
 	})
 	layout := dialog.Begin(title, "")
-	var wait, send, timeout, delay, enterRow, modeRow, sensRow flex.Box
+	var wait, send, timeout, delay, enterRow, modeRow, sensRow ui.Box
 	f := state.settingsRow.Begin(canvas, theme, layout.Body)
 	f.Column().Fill().PadSides(2, 4, 0, 4).Children(func() {
 		wait = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
@@ -351,7 +351,7 @@ func (state *State) paintLoginExpectStepDialog(canvas *ui.Canvas, viewport ui.Re
 	dialog.End()
 }
 
-func (state *State) paintLoginExpectStepField(canvas *ui.Canvas, id ui.ID, label, placeholder string, editor *text.Editor, bounds ui.Rect, secure, disabled bool) {
+func (state *State) paintLoginExpectStepField(canvas *gfx.Canvas, id gfx.ID, label, placeholder string, editor *text.Editor, bounds gfx.Rect, secure, disabled bool) {
 	theme := state.Theme()
 	content := components.BeginField(canvas, theme, bounds).Paint(label, "", "")
 	value := editor.String()
@@ -364,7 +364,7 @@ func (state *State) paintLoginExpectStepField(canvas *ui.Canvas, id ui.ID, label
 
 // paintLoginExpectSecretDialog asks for a sensitive rule's response. The answer
 // is masked, used once, and never written to the state file or the log.
-func (state *State) paintLoginExpectSecretDialog(canvas *ui.Canvas, viewport ui.Rect) {
+func (state *State) paintLoginExpectSecretDialog(canvas *gfx.Canvas, viewport gfx.Rect) {
 	m, theme := state.messages.LoginExpect, state.Theme()
 	session := state.loginExpectAskSession()
 	if session == nil || session.loginExpectAsk == nil {
@@ -374,7 +374,7 @@ func (state *State) paintLoginExpectSecretDialog(canvas *ui.Canvas, viewport ui.
 	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
 		Layer: dialogLayer, Scope: dialogScope,
 		DismissID: hitLoginExpectDismiss, CloseID: hitLoginExpectClose, InitialFocusID: hitLoginExpectField,
-		ContentSize: ui.Size{Width: 500}, FitBody: true, BodyHeight: 84,
+		ContentSize: gfx.Size{Width: 500}, FitBody: true, BodyHeight: 84,
 	})
 	layout := dialog.Begin(m.DialogTitle, ask.prompt)
 	field := components.BeginField(canvas, theme, state.layoutSecretField(canvas, layout.Body, ""))
