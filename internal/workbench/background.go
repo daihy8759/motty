@@ -14,7 +14,6 @@ import (
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/gfx"
-	"github.com/vivaui/viva/ui"
 	"motty/internal/i18n"
 )
 
@@ -32,9 +31,6 @@ var backgroundHits = tree.Feature("background")
 var (
 	hitBgChoose = tree.ID(backgroundHits, "bg-choose")
 	hitBgRemove = tree.ID(backgroundHits, "bg-remove")
-	hitBgSubtle = tree.ID(backgroundHits, "bg-subtle")
-	hitBgMedium = tree.ID(backgroundHits, "bg-medium")
-	hitBgStrong = tree.ID(backgroundHits, "bg-strong")
 )
 
 const (
@@ -308,18 +304,6 @@ func (state *State) clickBackground(id gfx.ID) bool {
 		state.chooseBackground()
 	case hitBgRemove:
 		state.removeBackground()
-	case hitBgSubtle, hitBgMedium, hitBgStrong:
-		strength := bgMedium
-		switch id {
-		case hitBgSubtle:
-			strength = bgSubtle
-		case hitBgStrong:
-			strength = bgStrong
-		}
-		if state.bg.set && state.bg.strength != strength {
-			state.bg.strength = strength
-			state.save()
-		}
 	default:
 		return false
 	}
@@ -352,13 +336,7 @@ func (state *State) paintBackground(canvas *gfx.Canvas, size gfx.Size) bool {
 		return false
 	}
 	// The picture fills what lies under the window bar.
-	var under ui.Box
-	f := state.paneChrome.Begin(canvas, state.Theme(), gfx.Rect{Width: size.Width, Height: size.Height})
-	f.Column().Fill().PadSides(windowBarHeight, 0, 0, 0).Children(func() {
-		under = f.Slot().Fill()
-	})
-	f.End()
-	area := under.Rect()
+	area := gfx.Rect{Y: windowBarHeight, Width: size.Width, Height: max(size.Height-windowBarHeight, 0)}
 	if area.Width <= 0 || area.Height <= 0 {
 		return false
 	}
@@ -389,20 +367,31 @@ func (state *State) paintBackgroundSettings(page *settingsPage) {
 		}
 	}
 	description := bg.text
-	options := [3]components.SegmentOption{
-		{ID: hitBgSubtle, Label: m.BgSubtle}, {ID: hitBgMedium, Label: m.BgMedium}, {ID: hitBgStrong, Label: m.BgStrong},
-	}
-	selected := hitBgMedium
-	switch bg.strength {
-	case bgSubtle:
-		selected = hitBgSubtle
-	case bgStrong:
-		selected = hitBgStrong
-	}
+	strength := bg.strength
 	page.group(m.BgGroup, func() {
 		page.actionRow(m.BgRow, description, false,
 			components.ButtonAction{ID: hitBgChoose, Label: m.BgChoose, Variant: components.ButtonOutline},
 			components.ButtonAction{ID: hitBgRemove, Label: m.BgRemove, Variant: components.ButtonOutline})
-		page.row(m.BgVisibility, "", options[:], selected)
+		settingsChoiceRow(page, m.BgVisibility, "", &strength, settingsBackgroundStrengthChoices[:], state.settingsBackgroundStrengthLabel,
+			func() {
+				if bg.set {
+					bg.strength = strength
+					state.save()
+				}
+			}, nil)
 	})
+}
+
+// settingsBackgroundStrengthChoices are how much of the picture shows.
+var settingsBackgroundStrengthChoices = [...]backgroundStrength{bgSubtle, bgMedium, bgStrong}
+
+func (state *State) settingsBackgroundStrengthLabel(strength backgroundStrength) string {
+	m := state.messages.Tools
+	switch strength {
+	case bgSubtle:
+		return m.BgSubtle
+	case bgStrong:
+		return m.BgStrong
+	}
+	return m.BgMedium
 }

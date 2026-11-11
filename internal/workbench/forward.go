@@ -10,6 +10,7 @@ import (
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/text"
+	"github.com/vivaui/viva/ui"
 	"motty/internal/i18n"
 	"motty/internal/portforward"
 	"motty/internal/sshconn"
@@ -193,6 +194,16 @@ type forwardEditor struct {
 	resume     bool
 	editing    bool
 	forwardID  uint32
+	// dialogBody is where the dialog body laid out the controls painted by hand.
+	dialogBody forwardDialogBody
+}
+
+// forwardDialogBody is where the forward editor's body put each control it
+// paints by hand.
+type forwardDialogBody struct {
+	name, host, port             ui.Box
+	destination, destinationPort ui.Box
+	resume, resumeHelp           ui.Box
 }
 
 type forwardField uint8
@@ -252,7 +263,13 @@ func (editor *forwardEditor) load(forward forwardRecord, hostID uint32) {
 }
 
 func (editor *forwardEditor) usesClientDestination() bool {
-	return editor.mode == portforward.ModeSOCKS5 || editor.mode == portforward.ModeHTTPConnect
+	return modeUsesClientDestination(editor.mode)
+}
+
+// modeUsesClientDestination reports whether a forward of this kind ends at the
+// client, so the destination fields are not shown.
+func modeUsesClientDestination(mode portforward.Mode) bool {
+	return mode == portforward.ModeSOCKS5 || mode == portforward.ModeHTTPConnect
 }
 
 func (editor *forwardEditor) port(field forwardField) (uint16, bool) {
@@ -418,18 +435,6 @@ func (state *State) clickForwardDialog(id gfx.ID) {
 		state.status = state.messages.StatusEditCanceled
 	case hitForwardDialogHost, hitForwardHostTrigger:
 		editor.hostSelect.Open = true
-	case hitForwardModeLocal:
-		state.forwardEditor.mode = portforward.ModeLocal
-		state.forwardDialogError = ""
-	case hitForwardModeRemote:
-		state.forwardEditor.mode = portforward.ModeRemote
-		state.forwardDialogError = ""
-	case hitForwardModeSOCKS5:
-		state.forwardEditor.mode = portforward.ModeSOCKS5
-		state.forwardDialogError = ""
-	case hitForwardModeHTTPConnect:
-		state.forwardEditor.mode = portforward.ModeHTTPConnect
-		state.forwardDialogError = ""
 	case hitForwardDialogResume:
 		state.forwardEditor.resume = !state.forwardEditor.resume
 	case hitForwardDialogSubmit:

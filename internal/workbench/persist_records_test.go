@@ -29,7 +29,9 @@ func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 		// The generation of default chords this computer's table was reconciled
 		// against: which defaults a build ships is not another device's business.
 		"shortcut_defaults_generation": true,
-		"host_view":                    true, "background": true, "snippet_shortcuts": true,
+		"host_view":                    true, "host_privacy": true, "host_privacy_show_name": true,
+		"host_privacy_show_address": true, "host_privacy_show_user": true,
+		"background": true, "snippet_shortcuts": true,
 		"background_output_alerts": true,
 		"tab_orientation":          true, "vertical_tabs_auto_hide": true,
 		"tab_numbers":            true,
@@ -40,6 +42,9 @@ func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 		"sftp_window_order": true, "sftp_open_mode": true, "sftp_directory_tree": true, "custom_editor_path": true,
 		"toolbars":    true,
 		"local_shell": true, "local_start": true, "last_local_directory": true, "ssh_agent": true, "ssh_agent_path": true, "local_proxy_port": true, "terminal_cursor": true,
+		// The shells a computer hides from its pickers name this machine's own
+		// programs and distributions; another device hides its own.
+		"hidden_shells": true,
 		// What a launch opens is chosen per computer: the shells and hosts of
 		// this machine, not a preference to carry across devices.
 		"startup_disabled": true, "startup_local": true, "startup_shell": true, "startup_hosts": true, "startup_no_reuse": true,

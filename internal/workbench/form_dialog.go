@@ -40,6 +40,10 @@ type formField struct {
 	secure             bool
 	multiline          bool
 	editor             text.Editor
+	// pageField and pageBound are the page field the tools window declares over
+	// the editor; the main window paints and edits it directly.
+	pageField ui.Field
+	pageBound bool
 	// layout and rect are the rows and place of a multiline field as last painted.
 	layout components.TextareaLayout
 	rect   gfx.Rect
@@ -71,6 +75,9 @@ type formDialog struct {
 	// cancel, if set, runs instead of closing when the user cancels; a form that
 	// stands between two screens uses it to go back.
 	cancel func(*State)
+	// slots and checkBox are where the body laid the controls out.
+	slots    [maxFormFields]ui.Box
+	checkBox ui.Box
 }
 
 // openForm shows a form. The fields are copied in; use the returned form to
@@ -253,78 +260,86 @@ func (form *formDialog) bodyHeight() float32 {
 	return withError(height, form.dialogError+form.testNote)
 }
 
-func (state *State) paintFormDialog(canvas *gfx.Canvas, viewport gfx.Rect) {
-	theme := state.Theme()
+// declareFormDialog declares the open form as a dialog of the page.
+func (state *State) declareFormDialog(c ui.C) {
 	form := &state.form
 	initial := hitFormSubmit
 	if form.count > 0 {
 		initial = hitFormFieldList.At(0)
 	}
+	viewport := dialogViewport(c)
+	height := dialogContentHeight(c.Canvas(), *c.Theme(), viewport, 540, form.description, form.bodyHeight())
 	// No scrim dismiss: a press beside the form must not discard its input.
-	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
-		Layer: dialogLayer, Scope: dialogScope,
-		CloseID: hitFormClose, InitialFocusID: initial,
-		ContentSize: gfx.Size{Width: 540}, FitBody: true, BodyHeight: form.bodyHeight(),
+	dialog := ui.Dialog(c, ui.DialogSpec{
+		Title: form.title, Description: form.description, Width: 540, Height: height, Layer: dialogLayer,
+		Scope: dialogScope, CloseID: hitFormClose, InitialFocusID: initial,
 	})
-	layout := dialog.Begin(form.title, form.description)
-	var slots [maxFormFields]ui.Box
-	var checkbox ui.Box
-	f := state.settingsRow.Begin(canvas, theme, layout.Body)
-	f.Column().Fill().PadSides(4, 4, 0, 4).Children(func() {
+	dialog.Body(func() { state.declareFormDialogBody(c) })
+	dialog.Footer(func() {
+		actions := []components.ButtonAction{
+			{ID: hitFormCancel, Label: state.messages.Cancel, Variant: components.ButtonSecondary},
+		}
+		if form.test != nil {
+			actions = append(actions, components.ButtonAction{ID: hitFormTest, Label: state.messages.Tools.SyncTest, Variant: components.ButtonOutline, Disabled: form.testRunning})
+		}
+		variant := components.ButtonDefault
+		if form.danger {
+			variant = components.ButtonDestructive
+		}
+		actions = append(actions, components.ButtonAction{ID: hitFormSubmit, Label: form.submit, Variant: variant})
+		state.dialogActionFooter(c, actions...)
+	})
+}
+
+// declareFormDialogBody lays out a form: its fields, its consent box and the
+// error or test note under them, and paints the fields into their slots.
+func (state *State) declareFormDialogBody(c ui.C) {
+	form := &state.form
+	column := ui.Column(c).Fill().PadSides(4, 4, 0, 4)
+	column.Children(func() {
 		for index := 0; index < form.count; index++ {
-			slots[index] = f.Slot().Height(form.slotHeight(index)-4).MarginSides(0, 0, 4, 0)
+			form.slots[index] = ui.Slot(c).Height(form.slotHeight(index)-4).MarginSides(0, 0, 4, 0)
 		}
 		if form.checkLabel != "" {
-			f.Column().Height(72).Gap(2).PadSides(8, 0, 4, 0).Children(func() {
-				checkbox = f.Row().Height(24).Items(ui.Center)
-				checkbox.Children(func() {
-					f.Slot().Width(28)
-					f.Text(form.checkLabel).FontSize(metrics.FontSizeM).Color(state.pal.text)
+			ui.Column(c).Height(72).Gap(2).PadSides(8, 0, 4, 0).Children(func() {
+				form.checkBox = ui.Row(c).Height(24).Items(ui.Center)
+				form.checkBox.Children(func() {
+					ui.Slot(c).Width(28)
+					ui.Text(c, form.checkLabel).FontSize(metrics.FontSizeM).Color(state.pal.text)
 				})
-				f.Paragraph(form.checkDescription, 2).FontSize(metrics.FontSizeS).LineHeight(16).Color(state.pal.muted).MarginSides(0, 0, 0, 28)
+				ui.Paragraph(c, form.checkDescription, 2).FontSize(metrics.FontSizeS).LineHeight(16).Color(state.pal.muted).MarginSides(0, 0, 0, 28)
 			})
 		}
-		state.problemLine(f, form.dialogError)
+		state.problemLineC(c, form.dialogError)
 		if form.dialogError == "" && form.testNote != "" {
-			f.Text(form.testNote).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(state.pal.success).LineHeight(18)
+			ui.Text(c, form.testNote).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(state.pal.success).LineHeight(18)
 		}
 	})
-	f.End()
-	for index := 0; index < form.count; index++ {
-		field := &form.fields[index]
-		id := hitFormFieldList.At(index)
-		slot := slots[index].Rect()
-		content := components.BeginField(canvas, theme, slot).Paint(field.label, "", "")
-		value := field.editor.String()
-		focused := canvas.Focused() == id
-		if field.multiline {
-			state.paintFormTextarea(canvas, field, gfx.Rect{X: content.X, Y: content.Y, Width: content.Width, Height: slot.Y + slot.Height - content.Y}, id, focused)
-			continue
+	column.DrawOver(func(d *ui.DrawContext) {
+		canvas, theme := d.Canvas, *d.Theme
+		for index := 0; index < form.count; index++ {
+			field := &form.fields[index]
+			id := hitFormFieldList.At(index)
+			slot := form.slots[index].Rect()
+			content := components.BeginField(canvas, theme, slot).Paint(field.label, "", "")
+			value := field.editor.String()
+			focused := canvas.Focused() == id
+			if field.multiline {
+				state.paintFormTextarea(canvas, field, gfx.Rect{X: content.X, Y: content.Y, Width: content.Width, Height: slot.Y + slot.Height - content.Y}, id, focused)
+				continue
+			}
+			state.paintSecretInput(canvas, content, components.InputSnapshot{
+				ID: id, Label: field.label, Value: value, Placeholder: field.placeholder, Secure: field.secure,
+				Focused: focused, PlatformEditing: focused && value != "",
+			})
 		}
-		state.paintSecretInput(canvas, content, components.InputSnapshot{
-			ID: id, Label: field.label, Value: value, Placeholder: field.placeholder, Secure: field.secure,
-			Focused: focused, PlatformEditing: focused && value != "",
-		})
-	}
-	if form.checkLabel != "" {
-		rect := checkbox.Rect()
-		side := components.CheckboxExtent(theme)
-		components.BeginCheckbox(canvas, theme, hitFormCheckbox, gfx.Rect{X: rect.X, Y: rect.Y + (rect.Height-side)/2}, form.checked).Label(form.checkLabel).Paint()
-		canvas.HitLabel(hitFormCheckbox, gfx.Rect{X: rect.X + 28, Y: rect.Y, Width: max(rect.Width-28, 0), Height: rect.Height}, form.checkLabel, false)
-	}
-	variant := components.ButtonDefault
-	if form.danger {
-		variant = components.ButtonDestructive
-	}
-	actions := []components.ButtonAction{
-		{ID: hitFormCancel, Label: state.messages.Cancel, Variant: components.ButtonSecondary},
-	}
-	if form.test != nil {
-		actions = append(actions, components.ButtonAction{ID: hitFormTest, Label: state.messages.Tools.SyncTest, Variant: components.ButtonOutline, Disabled: form.testRunning})
-	}
-	actions = append(actions, components.ButtonAction{ID: hitFormSubmit, Label: form.submit, Variant: variant})
-	dialog.Actions(layout, actions...)
-	dialog.End()
+		if form.checkLabel != "" {
+			rect := form.checkBox.Rect()
+			side := components.CheckboxExtent(theme)
+			components.BeginCheckbox(canvas, theme, hitFormCheckbox, gfx.Rect{X: rect.X, Y: rect.Y + (rect.Height-side)/2}, form.checked).Label(form.checkLabel).Paint()
+			canvas.HitLabel(hitFormCheckbox, gfx.Rect{X: rect.X + 28, Y: rect.Y, Width: max(rect.Width-28, 0), Height: rect.Height}, form.checkLabel, false)
+		}
+	})
 }
 
 func (state *State) paintFormTextarea(canvas *gfx.Canvas, field *formField, bounds gfx.Rect, id gfx.ID, focused bool) {

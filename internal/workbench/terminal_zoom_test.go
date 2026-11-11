@@ -83,10 +83,11 @@ func TestPaddingChangesHowManyCellsFitAndIsKept(t *testing.T) {
 	state := newTestState(t, options)
 	size := gfx.Size{Width: 1000, Height: 700}
 	state.Click(hitSettings)
+	state.selectSettingsCategory(settingsTerminal)
 	normal := terminalLayout(size, 8, 16, state.padding())
-	state.Click(hitSettingsPadCompact)
+	clickSettingsChoiceInRow(t, state, state.messages.Tools.PaddingRow, state.settingsPaddingLabel(padCompact))
 	compact := terminalLayout(size, 8, 16, state.padding())
-	state.Click(hitSettingsPadRoomy)
+	clickSettingsChoiceInRow(t, state, state.messages.Tools.PaddingRow, state.settingsPaddingLabel(padRoomy))
 	roomy := terminalLayout(size, 8, 16, state.padding())
 	if !(compact.cols >= normal.cols && normal.cols > roomy.cols) || !(compact.left < normal.left && normal.left < roomy.left) {
 		t.Fatalf("compact %+v normal %+v roomy %+v", compact, normal, roomy)
@@ -117,8 +118,8 @@ func TestZoomShortcutsAreCustomisableLikeTheOthers(t *testing.T) {
 // platform's text engine does for Consolas.
 type narrowFontEngine struct{ gfx.TextEngine }
 
-func (narrowFontEngine) MonoCell(size float32, _ gfx.MonoFace) (float32, float32) {
-	return size * 0.5, size * 1.2
+func (narrowFontEngine) MonoCell(size float32, _ gfx.MonoFace) gfx.MonoCellMetrics {
+	return gfx.MonoCellMetrics{Advance: size * 0.5, Ascent: size * 0.9, Descent: size * 0.3}
 }
 
 // The terminal's columns come from the font that draws it, as the window's text engine

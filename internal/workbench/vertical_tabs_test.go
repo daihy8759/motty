@@ -15,14 +15,23 @@ func TestVerticalTabsSettingsPersistAndSupportKeyboard(t *testing.T) {
 	state.Click(hitSettings)
 	var canvas gfx.Canvas
 	state.Paint(&canvas, gfx.Size{Width: 1400, Height: 1800})
-	for _, id := range []gfx.ID{hitSettingsTabsHorizontal, hitSettingsTabsVertical} {
-		if _, ok := hitByID(&canvas, id); !ok {
-			t.Fatalf("missing General setting %v", id)
+	for _, label := range []string{state.messages.SettingsTabsHorizontal, state.messages.SettingsTabsVertical} {
+		if _, ok := settingsChoiceIn(&canvas, label); !ok {
+			t.Fatalf("missing General setting %q", label)
 		}
 	}
-	result := state.Key(gfx.KeyEvent{Target: hitSettingsTabsHorizontal, Key: gfx.KeyRight})
-	if !result.Handled || result.Focus != hitSettingsTabsVertical || state.tabOrientation != tabsVertical {
-		t.Fatalf("keyboard choice: %+v, orientation %v", result, state.tabOrientation)
+	horizontal := settingsChoiceHit(t, state, state.messages.SettingsTabsHorizontal)
+	vertical := settingsChoiceHit(t, state, state.messages.SettingsTabsVertical)
+	result := windowKeyRoutes(state, gfx.KeyEvent{Target: horizontal.ID, Key: gfx.KeyRight})
+	if !result.Handled || result.Focus != vertical.ID || result.Activate != vertical.ID {
+		t.Fatalf("keyboard choice: %+v", result)
+	}
+	var rove gfx.Canvas
+	rove.BeginEventPass(result.Activate, gfx.ClickInfo{})
+	state.Paint(&rove, gfx.Size{Width: 1400, Height: 3400})
+	rove.EndEventPass()
+	if state.tabOrientation != tabsVertical {
+		t.Fatalf("orientation %v after the arrow key activated the next choice", state.tabOrientation)
 	}
 	state.Click(hitSettingsVerticalTabsAutoHide)
 	saved, _, err := loadState(state.options.StatePath)
@@ -153,7 +162,7 @@ func TestVerticalTabsScrollNavigateAndReorder(t *testing.T) {
 	state.Click(hitTabList.At(int(first)))
 	canvas.Reset()
 	state.Paint(&canvas, size)
-	result = state.Key(gfx.KeyEvent{Target: hitTabList.At(int(first)), Key: gfx.KeyDown})
+	result = windowKeyRoutes(state, gfx.KeyEvent{Target: hitTabList.At(int(first)), Key: gfx.KeyDown})
 	if !result.Handled || result.Focus != hitTabList.At(int(second)) {
 		t.Fatalf("vertical tabs must navigate with Up/Down: %+v", result)
 	}
@@ -263,7 +272,7 @@ func TestAutoHideSettingIsOfferedOnlyForVerticalTabs(t *testing.T) {
 	if _, ok := hitByID(&canvas, hitSettingsVerticalTabsAutoHide); ok {
 		t.Fatal("horizontal tabs have nothing to auto-hide")
 	}
-	state.Click(hitSettingsTabsVertical)
+	clickSettingsChoice(t, state, state.messages.SettingsTabsVertical)
 	canvas.Reset()
 	state.Paint(&canvas, size)
 	if _, ok := hitByID(&canvas, hitSettingsVerticalTabsAutoHide); !ok {
@@ -371,5 +380,37 @@ func TestVerticalTabsRevealScrollbarOnHoverAndDragIt(t *testing.T) {
 	state.Paint(&canvas, size)
 	if _, ok := hitByID(&canvas, hitVerticalTabsBar); ok {
 		t.Fatal("the scrollbar stayed after the pointer left the sidebar")
+	}
+}
+
+// The navigation rail's sidebar list is declared by the page itself, so the
+// first paint after the orientation changes lays its rows out and names them:
+// there is no page of its own whose Box could go stale. Its page-coordinate
+// bounds come from the rail's own rectangle, not from the previous frame.
+func TestVerticalTabsInTheNavigationRailPaintOnTheFirstFrame(t *testing.T) {
+	state, _, _, _ := liveSession(t)
+	state.activeSection = sectionSettings
+	state.settingsCategory = settingsGeneral
+	state.tabOrientation = tabsHorizontal
+	// The click flips the orientation after the shell declared the rail for the
+	// horizontal layout: the next paint must still show the list.
+	clickSettingsChoice(t, state, state.messages.SettingsTabsVertical)
+	if state.tabOrientation != tabsVertical {
+		t.Fatalf("orientation = %v, want vertical", state.tabOrientation)
+	}
+	size := gfx.Size{Width: 1400, Height: 900}
+	var canvas gfx.Canvas
+	state.Paint(&canvas, size)
+	first := state.deck.Workspaces(nil)[0].ID
+	hit, ok := hitByID(&canvas, hitTabList.At(int(first)))
+	if !ok {
+		t.Fatal("the navigation sidebar painted no tab row")
+	}
+	bounds := state.verticalTabs.bounds
+	if bounds.Width <= 0 || hit.Bounds.X < bounds.X || hit.Bounds.X+hit.Bounds.Width > bounds.X+bounds.Width {
+		t.Fatalf("the row %+v is outside the sidebar %+v", hit.Bounds, bounds)
+	}
+	if hit.Bounds.Y < bounds.Y || hit.Bounds.Y+hit.Bounds.Height > bounds.Y+bounds.Height {
+		t.Fatalf("the row %+v is outside the sidebar %+v", hit.Bounds, bounds)
 	}
 }

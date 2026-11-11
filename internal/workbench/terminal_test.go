@@ -35,8 +35,31 @@ func liveSession(t testing.TB) (*State, *world, *fakeConn, *fakeShell) {
 	return state, world, fake, shell
 }
 
+// terminalTestHit is a session's terminal control as its page names it. A test
+// that builds a State without painting installs the control's handlers here,
+// which is what declaring the page would do.
+func terminalTestHit(state *State, session *Session) gfx.ID {
+	if t := session.term; t != nil && t.handlers.Key == nil {
+		state.installTerminalHandlers(session)
+	}
+	return terminalControlHit(session.ID)
+}
+
+// terminalTestHitByID is terminalTestHit for a session number.
+func terminalTestHitByID(state *State, sessionID uint32) gfx.ID {
+	if session, ok := state.sessionByIDPointer(sessionID); ok {
+		return terminalTestHit(state, session)
+	}
+	return terminalControlHit(sessionID)
+}
+
 func terminalHit(state *State, index int) gfx.ID {
-	return hitTerminalList.At(int(state.sessions[index].ID))
+	return terminalTestHit(state, &state.sessions[index])
+}
+
+// terminalTestScrollbar is the scrollbar part of a session's terminal control.
+func terminalTestScrollbar(session *Session) gfx.ID {
+	return terminalControlParts(session.ID).At(terminalPartScrollbar)
 }
 
 func key(state *State, index int, event gfx.KeyEvent) gfx.EventResult {
@@ -114,7 +137,7 @@ func TestTheWindowSizeDecidesTheTerminalSizeOfEverySession(t *testing.T) {
 	if !state.splitActivePane(layoutcore.Horizontal) {
 		t.Fatal("split right")
 	}
-	state.Click(hitPaneChooseHost)
+	state.chooseHostSection()
 	state.Click(hitHostList.At(2))
 	connect(t, state, world) // a second session, still connecting
 	state.Resize(gfx.Size{Width: 1000, Height: 700})
@@ -450,7 +473,7 @@ func TestDigitChordsDriveTheTabs(t *testing.T) {
 	if state.modal != modalCommandPalette || !state.commandPalette.connect {
 		t.Fatal("new-tab shortcut did not open the connection picker")
 	}
-	state.Click(hitCommandPaletteClose)
+	clickCommandPaletteClose(t, state)
 	state.Shortcut(gfx.KeyEvent{Target: state.activeTerminalFocusHit(), Modifiers: keymap.Primary, Text: "w"})
 	if len(state.sessions) != 1 || state.activeSessionID != first {
 		t.Fatalf("close-tab shortcut left sessions=%d active=%d", len(state.sessions), state.activeSessionID)
@@ -528,8 +551,8 @@ func TestTheTerminalHasTheKeyboardWhenItAppears(t *testing.T) {
 	state, _, _, _ := liveSession(t)
 	canvas, _ := paintedTexts(state)
 	hit, ok := hitByID(canvas, terminalHit(state, 0))
-	if !ok || hit.Role != gfx.RoleTerminal || !hit.Autofocus || !hit.Focusable {
-		t.Fatalf("terminal hit = %+v, %v", hit, ok)
+	if !ok || hit.Role != gfx.RoleTerminal || !hit.Focusable || canvas.FocusRequest() != terminalHit(state, 0) {
+		t.Fatalf("terminal hit = %+v, %v; focus request = %v", hit, ok, canvas.FocusRequest())
 	}
 	if hit.Label != "Terminal deploy@prod.example.com:22" {
 		t.Fatalf("label = %q", hit.Label)
@@ -545,6 +568,40 @@ func TestTheTerminalHasTheKeyboardWhenItAppears(t *testing.T) {
 		if !ok || bar.Focusable {
 			t.Errorf("hit %d = %+v, %v; want a mouse-only button", id, bar, ok)
 		}
+	}
+}
+
+// Naming the pane's containers moved the terminal control under the pane and
+// body parts, and opening the find bar adds a sibling above it. The control's
+// identity must not move, and a press the window routes by that identity must
+// still reach the control's handlers through the page.
+func TestTerminalControlKeepsItsIdentityUnderThePanesContainers(t *testing.T) {
+	state, _, _, _ := liveSession(t)
+	size := gfx.Size{Width: 1000, Height: 700}
+	state.Resize(size)
+	session := &state.sessions[0]
+	paint := func() *gfx.Canvas {
+		var canvas gfx.Canvas
+		state.Paint(&canvas, size)
+		return &canvas
+	}
+	closed := paint()
+	hit, ok := hitByID(closed, terminalTestHit(state, session))
+	if !ok {
+		t.Fatal("the terminal control has no painted hit with the find bar closed")
+	}
+	geometry := state.layoutForSession(session.ID)
+	state.Pointer(gfx.PointerEvent{
+		Kind: gfx.PointerDown, Button: gfx.PointerButtonPrimary, Target: hit.ID,
+		X: geometry.left + state.cellWidth*1.5, Y: geometry.top + state.cellHeight*0.5, Viewport: size,
+	})
+	if want := session.term.screen.PointAt(term.Position{Row: 0, Column: 1}); session.term.selection.anchor != want {
+		t.Fatalf("the press mapped to %+v, want %+v", session.term.selection.anchor, want)
+	}
+	openFindForTest(t, state)
+	opened := paint()
+	if again, ok := hitByID(opened, hit.ID); !ok || again.ID != hit.ID {
+		t.Fatal("opening the find bar moved the terminal control")
 	}
 }
 

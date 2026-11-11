@@ -92,11 +92,16 @@ type snippetsUI struct {
 	capturing     bool // the next chord pressed becomes shortcut
 	dialogError   string
 
-	// The page: the selected row, its layout and the count under the table.
+	// The boxes are the slots the dialog body's controls are painted in.
+	dialogFields   [2]ui.Box
+	dialogGroup    ui.Box
+	dialogRun      ui.Box
+	dialogShortcut ui.Box
+
+	// The page: the selected row and the count under the table.
 	selected  int
 	sort      components.TableSortState
 	grid      components.ReorderGridState
-	layout    ui.View
 	countText string
 	// sendAt is where the menu of terminals opens from the Send button.
 	sendAt gfx.Point
@@ -494,20 +499,59 @@ func (state *State) sendSnippetOn(canvas *gfx.Canvas, id gfx.ID, index int) {
 	canvas.Consume()
 }
 
-func (state *State) paintSnippetDialog(canvas *gfx.Canvas, viewport gfx.Rect) {
-	m, theme := state.messages.Tools, state.Theme()
+// declareSnippetDialog declares the snippet editor as a dialog of the workbench
+// page.
+func (state *State) declareSnippetDialog(c ui.C) {
+	m := state.messages.Tools
 	form := &state.snippets
 	title := m.SnippetDialogAddTitle
 	if form.editing >= 0 {
 		title = m.SnippetDialogEditTitle
 	}
+	viewport := dialogViewport(c)
+	height := dialogContentHeight(c.Canvas(), *c.Theme(), viewport, 560, "", withError(350, form.dialogError))
 	// No scrim dismiss: a press beside the form must not discard its input.
-	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
-		Layer: dialogLayer, Scope: dialogScope,
-		CloseID: hitSnippetClose, InitialFocusID: hitSnippetName,
-		ContentSize: gfx.Size{Width: 560}, FitBody: true, BodyHeight: withError(350, form.dialogError),
+	dialog := ui.Dialog(c, ui.DialogSpec{
+		Title: title, Width: 560, Height: height, Layer: dialogLayer,
+		Scope: dialogScope, CloseID: hitSnippetClose, InitialFocusID: hitSnippetName,
 	})
-	layout := dialog.Begin(title, "")
+	dialog.Body(func() { state.declareSnippetDialogBody(c) })
+	dialog.Footer(func() {
+		if dialogButton(c, state.messages.Cancel, components.ButtonSecondary, false).Clicked() {
+			c.After(func() { state.clickSnippetDialog(hitSnippetCancel) })
+		}
+		if dialogButton(c, m.SnippetSave, components.ButtonDefault, false).Clicked() {
+			c.After(func() { state.clickSnippetDialog(hitSnippetSubmit) })
+		}
+	})
+}
+
+// declareSnippetDialogBody lays out the snippet editor: name, command, group,
+// the run box and the shortcut row, and paints the fields into their slots.
+func (state *State) declareSnippetDialogBody(c ui.C) {
+	form, m := &state.snippets, state.messages.Tools
+	column := ui.Column(c).Fill().PadSides(2, 4, 0, 4)
+	column.Children(func() {
+		form.dialogFields[0] = ui.Slot(c).Height(62).MarginSides(0, 0, 6, 0)
+		form.dialogFields[1] = ui.Slot(c).Height(140).MarginSides(0, 0, 6, 0)
+		form.dialogGroup = ui.Slot(c).Height(62).MarginSides(0, 0, 6, 0)
+		form.dialogRun = state.declareDialogCheckboxC(c, m.SnippetRun, 7, 0)
+		ui.Row(c).Height(32).Items(ui.Center).MarginSides(12, 0, 0, 2).Children(func() {
+			ui.Text(c, m.SnippetShortcut).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(state.pal.text).LineHeight(20).Grow(1)
+			form.dialogShortcut = ui.Slot(c).Size(240, 32).Shrink(0)
+		})
+		if form.dialogError != "" {
+			ui.Text(c, form.dialogError).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(state.pal.danger).LineHeight(18).MarginSides(15, 0, 0, 0)
+		}
+	})
+	column.DrawOver(func(d *ui.DrawContext) { state.paintSnippetDialogFields(d.Canvas) })
+}
+
+// paintSnippetDialogFields paints the snippet editor's controls into the slots
+// the body laid out.
+func (state *State) paintSnippetDialogFields(canvas *gfx.Canvas) {
+	m, theme := state.messages.Tools, state.Theme()
+	form := &state.snippets
 	entries := [...]struct {
 		id          gfx.ID
 		label       string
@@ -517,25 +561,8 @@ func (state *State) paintSnippetDialog(canvas *gfx.Canvas, viewport gfx.Rect) {
 		{hitSnippetName, m.SnippetName, m.SnippetNamePlaceholder, form.name.String()},
 		{hitSnippetCommand, m.SnippetCommand, m.SnippetCommandPlaceholder, form.command.String()},
 	}
-	var fields [len(entries)]ui.Box
-	var group, run, shortcutButtons ui.Box
-	f := state.settingsRow.Begin(canvas, theme, layout.Body)
-	f.Column().Fill().PadSides(2, 4, 0, 4).Children(func() {
-		fields[0] = f.Slot().Height(62).MarginSides(0, 0, 6, 0)
-		fields[1] = f.Slot().Height(140).MarginSides(0, 0, 6, 0)
-		group = f.Slot().Height(62).MarginSides(0, 0, 6, 0)
-		run = state.declareDialogCheckbox(f, m.SnippetRun, 7, 0)
-		f.Row().Height(32).Items(ui.Center).MarginSides(12, 0, 0, 2).Children(func() {
-			f.Text(m.SnippetShortcut).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(state.pal.text).LineHeight(20).Grow(1)
-			shortcutButtons = f.Slot().Size(240, 32).Shrink(0)
-		})
-		if form.dialogError != "" {
-			f.Text(form.dialogError).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(state.pal.danger).LineHeight(18).MarginSides(15, 0, 0, 0)
-		}
-	})
-	f.End()
 	for index, entry := range entries {
-		content := components.BeginField(canvas, theme, fields[index].Rect()).Paint(entry.label, "", "")
+		content := components.BeginField(canvas, theme, form.dialogFields[index].Rect()).Paint(entry.label, "", "")
 		focused := canvas.Focused() == entry.id
 		if entry.id == hitSnippetCommand {
 			selection := form.command.Selection()
@@ -557,8 +584,8 @@ func (state *State) paintSnippetDialog(canvas *gfx.Canvas, viewport gfx.Rect) {
 			Focused: focused, PlatformEditing: focused && entry.value != "", Invalid: form.dialogError != "",
 		})
 	}
-	state.paintSnippetGroupField(canvas, group.Rect())
-	state.paintDialogCheckbox(canvas, hitSnippetRun, m.SnippetRun, form.run, run)
+	state.paintSnippetGroupField(canvas, form.dialogGroup.Rect())
+	state.paintDialogCheckbox(canvas, hitSnippetRun, m.SnippetRun, form.run, form.dialogRun)
 	label := m.SnippetShortcutNone
 	switch {
 	case form.capturing:
@@ -570,10 +597,5 @@ func (state *State) paintSnippetDialog(canvas *gfx.Canvas, viewport gfx.Rect) {
 		{ID: hitSnippetShortcut, Label: label, Variant: components.ButtonOutline},
 		{ID: hitSnippetShortcutOff, Label: m.SnippetShortcutClear, Variant: components.ButtonGhost, Disabled: !form.shortcut.Valid() && !form.capturing},
 	}
-	components.BeginButtonRow(canvas, theme, shortcutButtons.Rect()).Paint(buttons[:]...)
-	dialog.Actions(layout,
-		components.ButtonAction{ID: hitSnippetCancel, Label: state.messages.Cancel, Variant: components.ButtonSecondary},
-		components.ButtonAction{ID: hitSnippetSubmit, Label: m.SnippetSave},
-	)
-	dialog.End()
+	components.BeginButtonRow(canvas, theme, form.dialogShortcut.Rect()).Paint(buttons[:]...)
 }

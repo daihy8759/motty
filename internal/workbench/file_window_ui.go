@@ -51,9 +51,18 @@ var (
 )
 
 type fileDocumentUI struct {
-	marks                                     []components.MarkdownCodeRun
-	highlighter                               func(string, string, []components.CodeEditorRun) []components.CodeEditorRun
-	frame                                     ui.View
+	marks       []components.MarkdownCodeRun
+	highlighter func(string, string, []components.CodeEditorRun) []components.CodeEditorRun
+	// page is the window's page when this document is painted in a window of its
+	// own (a paint not made by the shared window manager). compareView declares
+	// the comparison body into it.
+	page        *ui.Page
+	compareView func(ui.C)
+	// contentBox, encodingBox and saveBox are the page's slots, kept so what is
+	// painted by hand goes where the page laid it out. compare keeps the
+	// comparison page's slots for the same reason.
+	contentBox, encodingBox, saveBox          ui.Box
+	compare                                   comparisonBody
 	code                                      components.CodeEditor
 	diff                                      components.CodeDiff
 	input                                     app.TextInput
@@ -73,6 +82,12 @@ type fileDocumentUI struct {
 	caret components.CaretBlink
 }
 
+// comparisonBody is what the comparison page leaves for the buttons painted by
+// hand after it is laid out.
+type comparisonBody struct {
+	retry, returnToEdit, upload ui.Box
+}
+
 func (d *fileDocument) paint(canvas *gfx.Canvas, size gfx.Size) {
 	defer d.owner.paintNoteExit(canvas, gfx.Rect{Width: size.Width, Height: size.Height})
 	if d.note != nil {
@@ -89,67 +104,25 @@ func (d *fileDocument) paint(canvas *gfx.Canvas, size gfx.Size) {
 	if d.ui.highlighter == nil {
 		d.ui.highlighter = d.highlight
 	}
-	theme, m := d.owner.Theme(), d.owner.messages.FileWindow
+	theme := d.owner.Theme()
 	canvas.Fill(gfx.Rect{Width: size.Width, Height: size.Height}, theme.Background)
-	var content, encoding, save ui.Box
-	f := d.ui.frame.Begin(canvas, theme, gfx.Rect{Width: size.Width, Height: size.Height})
-	f.Column().Fill().Pad(12).Gap(8).Children(func() {
-		if d.owner.fileWindows.painting {
-			d.owner.fileWindows.paintTabs(f, size)
-			f.Divider().Background(theme.Border)
-		}
-		if d.problem != "" {
-			f.Paragraph(d.problem, 4).FontSize(theme.Metrics.FontSizeS).Color(theme.Danger).LineHeight(18)
-		}
-		content = f.Slot().Grow(1).MinHeight(64)
-		f.Row().Height(32).Gap(8).Items(ui.Center).Children(func() {
-			if d.image == nil {
-				encoding = f.Slot().Width(min(220, size.Width*.4)).Height(32)
-			}
-			status := d.footerStatus()
-			f.Text(status).FontSize(theme.Metrics.FontSizeS).Color(theme.MutedForeground).Ellipsis().LineHeight(22).Grow(1).
-				HitWith(hitDocumentStatus, status, gfx.HitOptions{Role: gfx.RoleGroup, SkipFocus: true, Hint: status})
-			if d.image != nil {
-				f.Button(hitDocumentFit, m.Fit).Small().Outline()
-				f.Button(hitDocumentActual, m.Actual).Small().Outline()
-				f.Button(hitDocumentZoomOut, "−").Small().Outline()
-				f.Button(hitDocumentZoomIn, "+").Small().Outline()
-			}
-			if d.image == nil && d.ready {
-				wrap := d.owner.messages.CodeEditor.WrapOn
-				if d.edit.noWrap {
-					wrap = d.owner.messages.CodeEditor.WrapOff
-				}
-				f.Button(hitDocumentWrap, wrap).Small().Outline()
-			}
-			f.Button(hitDocumentReload, m.Reload).Small().Outline().Disabled(d.busy || d.comparison.active)
-			if d.image == nil {
-				disabled := d.busy || !d.ready || !d.dirty() || d.comparison.active
-				if d.local {
-					f.Button(hitDocumentSave, m.Save).Small().Disabled(disabled)
-				} else {
-					save = f.Slot().Width(112).Height(32)
-				}
-			}
-		})
-	})
-	f.End()
+	d.windowPage().Draw(canvas, gfx.Rect{Width: size.Width, Height: size.Height}, d.declareEditWindow)
 	if d.owner.fileWindows.painting {
 		d.owner.fileWindows.paintTabsScrollbar(canvas)
 	}
 	d.ui.saveAnchor = gfx.Rect{}
 	if d.image == nil && !d.local {
-		d.ui.saveAnchor = save.Rect()
+		d.ui.saveAnchor = d.ui.saveBox.Rect()
 	}
 	if d.image != nil {
-		d.ui.imageBounds = content.Rect()
-		d.ui.imageGeometry = components.PaintImageView(canvas, theme, content.Rect(), components.ImageViewOptions{
+		d.ui.imageBounds = d.ui.contentBox.Rect()
+		d.ui.imageGeometry = components.PaintImageView(canvas, theme, d.ui.contentBox.Rect(), components.ImageViewOptions{
 			Bitmap: gfx.Bitmap{Pix: d.image.Pix, Width: d.image.Width, Height: d.image.Height, Stride: d.image.Width * 4, ID: binary.LittleEndian.Uint64(d.revision[:8]), Version: 1}, Zoom: d.ui.zoom, Pan: d.ui.pan,
 		})
 	} else {
-		d.ui.encodingBounds = encoding.Rect()
-		d.ui.editorBounds = content.Rect()
-		d.paintCodeEditor(canvas, theme, content.Rect())
+		d.ui.encodingBounds = d.ui.encodingBox.Rect()
+		d.ui.editorBounds = d.ui.contentBox.Rect()
+		d.paintCodeEditor(canvas, theme, d.ui.contentBox.Rect())
 		d.paintEncoding(canvas)
 	}
 	if d.image == nil && !d.local {
@@ -161,6 +134,78 @@ func (d *fileDocument) paint(canvas *gfx.Canvas, size gfx.Size) {
 	}
 	d.notices.paint(canvas, theme, gfx.Rect{Width: size.Width, Height: size.Height})
 	d.ui.tooltip.Paint(canvas, theme, gfx.Rect{Width: size.Width, Height: size.Height}, components.TooltipOptions{Layer: tooltipLayer, SideOffset: tooltipGap}, components.HoverTooltipDelay)
+}
+
+// windowPage is the page this paint declares its window in: the shared window's
+// one page while the manager paints, else the document's own.
+func (d *fileDocument) windowPage() *ui.Page {
+	if d.owner.fileWindows.painting {
+		return d.owner.fileWindows.editPage(&d.owner.theme)
+	}
+	return d.documentPage()
+}
+
+// declareEditWindow declares the document window: the tab strip when it shares a
+// window, the problem line, the room the editor takes, and the footer. What the
+// editor, the image and the footer's menus paint themselves goes into the slots
+// kept here.
+func (d *fileDocument) declareEditWindow(c ui.C) {
+	theme, m := d.owner.Theme(), d.owner.messages.FileWindow
+	bounds := c.Bounds()
+	shared := d.owner.fileWindows.painting
+	d.ui.encodingBox, d.ui.saveBox = ui.Box{}, ui.Box{}
+	ui.Column(c).Fill().Pad(12).Gap(8).Children(func() {
+		if shared {
+			d.owner.fileWindows.declareTabsSection(c, bounds.Width)
+			ui.Divider(c).Background(theme.Border)
+		}
+		if d.problem != "" {
+			ui.Paragraph(c, d.problem, 4).FontSize(theme.Metrics.FontSizeS).Color(theme.Danger).LineHeight(18)
+		}
+		d.ui.contentBox = ui.Slot(c).Grow(1).MinHeight(64)
+		ui.Row(c).Height(32).Gap(8).Items(ui.Center).Children(func() {
+			if d.image == nil {
+				d.ui.encodingBox = ui.Slot(c).Width(min(220, bounds.Width*.4)).Height(32)
+			}
+			status := d.footerStatus()
+			ui.Text(c, status).FontSize(theme.Metrics.FontSizeS).Color(theme.MutedForeground).Ellipsis().LineHeight(22).Grow(1).
+				HitWith(hitDocumentStatus, status, gfx.HitOptions{Role: gfx.RoleGroup, SkipFocus: true, Hint: status})
+			if d.image != nil {
+				d.pageButton(c, "fit", hitDocumentFit, m.Fit).Small().Outline()
+				d.pageButton(c, "actual", hitDocumentActual, m.Actual).Small().Outline()
+				d.pageButton(c, "zoom-out", hitDocumentZoomOut, "−").Small().Outline()
+				d.pageButton(c, "zoom-in", hitDocumentZoomIn, "+").Small().Outline()
+			}
+			if d.image == nil && d.ready {
+				wrap := d.owner.messages.CodeEditor.WrapOn
+				if d.edit.noWrap {
+					wrap = d.owner.messages.CodeEditor.WrapOff
+				}
+				d.pageButton(c, "wrap", hitDocumentWrap, wrap).Small().Outline()
+			}
+			d.pageButton(c, "reload", hitDocumentReload, m.Reload).Small().Outline().Disabled(d.busy || d.comparison.active)
+			if d.image == nil {
+				disabled := d.busy || !d.ready || !d.dirty() || d.comparison.active
+				if d.local {
+					d.pageButton(c, "save", hitDocumentSave, m.Save).Small().Disabled(disabled)
+				} else {
+					d.ui.saveBox = ui.Slot(c).Width(112).Height(32)
+				}
+			}
+		})
+	})
+}
+
+// pageButton is a footer button of the page, named by key so its identity does
+// not move when a neighbouring control comes or goes. Its click is the page's,
+// handled after the paint that delivered it.
+func (d *fileDocument) pageButton(c ui.C, key string, id gfx.ID, label string) ui.Box {
+	c.Key(key)
+	button := ui.Button(c, label)
+	if button.Clicked() {
+		c.After(func() { d.click(id) })
+	}
+	return button
 }
 
 func (d *fileDocument) paintComparison(canvas *gfx.Canvas, size gfx.Size) {
@@ -176,38 +221,11 @@ func (d *fileDocument) paintComparison(canvas *gfx.Canvas, size gfx.Size) {
 	}
 	theme, m := d.owner.Theme(), d.owner.messages.FileWindow
 	canvas.Fill(gfx.Rect{Width: size.Width, Height: size.Height}, theme.Background)
-	var content ui.Box
-	f := uiState.frame.Begin(canvas, theme, gfx.Rect{Width: size.Width, Height: size.Height})
-	f.Column().Fill().Pad(12).Gap(8).Children(func() {
-		f.Text(d.name).FontSize(18).Bold().Color(theme.Foreground).Ellipsis().LineHeight(32).
-			HitWith(hitDocumentLocation, d.name, gfx.HitOptions{Role: gfx.RoleGroup, SkipFocus: true, Hint: d.source + " · " + d.location})
-		if d.problem != "" {
-			f.Paragraph(d.problem, 4).FontSize(theme.Metrics.FontSizeS).Color(theme.Danger).LineHeight(18)
-		}
-		f.Row().Height(28).Gap(10).Items(ui.Center).Children(func() {
-			f.Text(m.ServerVersion).Grow(1).FontSize(theme.Metrics.FontSizeS).Weight(gfx.WeightMedium).Color(theme.MutedForeground).Ellipsis()
-			f.Text(fmt.Sprintf(m.CompareAddedRemoved, d.comparison.result.Stats.Added, d.comparison.result.Stats.Removed)).
-				FontSize(theme.Metrics.FontSizeS).Color(theme.MutedForeground).Ellipsis()
-			f.Text(m.LocalVersion).Grow(1).TextEnd().FontSize(theme.Metrics.FontSizeS).Weight(gfx.WeightMedium).Color(theme.MutedForeground).Ellipsis()
-		})
-		if d.comparison.result.Stats.Coarse {
-			f.Text(m.CompareCoarse).FontSize(theme.Metrics.FontSizeS).Color(d.owner.pal.warning).Ellipsis()
-		}
-		content = f.Slot().Grow(1).MinHeight(64)
-		f.Row().Height(32).Gap(8).Items(ui.Center).Children(func() {
-			status := d.comparisonStatus()
-			f.Text(status).FontSize(theme.Metrics.FontSizeS).Color(theme.MutedForeground).Ellipsis().LineHeight(22).Grow(1).
-				HitWith(hitDocumentStatus, status, gfx.HitOptions{Role: gfx.RoleGroup, SkipFocus: true, Hint: status})
-			if d.comparison.conflict {
-				f.Button(hitDocumentCompareRetry, m.CompareRetry).Small().Outline().Disabled(d.busy)
-			}
-			f.Button(hitDocumentReturnToEdit, m.ReturnToEdit).Small().Outline().Disabled(d.busy || d.comparison.saving)
-			f.Button(hitDocumentConfirmUpload, m.Save).Small().Disabled(!d.canUploadComparison())
-		})
-	})
-	f.End()
+	uiState.compare = comparisonBody{}
+	d.comparisonPage().Draw(canvas, gfx.Rect{Width: size.Width, Height: size.Height}, uiState.compareView)
+	d.paintComparisonButtons(canvas, theme)
 
-	uiState.editorBounds = content.Rect()
+	uiState.editorBounds = uiState.contentBox.Rect()
 	value := d.editor.String()
 	selection := d.editor.Selection()
 	caret := d.editor.ByteOffset(d.editor.Caret())
@@ -236,18 +254,92 @@ func (d *fileDocument) paintComparison(canvas *gfx.Canvas, size gfx.Size) {
 		fontSize = theme.Metrics.FontSizeM
 	}
 	cellWidth, _ := canvas.MonoCellSize(fontSize, d.owner.terminalFontFace)
-	if content.Rect().Width < 2*(40*cellWidth+72) {
+	if uiState.contentBox.Rect().Width < 2*(40*cellWidth+72) {
 		snapshot.Layout = components.CodeDiffStacked
 	}
 	if marked, ok := d.editor.Composition(); ok {
 		snapshot.CompositionStart = d.editor.ByteOffset(marked.Start)
 		snapshot.CompositionEnd = d.editor.ByteOffset(marked.End)
 	}
-	uiState.diff.Paint(canvas, theme, content.Rect(), snapshot)
+	uiState.diff.Paint(canvas, theme, uiState.contentBox.Rect(), snapshot)
 	if d.comparison.confirm {
 		d.paintComparisonConfirmation(canvas)
 	}
 	uiState.tooltip.Paint(canvas, theme, gfx.Rect{Width: size.Width, Height: size.Height}, components.TooltipOptions{Layer: tooltipLayer, SideOffset: tooltipGap}, components.HoverTooltipDelay)
+}
+
+// comparisonPage is the page that lays out the comparison window's body. It
+// lives with the comparison's UI so a window opened for one document keeps its
+// own page.
+func (d *fileDocument) comparisonPage() *ui.Page {
+	uiState := &d.comparison.ui
+	if uiState.page == nil {
+		uiState.compareView = d.declareComparisonWindow
+		uiState.page = ui.NewPage(ui.PageConfig{
+			Tree: &tree, Root: fmt.Sprintf("file-comparison-%d", fileWindowPageSeq.Add(1)), Theme: &d.owner.theme, View: uiState.compareView,
+		})
+	}
+	return uiState.page
+}
+
+// declareComparisonWindow declares the comparison window: the file's name, the
+// version counts and the room the diff takes, with the actions under it. The
+// buttons keep their application identities and are painted after the page.
+func (d *fileDocument) declareComparisonWindow(c ui.C) {
+	uiState := &d.comparison.ui
+	theme, m := *c.Theme(), d.owner.messages.FileWindow
+	uiState.contentBox = ui.Box{}
+	uiState.compare = comparisonBody{}
+	ui.Column(c).Fill().Pad(12).Gap(8).Children(func() {
+		ui.Text(c, d.name).FontSize(18).Bold().Color(theme.Foreground).Ellipsis().LineHeight(32).
+			HitWith(hitDocumentLocation, d.name, gfx.HitOptions{Role: gfx.RoleGroup, SkipFocus: true, Hint: d.source + " · " + d.location})
+		if d.problem != "" {
+			ui.Paragraph(c, d.problem, 4).FontSize(theme.Metrics.FontSizeS).Color(theme.Danger).LineHeight(18)
+		}
+		ui.Row(c).Height(28).Gap(10).Items(ui.Center).Children(func() {
+			ui.Text(c, m.ServerVersion).Grow(1).FontSize(theme.Metrics.FontSizeS).Weight(gfx.WeightMedium).Color(theme.MutedForeground).Ellipsis()
+			ui.Text(c, fmt.Sprintf(m.CompareAddedRemoved, d.comparison.result.Stats.Added, d.comparison.result.Stats.Removed)).
+				FontSize(theme.Metrics.FontSizeS).Color(theme.MutedForeground).Ellipsis()
+			ui.Text(c, m.LocalVersion).Grow(1).TextEnd().FontSize(theme.Metrics.FontSizeS).Weight(gfx.WeightMedium).Color(theme.MutedForeground).Ellipsis()
+		})
+		if d.comparison.result.Stats.Coarse {
+			ui.Text(c, m.CompareCoarse).FontSize(theme.Metrics.FontSizeS).Color(d.owner.pal.warning).Ellipsis()
+		}
+		uiState.contentBox = ui.Slot(c).Grow(1).MinHeight(64)
+		ui.Row(c).Height(32).Gap(8).Items(ui.Center).Children(func() {
+			status := d.comparisonStatus()
+			ui.Text(c, status).FontSize(theme.Metrics.FontSizeS).Color(theme.MutedForeground).Ellipsis().LineHeight(22).Grow(1).
+				HitWith(hitDocumentStatus, status, gfx.HitOptions{Role: gfx.RoleGroup, SkipFocus: true, Hint: status})
+			if d.comparison.conflict {
+				uiState.compare.retry = pageButtonSlot(c, m.CompareRetry, true)
+			}
+			uiState.compare.returnToEdit = pageButtonSlot(c, m.ReturnToEdit, true)
+			uiState.compare.upload = pageButtonSlot(c, m.Save, true)
+		})
+	})
+}
+
+// paintComparisonButtons paints the footer's buttons into the page's slots.
+func (d *fileDocument) paintComparisonButtons(canvas *gfx.Canvas, theme gfx.Theme) {
+	uiState := &d.comparison.ui
+	m := d.owner.messages.FileWindow
+	if d.comparison.conflict {
+		button := components.BeginButton(canvas, theme, hitDocumentCompareRetry, uiState.compare.retry.Rect()).Small()
+		if d.busy {
+			button = button.Disabled()
+		}
+		button.Outline(m.CompareRetry)
+	}
+	back := components.BeginButton(canvas, theme, hitDocumentReturnToEdit, uiState.compare.returnToEdit.Rect()).Small()
+	if d.busy || d.comparison.saving {
+		back = back.Disabled()
+	}
+	back.Outline(m.ReturnToEdit)
+	upload := components.BeginButton(canvas, theme, hitDocumentConfirmUpload, uiState.compare.upload.Rect()).Small()
+	if !d.canUploadComparison() {
+		upload = upload.Disabled()
+	}
+	upload.Default(m.Save)
 }
 
 func (d *fileDocument) footerStatus() string {
@@ -815,7 +907,10 @@ func (d *fileDocument) scroll(event gfx.ScrollEvent) gfx.EventResult {
 
 func (d *fileDocument) pointer(event gfx.PointerEvent) gfx.EventResult {
 	if d.owner.noteExit != nil {
-		return gfx.EventResult{Handled: true, Repaint: true}
+		if isNoteExitHit(event.Target) {
+			return gfx.EventResult{}
+		}
+		return gfx.EventResult{Handled: true}
 	}
 	if d.note != nil {
 		return d.noteWindowPointer(event)

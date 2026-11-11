@@ -48,6 +48,7 @@ type savedState struct {
 	NetworkProxy               string             `json:"network_proxy,omitempty"`
 	TerminalOption             string             `json:"terminalOption,omitempty"`
 	LocalShell                 string             `json:"local_shell,omitempty"`
+	HiddenShells               []string           `json:"hidden_shells,omitempty"`
 	LocalStart                 string             `json:"local_start,omitempty"`
 	LastLocalDirectory         string             `json:"last_local_directory,omitempty"`
 	SSHAgent                   string             `json:"ssh_agent,omitempty"`
@@ -62,9 +63,14 @@ type savedState struct {
 	TerminalCursor             string             `json:"terminal_cursor,omitempty"`
 	ConnectionTimeoutSeconds   int                `json:"connection_timeout_seconds,omitempty"`
 	ConnectionKeepAliveSeconds int                `json:"connection_keepalive_seconds,omitempty"`
-	ConnectionReconnect        string             `json:"connection_reconnect,omitempty"`
-	RestoreConnect             string             `json:"restore_connect,omitempty"`
-	ShareConnections           string             `json:"share_connections,omitempty"`
+	// ConnectionKeepAliveOff records the user's "off" choice. The interval
+	// above cannot: zero is dropped from the file, so it would be
+	// indistinguishable from never having chosen, and a state file that says
+	// nothing gets the default interval.
+	ConnectionKeepAliveOff bool   `json:"connection_keepalive_off,omitempty"`
+	ConnectionReconnect    string `json:"connection_reconnect,omitempty"`
+	RestoreConnect         string `json:"restore_connect,omitempty"`
+	ShareConnections       string `json:"share_connections,omitempty"`
 	// StartupLocal and StartupHosts are what a launch opens: a local terminal,
 	// and the saved hosts to connect, by their catalog ids.
 	StartupLocal bool     `json:"startup_local,omitempty"`
@@ -173,11 +179,15 @@ type savedState struct {
 	Deck       *layoutcore.DeckDTO `json:"deck,omitempty"`
 	// An empty array distinguishes a new snapshot with no managed workspaces
 	// from an older snapshot that never recorded workspace identity.
-	WorkspaceLayouts []savedWorkspaceLayout `json:"workspace_layouts,omitzero"`
-	Sync             *savedSync             `json:"sync,omitempty"`
-	HostView         string                 `json:"host_view,omitempty"`
-	HostOrder        string                 `json:"host_order,omitempty"`
-	Background       *savedBackground       `json:"background,omitempty"`
+	WorkspaceLayouts       []savedWorkspaceLayout `json:"workspace_layouts,omitzero"`
+	Sync                   *savedSync             `json:"sync,omitempty"`
+	HostView               string                 `json:"host_view,omitempty"`
+	HostOrder              string                 `json:"host_order,omitempty"`
+	HostPrivacy            bool                   `json:"host_privacy,omitempty"`
+	HostPrivacyShowName    bool                   `json:"host_privacy_show_name,omitempty"`
+	HostPrivacyShowAddress bool                   `json:"host_privacy_show_address,omitempty"`
+	HostPrivacyShowUser    bool                   `json:"host_privacy_show_user,omitempty"`
+	Background             *savedBackground       `json:"background,omitempty"`
 	// Provider collections are nil while the assistant's database is unread.
 	AIProviders    *[]savedAIProvider `json:"ai_providers,omitempty"`
 	AICLIProviders *[]savedAIProvider `json:"ai_cli_providers,omitempty"`
@@ -293,7 +303,8 @@ type savedProxy struct {
 }
 
 type savedSession struct {
-	Label string `json:"label,omitempty"`
+	WorkspaceCommand WorkspaceCommand `json:"workspace_command,omitzero"`
+	Label            string           `json:"label,omitempty"`
 	// Mention is the session's unique @ name; absent in older files and then
 	// derived from Label when the session is restored.
 	Mention   string `json:"mention,omitempty"`
@@ -484,6 +495,7 @@ func (state *State) snapshot() savedState {
 		NetworkProxy:               state.networkProxy.String(),
 		TerminalOption:             state.terminalOption.String(),
 		LocalShell:                 state.localShell,
+		HiddenShells:               slices.Clone(state.hiddenShells),
 		LocalStart:                 state.localStart.String(),
 		LastLocalDirectory:         state.lastLocalDirectory,
 		RecentConnectSort:          state.recentConnectSort,
@@ -500,6 +512,7 @@ func (state *State) snapshot() savedState {
 		TerminalCursor:             state.terminalCursorStyle.String(),
 		ConnectionTimeoutSeconds:   int(state.connectionTimeout / time.Second),
 		ConnectionKeepAliveSeconds: int(state.connectionKeepAlive / time.Second),
+		ConnectionKeepAliveOff:     state.connectionKeepAlive == 0,
 		ConnectionReconnect:        state.connectionReconnect.String(),
 		RestoreConnect:             state.restoreConnect.String(),
 		ShareConnections:           state.shareConnections.String(),
@@ -567,7 +580,7 @@ func (state *State) snapshot() savedState {
 		HostCatalogVersion:         hostCatalogSchemaVersion,
 		Hosts:                      make([]savedHost, 0, len(state.hosts)),
 		HostGroups:                 make([]savedHostGroup, 0, len(state.hostGroups)),
-		WorkspaceTemplates:         slices.Clone(state.templates),
+		WorkspaceTemplates:         cloneWorkspaceTemplates(state.templates),
 		IdentityFiles:              make([]string, 0, len(state.identities)),
 		Forwards:                   make([]savedForward, 0, len(state.forwards)),
 		Proxies:                    make([]savedProxy, 0, len(state.proxies)),
@@ -679,15 +692,13 @@ func (state *State) snapshot() savedState {
 			}
 			continue
 		}
-		savedHostID := ""
-		if session.HostID != 0 {
-			savedHostID = session.host.CatalogID
-		}
 		saved.Sessions = append(saved.Sessions, savedSession{
 			Label: session.Title, Mention: session.Mention, Address: session.host.Address, User: session.host.User,
 			Port: session.host.Port, System: session.host.System.String(), SavedHost: session.HostID != 0,
-			CatalogID: savedHostID, HostID: savedHostID, RemoteDirectory: session.startDirectory,
-			savedTransport: session.host.transport(),
+			CatalogID: session.savedCatalogID(), HostID: session.savedCatalogID(),
+			RemoteDirectory: session.startDirectory,
+			WorkspaceCommand: session.workspaceCommand,
+			savedTransport:   session.host.transport(),
 		})
 		if session.ID == state.activeSessionID {
 			saved.ActiveSession = len(saved.Sessions)
@@ -698,6 +709,10 @@ func (state *State) snapshot() savedState {
 	saved.Sync = state.savedSyncValue()
 	saved.HostView = state.hostView.saved()
 	saved.HostOrder = state.hostOrder.saved()
+	saved.HostPrivacy = state.hostPrivacy.enabled
+	saved.HostPrivacyShowName = !state.hostPrivacy.maskName
+	saved.HostPrivacyShowAddress = !state.hostPrivacy.maskAddress
+	saved.HostPrivacyShowUser = !state.hostPrivacy.maskUser
 	saved.Background = state.savedBackgroundValue()
 	if len(state.workspaceTabs) > 0 {
 		deck := state.savedWorkspaceDeck()
@@ -956,6 +971,7 @@ func (state *State) restoreLocal(saved savedState) {
 	state.terminalToolbarPosition = terminalToolbarPositionFromString(saved.TerminalToolbarPosition)
 	state.terminalToolbarSize = terminalToolbarSizeFromString(saved.TerminalToolbarSize)
 	state.localShell = saved.LocalShell
+	state.hiddenShells = cleanShellPaths(saved.HiddenShells)
 	state.recentConnectSort = saved.RecentConnectSort
 	state.recentConnections = maps.Clone(saved.RecentConnections)
 	state.sessionLogsOff = saved.SessionLogsOff
@@ -1030,6 +1046,10 @@ func (state *State) restoreLocal(saved savedState) {
 	state.agentHosts = agentHostSet(saved.AgentHosts)
 	state.restoreSync(saved.Sync)
 	state.hostView = hostViewFromString(saved.HostView)
+	state.hostPrivacy.enabled = saved.HostPrivacy
+	state.hostPrivacy.maskName = !saved.HostPrivacyShowName
+	state.hostPrivacy.maskAddress = !saved.HostPrivacyShowAddress
+	state.hostPrivacy.maskUser = !saved.HostPrivacyShowUser
 	if saved.WindowWidth > 0 && saved.WindowHeight > 0 {
 		state.restoreWindowFrame(gfx.Rect{
 			X: float32(saved.WindowX), Y: float32(saved.WindowY),
@@ -1292,6 +1312,9 @@ func highestProxyNumber(routes []proxyRecord) uint32 {
 }
 
 func (state *State) restoreSessions(entries []savedSession, active int) []uint32 {
+	// Replacing the tab list can end every live session this window had; the
+	// watcher must not outlive the ones that remain.
+	defer state.syncLinkWatch()
 	clear(state.sessions)
 	state.sessions = state.sessions[:0]
 	state.activeSessionID = 0
@@ -1319,6 +1342,9 @@ func (state *State) restoreSessions(entries []savedSession, active int) []uint32
 			host:    host, phase: sshconn.PhaseClosed, restored: true, paneSlot: state.claimPaneSlot(),
 		})
 		session := &state.sessions[len(state.sessions)-1]
+		if workspaceCommandHost(host) {
+			session.workspaceCommand = entry.WorkspaceCommand.normalized()
+		}
 		if session.Mention == "" {
 			session.Mention = state.uniqueMentionName(session.Title, session.ID)
 		}

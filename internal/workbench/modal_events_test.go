@@ -7,19 +7,47 @@ import (
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/gfx"
+	"motty/internal/autofill"
 )
 
 func modalEventDriver(t *testing.T, state *State) *app.Driver {
 	t.Helper()
-	driver, err := app.NewDriver(app.Config{
-		Title: "modal events", Width: 1400, Height: 700, Tree: Tree(),
+	return modalEventDriverSize(t, state, 1400, 700)
+}
+
+// modalEventDriverSize is modalEventDriver for a window of a chosen size.
+func modalEventDriverSize(t *testing.T, state *State, width, height int) *app.Driver {
+	t.Helper()
+	driver, err := app.NewDriver(state.WindowConfig(app.Config{
+		Title: "modal events", Width: width, Height: height, Tree: Tree(),
 		Paint: state.Paint, OnPointer: state.Pointer, OnKey: state.Key, OnScroll: state.Scroll,
-	}, nil)
+		TextInput: func(c app.TextInputContext) *app.TextInput {
+			if editor := state.EditorFor(c.ID); editor != nil {
+				return &app.TextInput{Editor: editor}
+			}
+			return nil
+		},
+	}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(driver.Close)
 	return driver
+}
+
+// clickPaintedHit presses the control named id through the driver's real
+// pointer event pass, the way a window does.
+func clickPaintedHit(t *testing.T, driver *app.Driver, id gfx.ID) {
+	t.Helper()
+	for _, hit := range driver.Snapshot().Hits {
+		if hit.ID == id && !hit.IsLabel && hit.Bounds.Width > 0 {
+			if err := driver.Click(hit.Bounds.X+hit.Bounds.Width/2, hit.Bounds.Y+hit.Bounds.Height/2); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Fatalf("the painted control %v was not found", id)
 }
 
 func TestAIRenameEscapeKeepsHistoryOpen(t *testing.T) {
@@ -32,7 +60,7 @@ func TestAIRenameEscapeKeepsHistoryOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	state.Click(hitAIToggle)
-	state.Click(hitAIHistory)
+	clickAIPanelPage(t, state, hitAIHistory)
 	state.Click(hitAIHistoryRename.At(0))
 	driver := modalEventDriver(t, state)
 	if err := driver.Key(gfx.KeyEscape, 0); err != nil {
@@ -57,8 +85,9 @@ func TestDialogsBlockBackgroundScroll(t *testing.T) {
 				}
 			}
 			state.Click(hitAIToggle)
-			state.Click(hitAIHistory)
+			clickAIPanelPage(t, state, hitAIHistory)
 			var closeID gfx.ID
+			closeLabel := ""
 			switch name {
 			case "ai-rename":
 				state.Click(hitAIHistoryRename.At(0))
@@ -71,7 +100,7 @@ func TestDialogsBlockBackgroundScroll(t *testing.T) {
 				closeID = hitForwardDialogClose
 			case "proxy":
 				state.openProxyDialog()
-				closeID = hitProxyDialogCancel
+				closeID = hitProxyDialogClose
 			case "form":
 				state.openForm(formDialog{title: "Test form", submit: "Save"}, formField{label: "Name"})
 				closeID = hitFormCancel
@@ -83,7 +112,7 @@ func TestDialogsBlockBackgroundScroll(t *testing.T) {
 					closeID = hitAISetFormClose
 				} else {
 					state.Click(hitAISetClearHistory)
-					closeID = hitAISetConfirmCancel
+					closeLabel = state.messages.Cancel
 				}
 			case "known-hosts":
 				writeKnownHostsFixture(t, state.options.KnownHostsPath)
@@ -120,7 +149,7 @@ func TestDialogsBlockBackgroundScroll(t *testing.T) {
 			}
 			var clicked bool
 			for _, hit := range driver.Snapshot().Hits {
-				if hit.ID == closeID && !hit.IsLabel {
+				if (!closeID.IsZero() && hit.ID == closeID && !hit.IsLabel) || (closeLabel != "" && hit.Label == closeLabel && hit.Role == gfx.RoleButton) {
 					if err := driver.Click(hit.Bounds.X+hit.Bounds.Width/2, hit.Bounds.Y+hit.Bounds.Height/2); err != nil {
 						t.Fatal(err)
 					}
@@ -227,7 +256,7 @@ func TestFormDialogsKeepTypedContentWhenPressedOutside(t *testing.T) {
 				t.Fatal(err)
 			}
 			s.Click(hitAIToggle)
-			s.Click(hitAIHistory)
+			clickAIPanelPage(t, s, hitAIHistory)
 			s.Click(hitAIHistoryRename.At(0))
 		}, openModal(modalAIRename), hitAIRenameField},
 	} {
@@ -281,4 +310,79 @@ func dialogOutsidePoint(t *testing.T, driver *app.Driver) (float32, float32) {
 		t.Fatal("the dialog painted no controls")
 	}
 	return max(left-16, 4), top + (bottom-top)/2
+}
+
+// The dialog bodies declared as pages lay their controls out themselves; a
+// real pointer press on what the page laid out must still reach the action the
+// control always had.
+func TestConvertedDialogBodiesTakeRealPointerEvents(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		open  func(*State)
+		click gfx.ID
+		want  func(*State) bool
+	}{
+		{"host form", func(s *State) { s.openHostDialog() }, hitDialogAdvanced,
+			func(s *State) bool { return s.editor.advancedOpen }},
+		{"close tabs", func(s *State) {
+			s.tabsClose = tabsClose{count: 2, running: []string{"Production", "Staging"}}
+			s.modal = modalCloseTabs
+		}, hitTabsCloseQuiet, func(s *State) bool { return s.tabsClose.quiet }},
+		{"autofill rule", func(s *State) { s.openAutofillDialog(nil) }, hitAutofillText,
+			func(s *State) bool { return s.autofillRules.send == autofill.SendText }},
+		{"forward", func(s *State) { s.openForwardDialog() }, hitForwardDialogResume,
+			func(s *State) bool { return s.forwardEditor.resume }},
+		{"snippet", func(s *State) { s.openSnippetDialog(-1) }, hitSnippetRun,
+			func(s *State) bool { return !s.snippets.run }},
+		{"jump route", func(s *State) { s.openProxyDialog() }, hitProxyDialogViaShell,
+			func(s *State) bool { return s.proxyEditor.viaShell }},
+		{"form", func(s *State) {
+			s.openForm(formDialog{title: "Test form", submit: "Save", checkLabel: "Consent"}, formField{label: "Name"})
+		}, hitFormCheckbox, func(s *State) bool { return s.form.checked }},
+		{"highlight rule", func(s *State) { s.openHighlightDialog() }, hitHighlightRegex,
+			func(s *State) bool { return s.highlighting.regex }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := newTestState(t, testOptions(t))
+			tc.open(state)
+			driver := modalEventDriverSize(t, state, 1400, 900)
+			clickPaintedHit(t, driver, tc.click)
+			if !tc.want(state) {
+				t.Fatal("a real press on the control the page laid out did not act")
+			}
+		})
+	}
+}
+
+// The route settings dialog has no switch to press, so its proof is that a
+// field the body page laid out takes the pointer and the typing that follows.
+func TestOutboundProxyBodyTakesRealPointerAndText(t *testing.T) {
+	state := newTestState(t, testOptions(t))
+	state.openOutboundProxyDialog()
+	driver := modalEventDriverSize(t, state, 1400, 900)
+	clickPaintedHit(t, driver, hitOutboundProxyBypass)
+	if got := driver.Snapshot().Focused; got != hitOutboundProxyBypass {
+		t.Fatalf("the pressed field is not focused: %v", got)
+	}
+	if err := driver.Type("deploy"); err != nil {
+		t.Fatal(err)
+	}
+	if got := state.proxyForm.bypass.String(); !strings.HasSuffix(got, "deploy") {
+		t.Fatalf("typing reached %q", got)
+	}
+}
+
+// The vault dialogs were already pages; the unlock body's field must still take
+// the pointer and the text typed into it.
+func TestVaultUnlockBodyTakesRealPointerAndText(t *testing.T) {
+	state := newTestState(t, testOptions(t))
+	state.openVaultUnlock(nil, nil)
+	driver := modalEventDriverSize(t, state, 1400, 900)
+	clickPaintedHit(t, driver, hitVaultUnlockField)
+	if err := driver.Type("master password"); err != nil {
+		t.Fatal(err)
+	}
+	if got := state.secrets.unlock.String(); got != "master password" {
+		t.Fatalf("typing reached %q", got)
+	}
 }

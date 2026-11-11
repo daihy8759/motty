@@ -1,6 +1,7 @@
 package workbench
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -131,6 +132,16 @@ type fontsUI struct {
 	selected int     // index into filtered
 	scroll   float32 // pixel offset of the filtered list
 	built    bool
+
+	// searchSlot is where the body's first slot sits: the search field is
+	// painted into it after the body has laid it out. searchDraw is that paint,
+	// kept once so a warm repaint makes no new method value.
+	searchSlot ui.Box
+	searchDraw func(*ui.DrawContext)
+	// pickerLoad reads the installed families the open picker offers. The picker
+	// makes it when it opens and drops it on close, so closing the picker cancels
+	// the read and the next opening starts clean.
+	pickerLoad *ui.EffectState[[]string, int]
 
 	// text is the description the settings row shows; textFor and textLang are what
 	// it was made for.
@@ -286,7 +297,8 @@ func (state *State) openFontPicker(fallback bool) {
 }
 
 // openPicker opens the picker for what kind names, and starts reading the list it
-// offers if that has not been read.
+// offers if that has not been read. The read is an effect of the window page: it
+// runs once, and closing the picker cancels it.
 func (state *State) openPicker(kind fontPickerKind) {
 	state.modal = modalFontPicker
 	state.fonts.kind = kind
@@ -294,22 +306,51 @@ func (state *State) openPicker(kind fontPickerKind) {
 	state.fonts.built = false
 	list := state.pickerList()
 	if list.installed != nil || list.loading {
+		// The list is known, or another opening is already reading it.
 		return
 	}
-	list.loading = true
-	state.listFonts(state.pickerFamilies(), func(s *State, families []string) {
-		list.loading = false
-		if families == nil {
-			families = []string{}
-		}
-		list.installed = families
-		s.fonts.built = false
-		if kind == pickInterfaceFont {
-			s.reconcileInterfaceFont()
-			return
-		}
-		s.applyTerminalFace()
+	fonts := &state.fonts
+	fonts.closePickerPage()
+	families := state.pickerFamilies()
+	fonts.pickerLoad = ui.NewEffect[[]string, int](func(context.Context) ([]string, error) {
+		return families(), nil
 	})
+	list.loading = true
+}
+
+// finishFontPickerLoad applies the families the picker's effect read to the list
+// the picker is showing.
+func (state *State) finishFontPickerLoad(families []string) {
+	fonts := &state.fonts
+	list := state.pickerList()
+	list.loading = false
+	if families == nil {
+		families = []string{}
+	}
+	list.installed = families
+	fonts.built = false
+	if fonts.kind == pickInterfaceFont {
+		state.reconcileInterfaceFont()
+		return
+	}
+	state.applyTerminalFace()
+}
+
+// closePickerPage drops the picker's read, leaving the lists as they are. A
+// read that had not finished is cancelled when the page stops declaring it; its
+// result is dropped.
+func (fonts *fontsUI) closePickerPage() {
+	fonts.pickerLoad = nil
+}
+
+// closeFontPickerPage closes the open picker's page and read. The list's loading
+// flag is cleared when nothing arrived, so the next opening asks again.
+func (state *State) closeFontPickerPage() {
+	list := state.pickerList()
+	if list.installed == nil {
+		list.loading = false
+	}
+	state.fonts.closePickerPage()
 }
 
 // refreshFontPicker builds the list the picker shows for its search text.
@@ -515,9 +556,6 @@ func (state *State) clickFontPicker(id gfx.ID) {
 		state.cancelFontPicker()
 	case id == hitFontPickerConfirm:
 		state.confirmFont()
-	case id.Scope() == hitFontPickerItemList:
-		state.refreshFontPicker()
-		state.selectFont(item(id))
 	}
 }
 
@@ -586,17 +624,18 @@ func (state *State) confirmFontOnDoubleClick(canvas *gfx.Canvas) bool {
 	return true
 }
 
-func (state *State) paintFontPicker(canvas *gfx.Canvas, viewport gfx.Rect) {
+// declareFontPicker declares the picker as a dialog of the window page: its
+// search field, the list of families and the sample of the highlighted one. The
+// search input's text is painted after the page, into the slot this declares.
+func (state *State) declareFontPicker(c ui.C) {
 	state.refreshFontPicker()
-	if state.confirmFontOnDoubleClick(canvas) {
+	// A double click on a row applies it. It is read while the page declares,
+	// before the rows do, so its press does not also click what is under the
+	// pointer once the picker is gone.
+	if state.confirmFontOnDoubleClick(c.Canvas()) {
 		return
 	}
-	m, pal, fonts := state.messages.Tools, state.pal, &state.fonts
-	dialog := components.BeginDialog(canvas, state.Theme(), viewport, components.DialogOptions{
-		Layer: dialogLayer, Scope: dialogScope,
-		DismissID: hitFontPickerDismiss, CloseID: hitFontPickerClose, InitialFocusID: hitFontPickerSearch,
-		ContentSize: gfx.Size{Width: 560}, FitBody: true, BodyHeight: 366,
-	})
+	m, fonts := state.messages.Tools, &state.fonts
 	title := m.FontPickerTitle
 	switch fonts.kind {
 	case pickFallbackFont:
@@ -604,55 +643,102 @@ func (state *State) paintFontPicker(canvas *gfx.Canvas, viewport gfx.Rect) {
 	case pickInterfaceFont:
 		title = state.messages.SettingsInterfaceFont
 	}
-	layout := dialog.Begin(title, "")
+	viewport := dialogViewport(c)
+	height := dialogContentHeight(c.Canvas(), *c.Theme(), viewport, 560, "", 366)
+	dialog := ui.Dialog(c, ui.DialogSpec{
+		Title: title, Width: 560, Height: height, Layer: dialogLayer,
+		Scope: dialogScope, DismissID: hitFontPickerDismiss, CloseID: hitFontPickerClose,
+		InitialFocusID: hitFontPickerSearch,
+	})
+	dialog.Body(func() { state.declareFontPickerBody(c) })
+	dialog.Footer(func() {
+		confirmDisabled := !state.canConfirmFont()
+		state.dialogActionFooter(c,
+			components.ButtonAction{ID: hitFontPickerCancel, Label: state.messages.Cancel, Variant: components.ButtonSecondary},
+			components.ButtonAction{ID: hitFontPickerConfirm, Label: m.FontPickerConfirm, Variant: components.ButtonDefault, Disabled: confirmDisabled},
+		)
+	})
+}
+
+// paintFontPickerSearch paints the picker's search field into the slot the
+// dialog body laid out. It runs as part of the body's paint, inside the dialog's
+// focus scope, so the field keeps the keys and text the dialog routes.
+func (state *State) paintFontPickerSearch(d *ui.DrawContext) {
+	fonts := &state.fonts
+	m := state.messages.Tools
+	title := m.FontPickerTitle
+	switch fonts.kind {
+	case pickFallbackFont:
+		title = m.FontFallbackPickerTitle
+	case pickInterfaceFont:
+		title = state.messages.SettingsInterfaceFont
+	}
+	value := fonts.search.String()
+	focused := d.Canvas.Focused() == hitFontPickerSearch
+	components.PaintInput(d.Canvas, *d.Theme, fonts.searchSlot.Rect(), components.InputSnapshot{
+		ID: hitFontPickerSearch, Label: title, Value: value, Placeholder: m.FontPickerPlaceholder,
+		Focused: focused, PlatformEditing: focused && value != "", NavigationKeys: true,
+	})
+}
+
+// declareFontPickerBody declares the dialog body: the search field's room, the
+// list of families (loading, empty or its visible rows) and the sample under it.
+// The list keeps room for all its rows, so the sample under it stays where it is.
+func (state *State) declareFontPickerBody(c ui.C) {
+	m, pal, fonts := state.messages.Tools, state.pal, &state.fonts
+	if load := fonts.pickerLoad; load != nil {
+		ui.Effect(c, load, 0)
+		if families, _, ok := load.Take(); ok {
+			fonts.pickerLoad = nil
+			state.finishFontPickerLoad(families)
+			state.refreshFontPicker() // the paint that takes the list also shows it
+		}
+	}
+	fonts.scroll = min(max(fonts.scroll, 0), fonts.maxScroll())
 	rows := len(fonts.filtered)
-	var search, list ui.Box
-	// The list keeps room for all its rows, so the sample under it stays where it is;
-	// what the list lacks is said under the rows it has.
-	f := state.fontPickerLayout.Begin(canvas, state.Theme(), layout.Body)
-	f.Column().Fill().Children(func() {
-		search = f.Slot().Height(36)
-		list = f.Column().Height(fontPickerListHeight).Shrink(0).MarginSides(10, 0, 0, 0).Children(func() {
+	if fonts.searchDraw == nil {
+		fonts.searchDraw = state.paintFontPickerSearch
+	}
+	column := ui.Column(c).Fill()
+	column.Children(func() {
+		fonts.searchSlot = ui.Slot(c).Height(36)
+		ui.Column(c).Height(fontPickerListHeight).Shrink(0).MarginSides(10, 0, 0, 0).Children(func() {
 			switch {
 			case state.pickerList().loading:
-				f.Text(m.FontPickerLoading).FontSize(metrics.FontSizeM).Color(pal.muted).LineHeight(24).TextCenter().MarginSides(10, 0, 0, 0)
-			case len(fonts.filtered) == 0:
-				f.Text(m.FontPickerEmpty).FontSize(metrics.FontSizeM).Color(pal.muted).LineHeight(24).TextCenter().MarginSides(10, 0, 0, 0)
+				ui.Text(c, m.FontPickerLoading).FontSize(metrics.FontSizeM).Color(pal.muted).LineHeight(24).TextCenter().MarginSides(10, 0, 0, 0)
+			case rows == 0:
+				ui.Text(c, m.FontPickerEmpty).FontSize(metrics.FontSizeM).Color(pal.muted).LineHeight(24).TextCenter().MarginSides(10, 0, 0, 0)
+			}
+			if rows > 0 {
+				state.declareFontPickerRows(c)
 			}
 		})
-		if len(fonts.filtered) > 0 {
+		if rows > 0 {
 			// The highlighted font, set in itself.
-			entry := fonts.entries[fonts.filtered[fonts.selected]]
-			if fonts.kind == pickInterfaceFont {
-				state.paintInterfaceFontSample(f, entry)
-			} else {
-				face := state.fontSampleFace(entry)
-				f.Column().Height(56).Shrink(0).PadSides(7, 11, 0, 11).Background(pal.terminal).Border(1, pal.line).Radius(radius.control).MarginSides(8, 0, 0, 0).Children(func() {
-					f.Text(m.FontPickerSample).FontSize(metrics.FontSizeM).Color(pal.text).MonoFace(face).LineHeight(20).Height(20)
-					f.Text(m.FontPickerSampleSymbols).FontSize(metrics.FontSizeM).Color(pal.muted).MonoFace(face).LineHeight(20).Height(20)
-				})
-			}
+			state.declareFontPickerSample(c, fonts.entries[fonts.filtered[fonts.selected]])
 		}
 	})
-	f.End()
+	column.DrawOver(fonts.searchDraw)
+}
 
-	area := components.BeginScrollArea(canvas, state.Theme(), list.Rect(), gfx.Size{Width: list.Rect().Width, Height: fonts.contentHeight()}).Offset(0, fonts.scroll).HoverScrollbars(false)
-	geometry := area.BeginContent()
-	fonts.scroll = geometry.OffsetY
-	// Keep layout work bounded by the viewport while retaining logical row IDs.
-	first := int(geometry.OffsetY / fontPickerRowStep)
+// declareFontPickerRows declares the visible rows of the list, translating them
+// by the scroll offset the window keeps: the list keeps its layout work bounded
+// by the viewport while retaining logical row IDs.
+func (state *State) declareFontPickerRows(c ui.C) {
+	pal, fonts := state.pal, &state.fonts
+	rows := len(fonts.filtered)
+	first := int(fonts.scroll / fontPickerRowStep)
 	last := min(rows, first+fontPickerVisibleRows+1)
-	content := geometry.Content
-	content.Y += float32(first) * fontPickerRowStep
-	content.Height = float32(last-first) * fontPickerRowStep
-	f = state.fontPickerListLayout.Begin(canvas, state.Theme(), content)
-	f.Column().FillWidth().Children(func() {
+	ui.ScrollAt(c, fonts.scroll).Fill().Children(func() {
+		if top := float32(first) * fontPickerRowStep; top > 0 {
+			ui.Slot(c).Height(top)
+		}
 		for row := first; row < last; row++ {
 			entry := fonts.entries[fonts.filtered[row]]
 			selected := row == fonts.selected
 			inUse := fonts.kind != pickFallbackFont && state.fontInUse(entry)
 			color := pal.text
-			line := f.Row().Height(30).Shrink(0).MarginSides(0, 0, 2, 0).PadSides(0, 12, 0, 10).Items(ui.Center).Radius(radius.item).
+			line := ui.Row(c).Height(30).Shrink(0).MarginSides(0, 0, 2, 0).PadSides(0, 12, 0, 10).Items(ui.Center).Radius(radius.item).
 				HitWith(hitFontPickerItemList.At(row), entry.label, gfx.HitOptions{Role: gfx.RoleButton, Selected: selected})
 			if selected {
 				line.Background(pal.accent)
@@ -660,29 +746,35 @@ func (state *State) paintFontPicker(canvas *gfx.Canvas, viewport gfx.Rect) {
 			} else {
 				line.Hover(ui.Look{}.Background(pal.surfaceHot))
 			}
+			if line.Clicked() {
+				state.selectFont(row)
+			}
 			line.Children(func() {
-				f.Text(entry.label).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(color).LineHeight(20).Grow(1).MarginSides(0, 12, 0, 0)
+				ui.Text(c, entry.label).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(color).LineHeight(20).Grow(1).MarginSides(0, 12, 0, 0)
 				if inUse {
-					f.Icon(lucideIcons[iconCheck]).Size(16, 16).Color(color)
+					ui.Icon(c, lucideIcons[iconCheck]).Size(16, 16).Color(color)
 				} else {
-					f.Spacer().Size(16, 16).Grow(0)
+					ui.Spacer(c).Size(16, 16).Grow(0)
 				}
 			})
 		}
+		if rest := fonts.contentHeight() - float32(last)*fontPickerRowStep; rest > 0 {
+			ui.Slot(c).Height(rest)
+		}
 	})
-	f.End()
-	area.EndContent()
+}
 
-	value := fonts.search.String()
-	focused := canvas.Focused() == hitFontPickerSearch
-	components.PaintInput(canvas, state.Theme(), search.Rect(), components.InputSnapshot{
-		ID: hitFontPickerSearch, Label: title, Value: value, Placeholder: m.FontPickerPlaceholder,
-		Focused: focused, PlatformEditing: focused && value != "", NavigationKeys: true,
+// declareFontPickerSample declares the sample of the highlighted font: the
+// interface's own sample for that picker, the terminal's mono sample otherwise.
+func (state *State) declareFontPickerSample(c ui.C, entry fontEntry) {
+	if state.fonts.kind == pickInterfaceFont {
+		state.declareInterfaceFontSample(c, entry)
+		return
+	}
+	m, pal := state.messages.Tools, state.pal
+	face := state.fontSampleFace(entry)
+	ui.Column(c).Height(56).Shrink(0).PadSides(7, 11, 0, 11).Background(pal.terminal).Border(1, pal.line).Radius(radius.control).MarginSides(8, 0, 0, 0).Children(func() {
+		ui.Text(c, m.FontPickerSample).FontSize(metrics.FontSizeM).Color(pal.text).MonoFace(face).LineHeight(20).Height(20)
+		ui.Text(c, m.FontPickerSampleSymbols).FontSize(metrics.FontSizeM).Color(pal.muted).MonoFace(face).LineHeight(20).Height(20)
 	})
-	confirmDisabled := !state.canConfirmFont()
-	dialog.Actions(layout,
-		components.ButtonAction{ID: hitFontPickerCancel, Label: state.messages.Cancel, Variant: components.ButtonSecondary},
-		components.ButtonAction{ID: hitFontPickerConfirm, Label: m.FontPickerConfirm, Variant: components.ButtonDefault, Disabled: confirmDisabled},
-	)
-	dialog.End()
 }

@@ -63,6 +63,11 @@ type highlightUI struct {
 	regex, folded bool // folded: match case
 	slot          highlight.Slot
 	dialogError   string
+
+	// field, regexRow and caseRow are the slots the dialog body laid out; the
+	// field and the checkboxes are painted into them after the body, by the
+	// controls that own their editing and focus.
+	field, regexRow, caseRow ui.Box
 }
 
 // recompileHighlights rebuilds the compiled rules after any change to them, and
@@ -109,8 +114,6 @@ func (state *State) clickHighlightDialog(id gfx.ID) {
 		form.dialogError = ""
 	case id == hitHighlightCase:
 		form.folded = !form.folded
-	case id.Scope() == hitHighlightColorList:
-		form.slot = highlight.Slots()[uint32(item(id))]
 	}
 }
 
@@ -266,83 +269,99 @@ func (state *State) slotColor(slot highlight.Slot) gfx.Color {
 	return gfx.RGB(ansi[0], ansi[1], ansi[2])
 }
 
-func (state *State) paintHighlightDialog(canvas *gfx.Canvas, viewport gfx.Rect) {
-	m, pal, theme := state.messages.Tools, state.pal, state.Theme()
+// declareHighlightDialog declares the rule editor as a dialog of the workbench
+// page.
+func (state *State) declareHighlightDialog(c ui.C) {
+	m := state.messages.Tools
 	form := &state.highlighting
+	viewport := dialogViewport(c)
+	height := dialogContentHeight(c.Canvas(), *c.Theme(), viewport, 520, "", withError(198, form.dialogError)) // the pattern, two boxes and the colors
 	// No scrim dismiss: a press beside the form must not discard its input.
-	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
-		Layer: dialogLayer, Scope: dialogScope,
-		CloseID: hitHighlightClose, InitialFocusID: hitHighlightPattern,
-		ContentSize: gfx.Size{Width: 520}, FitBody: true, BodyHeight: withError(198, form.dialogError), // the pattern, two boxes and the colors
+	dialog := ui.Dialog(c, ui.DialogSpec{
+		Title: m.HighlightDialogTitle, Width: 520, Height: height, Layer: dialogLayer,
+		Scope: dialogScope, CloseID: hitHighlightClose, InitialFocusID: hitHighlightPattern,
 	})
-	layout := dialog.Begin(m.HighlightDialogTitle, "")
+	dialog.Body(func() { state.declareHighlightDialogBody(c) })
+	dialog.Footer(func() {
+		if dialogButton(c, state.messages.Cancel, components.ButtonSecondary, false).Clicked() {
+			c.After(func() { state.clickHighlightDialog(hitHighlightCancel) })
+		}
+		if dialogButton(c, m.HighlightSave, components.ButtonDefault, false).Clicked() {
+			c.After(func() { state.clickHighlightDialog(hitHighlightSubmit) })
+		}
+	})
+}
+
+// declareHighlightDialogBody lays out the rule dialog: the pattern field, the
+// two checkboxes, the colors and the error. The pattern, the checkboxes and
+// their hit regions are painted into the slots after the body, so their focus
+// order and invalid look stay the ones the controls already have.
+func (state *State) declareHighlightDialogBody(c ui.C) {
+	form, m, pal := &state.highlighting, state.messages.Tools, state.pal
 	slots := highlight.Slots()
-	var field, regex, folded ui.Box
-	var colors [6]ui.Box
-	f := state.settingsRow.Begin(canvas, theme, layout.Body)
-	f.Column().Fill().PadSides(2, 4, 0, 4).Children(func() {
-		field = f.Slot().Height(62)
-		regex = state.declareDialogCheckbox(f, m.HighlightRegex, 11, 0)
-		folded = state.declareDialogCheckbox(f, m.HighlightCase, 12, 0)
-		f.Text(m.HighlightColor).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(pal.muted).LineHeight(18).MarginSides(19, 0, 4, 2)
-		f.Row().Gap(8).MarginSides(0, 0, 0, 2).Children(func() {
+	column := ui.Column(c).Fill().PadSides(2, 4, 0, 4)
+	column.Children(func() {
+		form.field = ui.Slot(c).Height(62)
+		form.regexRow = state.declareDialogCheckboxC(c, m.HighlightRegex, 11, 0)
+		form.caseRow = state.declareDialogCheckboxC(c, m.HighlightCase, 12, 0)
+		ui.Text(c, m.HighlightColor).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(pal.muted).LineHeight(18).MarginSides(19, 0, 4, 2)
+		ui.Row(c).Gap(8).MarginSides(0, 0, 0, 2).Children(func() {
 			for index, slot := range slots {
 				selected := form.slot == slot
 				border, width := withAlpha(pal.line, 0.9), float32(1)
 				if selected {
 					border, width = pal.accent, 2
 				}
-				colors[index] = f.Row().Size(50, 28).Shrink(0).Center().Background(pal.terminal).Radius(radius.control).Border(width, border).Children(func() {
-					f.Column().Size(20, 14).Background(state.slotColor(slot)).Radius(7)
+				chip := ui.Row(c).Size(50, 28).Shrink(0).Center().Background(pal.terminal).Radius(radius.control).Border(width, border)
+				chip.HitWith(hitHighlightColorList.At(index), state.slotName(slot), gfx.HitOptions{Role: gfx.RoleButton, Selected: selected})
+				if chip.Clicked() {
+					form.slot = slot
+				}
+				chip.Children(func() {
+					ui.Column(c).Size(20, 14).Background(state.slotColor(slot)).Radius(7)
 				})
 			}
 		})
 		if form.dialogError != "" {
-			f.Text(form.dialogError).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(pal.danger).LineHeight(18).MarginSides(12, 0, 0, 0)
+			ui.Text(c, form.dialogError).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(pal.danger).LineHeight(18).MarginSides(12, 0, 0, 0)
 		}
 	})
-	f.End()
-	content := components.BeginField(canvas, theme, field.Rect()).Paint(m.HighlightPattern, "", "")
-	value := form.pattern.String()
-	focused := canvas.Focused() == hitHighlightPattern
-	components.PaintInput(canvas, theme, content, components.InputSnapshot{
-		ID: hitHighlightPattern, Label: m.HighlightPattern, Value: value, Placeholder: m.HighlightPatternPlaceholder,
-		Focused: focused, PlatformEditing: focused && value != "", Invalid: form.dialogError != "",
-	})
-	state.paintDialogCheckbox(canvas, hitHighlightRegex, m.HighlightRegex, form.regex, regex)
-	state.paintDialogCheckbox(canvas, hitHighlightCase, m.HighlightCase, form.folded, folded)
-	for index, slot := range slots {
-		canvas.HitWithOptions(hitHighlightColorList.At(index), colors[index].Rect(), state.slotName(slot), gfx.HitOptions{Role: gfx.RoleButton, Selected: form.slot == slot})
-	}
-	dialog.Actions(layout,
-		components.ButtonAction{ID: hitHighlightCancel, Label: state.messages.Cancel, Variant: components.ButtonSecondary},
-		components.ButtonAction{ID: hitHighlightSubmit, Label: m.HighlightSave},
-	)
-	dialog.End()
-}
-
-// declareDialogCheckbox declares a checkbox and its label inside a dialog's body,
-// the given room above and below it, and returns the box the checkbox is
-// painted in (paintDialogCheckbox), after the fields above it, so the keyboard
-// visits them in the order they are on the page. It returns the row, which
-// holds the checkbox and its words.
-func (state *State) declareDialogCheckbox(f *ui.Frame, label string, above, below float32) ui.Box {
-	side := components.CheckboxExtent(state.Theme())
-	return f.Row().Height(20).Gap(24-side).Items(ui.Center).MarginSides(above, 0, below, 2).Children(func() {
-		f.Slot().Size(side, side).Shrink(0)
-		f.Text(label).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(state.pal.text).LineHeight(20).Grow(1)
+	column.DrawOver(func(d *ui.DrawContext) {
+		canvas, theme := d.Canvas, *d.Theme
+		content := components.BeginField(canvas, theme, form.field.Rect()).Paint(m.HighlightPattern, "", "")
+		value := form.pattern.String()
+		focused := canvas.Focused() == hitHighlightPattern
+		components.PaintInput(canvas, theme, content, components.InputSnapshot{
+			ID: hitHighlightPattern, Label: m.HighlightPattern, Value: value, Placeholder: m.HighlightPatternPlaceholder,
+			Focused: focused, PlatformEditing: focused && value != "", Invalid: form.dialogError != "",
+		})
+		state.paintDialogCheckbox(canvas, hitHighlightRegex, m.HighlightRegex, form.regex, form.regexRow)
+		state.paintDialogCheckbox(canvas, hitHighlightCase, m.HighlightCase, form.folded, form.caseRow)
 	})
 }
 
-// declareDialogCheckboxHelp is declareDialogCheckbox with a help icon right after
-// the label, which paintHelpIcon fills in.
-func (state *State) declareDialogCheckboxHelp(f *ui.Frame, label string, above, below float32) (row, help ui.Box) {
+// declareDialogCheckboxC declares a checkbox and its label inside a dialog's
+// body declared as a page, the given room above and below it, and returns the
+// box the checkbox is painted in (paintDialogCheckbox), after the fields above
+// it, so the keyboard visits them in the order they are on the page. It returns
+// the row, which holds the checkbox and its words.
+func (state *State) declareDialogCheckboxC(c ui.C, label string, above, below float32) ui.Box {
 	side := components.CheckboxExtent(state.Theme())
-	row = f.Row().Height(20).Gap(24-side).Items(ui.Center).MarginSides(above, 0, below, 2).Children(func() {
-		f.Slot().Size(side, side).Shrink(0)
-		f.Text(label).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(state.pal.text).LineHeight(20)
-		help = f.Slot().Size(16, 16).Shrink(0)
-		f.Spacer().Grow(1)
+	return ui.Row(c).Height(20).Gap(24-side).Items(ui.Center).MarginSides(above, 0, below, 2).Children(func() {
+		ui.Slot(c).Size(side, side).Shrink(0)
+		ui.Text(c, label).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(state.pal.text).LineHeight(20).Grow(1)
+	})
+}
+
+// declareDialogCheckboxHelpC is declareDialogCheckboxC with a help icon right
+// after the label, which paintHelpIcon fills in.
+func (state *State) declareDialogCheckboxHelpC(c ui.C, label string, above, below float32) (row, help ui.Box) {
+	side := components.CheckboxExtent(state.Theme())
+	row = ui.Row(c).Height(20).Gap(24-side).Items(ui.Center).MarginSides(above, 0, below, 2).Children(func() {
+		ui.Slot(c).Size(side, side).Shrink(0)
+		ui.Text(c, label).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(state.pal.text).LineHeight(20)
+		help = ui.Slot(c).Size(16, 16).Shrink(0)
+		ui.Spacer(c).Grow(1)
 	})
 	return row, help
 }

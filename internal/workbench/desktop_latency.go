@@ -5,7 +5,6 @@ import (
 
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/gfx"
-	"github.com/vivaui/viva/ui"
 	"motty/internal/desktop"
 )
 
@@ -26,22 +25,47 @@ func (state *State) desktopLatency(view *desktopView) (string, gfx.Color, string
 		fmt.Sprintf(state.messages.Desktop.LatencyHintFmt, sampled.Local().Format("15:04:05"))
 }
 
-func (state *State) declareDesktopLatency(f *ui.Frame, canvas *gfx.Canvas, view *desktopView) {
+// desktopLatencyUI is one desktop's RTT badge as the status strip shows it: the
+// text, its color and hint, and how wide the text is. The strip's Frame reserves
+// a slot for it; paintDesktopLatency draws the badge into it. A desktop pane has
+// its own badge, so split panes do not share one.
+type desktopLatencyUI struct {
+	label string
+	color gfx.Color
+	hint  string
+	width float32
+}
+
+// desktopLatencyBadge reads what the status strip's badge says and measures it.
+// It reserves no element: the strip's layout gives the badge a slot, because the
+// strip is laid out by a Frame.
+func (state *State) desktopLatencyBadge(canvas *gfx.Canvas, view *desktopView) (desktopLatencyUI, bool) {
+	var badge desktopLatencyUI
 	if !state.terminalShowLatency {
-		return
+		return badge, false
 	}
 	label, color, hint := state.desktopLatency(view)
 	if label == "" {
-		return
+		return badge, false
 	}
-	width := canvas.TextWidthWeight(label, metrics.FontSizeS, gfx.WeightMedium) + 2
-	f.Row().HitWith(hitDesktopLatency, label, gfx.HitOptions{Role: gfx.RoleStatus, SkipFocus: true, Hint: hint}).PadX(6).MarginSides(0, 8, 0, 0).Shrink(0).
-		Items(ui.Center).Background(withAlpha(color, 0.14)).Radius(4).Children(func() {
-		f.Text(label).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(color).LineHeight(16).Width(width)
-	})
+	badge.label, badge.color, badge.hint = label, color, hint
+	badge.width = canvas.TextWidthWeight(label, metrics.FontSizeS, gfx.WeightMedium) + 2
+	return badge, true
 }
 
-func (state *State) paintDesktopFullscreenControls(canvas *gfx.Canvas, view *desktopView, area gfx.Rect) {
+// paintDesktopLatency draws the badge in the rectangle the status strip reserved
+// for it: the RTT in the sample's color over a wash of it, with the sample time
+// as the hover hint. The same identity the overlay and chromeless presentations
+// use names the badge.
+func (state *State) paintDesktopLatency(canvas *gfx.Canvas, bounds gfx.Rect, badge desktopLatencyUI, id gfx.ID) {
+	canvas.Rounded(bounds, 4, withAlpha(badge.color, 0.14))
+	canvas.Label(badge.label, gfx.Rect{X: bounds.X + 6, Y: bounds.Y, Width: badge.width, Height: bounds.Height},
+		gfx.TextStyle{Size: metrics.FontSizeS, Weight: gfx.WeightMedium, Color: badge.color})
+	canvas.HitWithOptions(id, bounds, badge.label,
+		gfx.HitOptions{Role: gfx.RoleStatus, SkipFocus: true, Hint: badge.hint})
+}
+
+func (state *State) paintDesktopFullscreenControls(canvas *gfx.Canvas, view *desktopView, session *Session, area gfx.Rect) {
 	canvas.PushLayer(popupLayer)
 	defer canvas.PopLayer()
 	m := state.messages.Desktop
@@ -58,22 +82,22 @@ func (state *State) paintDesktopFullscreenControls(canvas *gfx.Canvas, view *des
 	canvas.RoundedBorder(bar, radius.item, 1, state.pal.line, withAlpha(state.pal.shell, 0.95))
 	button := gfx.Rect{X: bar.X + 4, Y: bar.Y + 4, Width: width, Height: barToolSize}
 	components.BeginButtonRow(canvas, state.theme, button).Size(components.ButtonSizeXSmall).Paint(
-		components.ButtonAction{ID: hitDesktopFullscreen, Label: label, Variant: components.ButtonGhost})
+		components.ButtonAction{ID: state.paneIdentity(session, hitDesktopFullscreen), Label: label, Variant: components.ButtonGhost})
 	capture := gfx.Rect{X: button.X + button.Width + 4, Y: button.Y, Width: barToolSize, Height: barToolSize}
 	captureHint, style := fmt.Sprintf(m.TipCapture, desktopEscapeChord), iconButtonActive
 	if view.released {
 		captureHint, style = fmt.Sprintf(m.TipRelease, desktopEscapeChord), iconButtonQuiet
 	}
 
-	state.paintIconButton(canvas, hitDesktopCapture, iconKeyboard, capture, captureHint, view.ended, style, state.pal.shell)
+	state.paintIconButton(canvas, state.paneIdentity(session, hitDesktopCapture), iconKeyboard, capture, captureHint, view.ended, style, state.pal.shell)
 	if latency != "" {
 		bounds := gfx.Rect{X: capture.X + capture.Width + 4, Y: button.Y, Width: bar.Width - (capture.X - bar.X) - capture.Width - 8, Height: barToolSize}
 		canvas.Label(latency, bounds, gfx.TextStyle{Size: metrics.FontSizeS, Weight: gfx.WeightMedium, Color: color})
-		canvas.HitWithOptions(hitDesktopLatency, bounds, latency, gfx.HitOptions{Hint: hint})
+		canvas.HitWithOptions(state.paneIdentity(session, hitDesktopLatency), bounds, latency, gfx.HitOptions{Hint: hint})
 	}
 }
 
-func (state *State) paintChromelessLatency(canvas *gfx.Canvas, view *desktopView, area gfx.Rect) {
+func (state *State) paintChromelessLatency(canvas *gfx.Canvas, view *desktopView, session *Session, area gfx.Rect) {
 	if !state.terminalShowLatency {
 		return
 	}
@@ -88,5 +112,5 @@ func (state *State) paintChromelessLatency(canvas *gfx.Canvas, view *desktopView
 	canvas.RoundedBorder(bounds, radius.item, 1, state.pal.line, withAlpha(state.pal.shell, 0.95))
 	canvas.Label(label, gfx.Rect{X: bounds.X + 8, Y: bounds.Y, Width: bounds.Width - 16, Height: bounds.Height},
 		gfx.TextStyle{Size: metrics.FontSizeS, Weight: gfx.WeightMedium, Color: color})
-	canvas.HitWithOptions(hitDesktopLatency, bounds, label, gfx.HitOptions{Role: gfx.RoleStatus, SkipFocus: true, Hint: hint})
+	canvas.HitWithOptions(state.paneIdentity(session, hitDesktopLatency), bounds, label, gfx.HitOptions{Role: gfx.RoleStatus, SkipFocus: true, Hint: hint})
 }

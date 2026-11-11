@@ -12,8 +12,11 @@ import "github.com/vivaui/viva/gfx"
 //	var hitProxyAdd = tree.ID(proxiesHits, "add")
 //	var hitProxyRows = tree.Sub(proxiesHits, tree.Name("rows"))   // hitProxyRows.At(i)
 //
-// An embedded session page is mounted in the pane that paints it with
-// tree.Mount, so the same controls are different identities in different panes.
+// The hand-painted controls of a session pane (a connection page's buttons, a
+// remote desktop's controls) keep the application's identities, and a split
+// mounts them in the pane that paints them with tree.Mount, so the same controls
+// are different identities in different panes. Page-declared elements need no
+// mounting: their part names them.
 var tree gfx.Tree
 
 // Tree is the identity tree of the workbench's controls, for the window that paints
@@ -36,14 +39,12 @@ var (
 	connHits = tree.Sub(shellHits, tree.Name("connection"))
 )
 
-// Where an embedded session page is painted. Every pane paints the same page with
-// the same controls; mounting it in the pane's place makes them that pane's own
-// identities (see Tree.Mount), and the context panel is a mount of its own.
+// Where the hand-painted controls of a session pane are mounted. The pane's body
+// is part of the workbench page, but its buttons keep the application identities
+// so the central dispatcher can act on them; mounting makes them that pane's own.
 var (
-	panesHits     = tree.Feature("panes")
-	contextMount  = tree.Feature("context")
-	fileTabsHits  = tree.Feature("file-tabs")
-	filePagesHits = tree.Feature("file-pages")
+	panesHits    = tree.Feature("panes")
+	fileTabsHits = tree.Feature("file-tabs")
 
 	fileTabList      = tree.Sub(fileTabsHits, tree.Name("tab"))
 	fileTabCloseList = tree.Sub(fileTabsHits, tree.Name("tab-close"))
@@ -57,18 +58,16 @@ func sftpFileTabCloseID(sessionID uint32) gfx.ID {
 	return fileTabCloseList.At(int(sessionID))
 }
 
-func sftpWindowMount(window *sftpWindow) gfx.Scope {
-	return tree.Sub(filePagesHits, gfx.Index(int(window.session.ID)))
-}
-
-// paneMount is the place the page of a session is mounted at when it is painted
-// in one of several panes.
+// paneMount is the place a session pane's hand-painted controls are mounted at
+// when its body is painted in one of several panes.
 func paneMount(session *Session) gfx.Scope {
 	return tree.Sub(panesHits, gfx.Index(int(session.paneSlot)))
 }
 
-// contextID is the identity a control of the files panel has in the window.
-func contextID(id gfx.ID) gfx.ID { return tree.MountID(contextMount, id) }
+// contextID is the identity a control of the files panel has in the window. The
+// panel is part of the workbench page, so a control's identity is its own: the
+// helper stays for the tests that name the panel's controls.
+func contextID(id gfx.ID) gfx.ID { return id }
 
 // item is the number of the list item an identity names, or zero for a control.
 func item(id gfx.ID) int {

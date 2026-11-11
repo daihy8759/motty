@@ -183,7 +183,6 @@ var (
 	hitHostGroupItemList  = tree.Sub(shellHits, tree.Name("host-group-item"))
 	hitHostFilterList     = tree.Sub(shellHits, tree.Name("host-filter"))
 	hitHostFilterMenuList = tree.Sub(shellHits, tree.Name("host-filter-menu-item"))
-	hitHostGroupRowList   = tree.Sub(shellHits, tree.Name("host-group-row"))
 	hitHostGroupOpenList  = tree.Sub(shellHits, tree.Name("host-group-open"))
 	// A top-level chip's chevron opens the menu of its nested groups.
 	hitHostFilterChevronList = tree.Sub(shellHits, tree.Name("host-filter-chevron"))
@@ -225,95 +224,25 @@ var (
 	hitForwardHostTrigger           = tree.ID(forwardsHits, "forward-host-trigger")
 	hitForwardHostScroll            = tree.ID(forwardsHits, "forward-host-scroll")
 	hitForwardHostPickerScope       = tree.ID(forwardsHits, "forward-host-picker-scope")
-	hitForwardModeLocal             = tree.ID(forwardsHits, "forward-mode-local")
-	hitForwardModeSOCKS5            = tree.ID(forwardsHits, "forward-mode-socks5")
-	hitForwardModeHTTPConnect       = tree.ID(forwardsHits, "forward-mode-http-connect")
-	hitForwardModeRemote            = tree.ID(forwardsHits, "forward-mode-remote")
 	hitForwardRowList               = tree.Sub(forwardsHits, tree.Name("forward-row"))
 	hitForwardHostItemList          = tree.Sub(forwardsHits, tree.Name("forward-host-item"))
 )
 
 // Settings: its explicit choices.
 var (
-	hitSettingsLanguageEnglish     = tree.ID(settingsHits, "settings-language-english")
-	hitSettingsLanguageChinese     = tree.ID(settingsHits, "settings-language-chinese")
-	hitSettingsLanguageTraditional = tree.ID(settingsHits, "settings-language-traditional")
-	hitSettingsAppearanceSystem    = tree.ID(settingsHits, "settings-appearance-system")
-	hitSettingsAppearanceDark      = tree.ID(settingsHits, "settings-appearance-dark")
-	hitSettingsAppearanceLight     = tree.ID(settingsHits, "settings-appearance-light")
-	hitSettingsTextSmall           = tree.ID(settingsHits, "settings-text-small")
-	hitSettingsTextRegular         = tree.ID(settingsHits, "settings-text-regular")
-	hitSettingsTextLarge           = tree.ID(settingsHits, "settings-text-large")
-	hitSettingsNetworkSystem       = tree.ID(settingsHits, "settings-network-system")
-	hitSettingsNetworkDirect       = tree.ID(settingsHits, "settings-network-direct")
-	hitSettingsToolbarLeft         = tree.ID(settingsHits, "settings-toolbar-left")
-	hitSettingsToolbarRight        = tree.ID(settingsHits, "settings-toolbar-right")
-	hitSettingsCloseTray           = tree.ID(settingsHits, "settings-close-tray")
-	hitSettingsCloseQuit           = tree.ID(settingsHits, "settings-close-quit")
-	hitSettingsRelaunchRaise       = tree.ID(settingsHits, "settings-relaunch-raise")
-	hitSettingsRelaunchNewWindow   = tree.ID(settingsHits, "settings-relaunch-new-window")
-	hitSettingsOptionText          = tree.ID(settingsHits, "settings-option-text")
-	hitSettingsOptionMeta          = tree.ID(settingsHits, "settings-option-meta")
-	hitSettingsFontSizeDown        = tree.ID(settingsHits, "settings-font-size-down")
-	hitSettingsFontSizeReset       = tree.ID(settingsHits, "settings-font-size-reset")
-	hitSettingsFontSizeUp          = tree.ID(settingsHits, "settings-font-size-up")
-	hitSettingsPadCompact          = tree.ID(settingsHits, "settings-pad-compact")
-	hitSettingsPadNormal           = tree.ID(settingsHits, "settings-pad-normal")
-	hitSettingsPadRoomy            = tree.ID(settingsHits, "settings-pad-roomy")
-	hitSettingsLineHeightCompact   = tree.ID(settingsHits, "settings-line-height-compact")
-	hitSettingsLineHeightNormal    = tree.ID(settingsHits, "settings-line-height-normal")
-	hitSettingsLineHeightRoomy     = tree.ID(settingsHits, "settings-line-height-roomy")
-	hitSettingsIntenseBoth         = tree.ID(settingsHits, "settings-intense-both")
-	hitSettingsIntenseBright       = tree.ID(settingsHits, "settings-intense-bright")
-	hitSettingsIntenseBold         = tree.ID(settingsHits, "settings-intense-bold")
-	hitSettingsIntensePlain        = tree.ID(settingsHits, "settings-intense-plain")
-	hitSettingsGutterOff           = tree.ID(settingsHits, "settings-gutter-off")
-	hitSettingsGutterNumbers       = tree.ID(settingsHits, "settings-gutter-numbers")
-	hitSettingsGutterTime          = tree.ID(settingsHits, "settings-gutter-time")
-	hitSettingsGutterBoth          = tree.ID(settingsHits, "settings-gutter-both")
-	hitSettingsScrollback1000      = tree.ID(settingsHits, "settings-scrollback1000")
-	hitSettingsScrollback5000      = tree.ID(settingsHits, "settings-scrollback5000")
-	hitSettingsScrollback10000     = tree.ID(settingsHits, "settings-scrollback10000")
-	hitSettingsTimeout5            = tree.ID(settingsHits, "settings-timeout5")
-	hitSettingsTimeout10           = tree.ID(settingsHits, "settings-timeout10")
-	hitSettingsTimeout30           = tree.ID(settingsHits, "settings-timeout30")
-	hitSettingsKeepAliveOff        = tree.ID(settingsHits, "settings-keep-alive-off")
-	hitSettingsKeepAlive30         = tree.ID(settingsHits, "settings-keep-alive30")
-	hitSettingsKeepAlive60         = tree.ID(settingsHits, "settings-keep-alive60")
-	hitSettingsReconnectOff        = tree.ID(settingsHits, "settings-reconnect-off")
-	hitSettingsReconnectThree      = tree.ID(settingsHits, "settings-reconnect-three")
-	hitSettingsReconnectForever    = tree.ID(settingsHits, "settings-reconnect-forever")
-	hitSettingsClipboardBlock      = tree.ID(settingsHits, "settings-clipboard-block")
-	hitSettingsCursorToggle        = tree.ID(settingsHits, "settings-cursor-blink")
-	hitSettingsCursorThin          = tree.ID(settingsHits, "settings-cursor-thin")
-	hitSettingsCursorNormal        = tree.ID(settingsHits, "settings-cursor-normal")
-	hitSettingsCursorThick         = tree.ID(settingsHits, "settings-cursor-thick")
-	hitSettingsCursorBlock         = tree.ID(settingsHits, "settings-cursor-shape-block")
-	hitSettingsCursorBar           = tree.ID(settingsHits, "settings-cursor-shape-bar")
-	hitSettingsCursorUnderline     = tree.ID(settingsHits, "settings-cursor-shape-underline")
-	hitSettingsCopyOnSelect        = tree.ID(settingsHits, "settings-copy-on-select")
-	hitSettingsWordSeparators      = tree.ID(settingsHits, "settings-word-separators")
-	hitSettingsRightClickPaste     = tree.ID(settingsHits, "settings-right-click-paste")
-	hitSettingsInputClick          = tree.ID(settingsHits, "settings-input-click")
-	hitSettingsTabTitle            = tree.ID(settingsHits, "settings-tab-title")
-	hitSettingsTabConnection       = tree.ID(settingsHits, "settings-tab-connection")
-	hitSettingsTabDirectory        = tree.ID(settingsHits, "settings-tab-directory")
-	hitSettingsLatencyToggle       = tree.ID(settingsHits, "settings-latency")
-	hitSettingsLinkPlainClick      = tree.ID(settingsHits, "settings-link-plain-click")
-	hitSettingsClipboardAsk        = tree.ID(settingsHits, "settings-clipboard-ask")
-	hitSettingsClipboardAllow      = tree.ID(settingsHits, "settings-clipboard-allow")
-	hitSettingsRestoreActive       = tree.ID(settingsHits, "settings-restore-active")
-	hitSettingsAgentSystem         = tree.ID(settingsHits, "settings-agent-system")
-	hitSettingsAgentOnePassword    = tree.ID(settingsHits, "settings-agent-1password")
-	hitSettingsAgentBitwarden      = tree.ID(settingsHits, "settings-agent-bitwarden")
-	hitSettingsAgentCustom         = tree.ID(settingsHits, "settings-agent-custom")
-	hitSettingsRestoreOff          = tree.ID(settingsHits, "settings-restore-off")
-	hitSettingsRestoreAll          = tree.ID(settingsHits, "settings-restore-all")
-	hitSettingsLocalStartRemember  = tree.ID(settingsHits, "settings-local-start-remember")
-	hitSettingsLocalStartHome      = tree.ID(settingsHits, "settings-local-start-home")
-	hitSettingsShareToggle         = tree.ID(settingsHits, "settings-share")
-	hitSettingsVaultForget         = tree.ID(settingsHits, "settings-vault-forget")
-	hitSettingsVaultConvert        = tree.ID(settingsHits, "settings-vault-convert")
+	hitSettingsFontSizeDown    = tree.ID(settingsHits, "settings-font-size-down")
+	hitSettingsFontSizeReset   = tree.ID(settingsHits, "settings-font-size-reset")
+	hitSettingsFontSizeUp      = tree.ID(settingsHits, "settings-font-size-up")
+	hitSettingsCursorToggle    = tree.ID(settingsHits, "settings-cursor-blink")
+	hitSettingsCopyOnSelect    = tree.ID(settingsHits, "settings-copy-on-select")
+	hitSettingsWordSeparators  = tree.ID(settingsHits, "settings-word-separators")
+	hitSettingsRightClickPaste = tree.ID(settingsHits, "settings-right-click-paste")
+	hitSettingsInputClick      = tree.ID(settingsHits, "settings-input-click")
+	hitSettingsLatencyToggle   = tree.ID(settingsHits, "settings-latency")
+	hitSettingsLinkPlainClick  = tree.ID(settingsHits, "settings-link-plain-click")
+	hitSettingsShareToggle     = tree.ID(settingsHits, "settings-share")
+	hitSettingsVaultForget     = tree.ID(settingsHits, "settings-vault-forget")
+	hitSettingsVaultConvert    = tree.ID(settingsHits, "settings-vault-convert")
 )
 
 // Jump-host routing: its page and dialog.
@@ -367,7 +296,6 @@ var (
 	hitSFTPUp              = tree.ID(sftpHits, "sftp-up")
 	hitSFTPRefresh         = tree.ID(sftpHits, "sftp-refresh")
 	hitSFTPDownload        = tree.ID(sftpHits, "sftp-download")
-	hitSFTPCancel          = tree.ID(sftpHits, "sftp-cancel")
 	hitSFTPUpload          = tree.ID(sftpHits, "sftp-upload")
 	hitSFTPUploadDirectory = tree.ID(sftpHits, "sftp-upload-directory")
 	hitSFTPNewDirectory    = tree.ID(sftpHits, "sftp-new-directory")
@@ -382,9 +310,6 @@ var (
 	hitSFTPDialogSubmit    = tree.ID(sftpHits, "sftp-dialog-submit")
 	hitSFTPDialogField     = tree.ID(sftpHits, "sftp-dialog-field")
 	hitSFTPEditor          = tree.ID(sftpHits, "sftp-editor")
-	hitSFTPEditSave        = tree.ID(sftpHits, "sftp-edit-save")
-	hitSFTPEditBack        = tree.ID(sftpHits, "sftp-edit-back")
-	hitSFTPEditReload      = tree.ID(sftpHits, "sftp-edit-reload")
 	hitSFTPBreadcrumbList  = tree.Sub(sftpHits, tree.Name("sftp-breadcrumb"))
 	hitSFTPEntryList       = tree.Sub(sftpHits, tree.Name("sftp-entry"))
 	hitSFTPColumnList      = tree.Sub(sftpHits, tree.Name("sftp-column"))
@@ -515,7 +440,6 @@ type State struct {
 	fileTabOptions   []components.TabOption
 	windowTabOptions []components.TabOption
 	fileTabStrip     tabStrip
-	fileManagerView  gfx.Canvas
 	fileManagerRect  gfx.Rect
 	remoteWindows    []*remoteToolsWindow
 	remoteWindow     *remoteToolsWindow // set only on a native tool window's isolated presenter
@@ -558,11 +482,13 @@ type State struct {
 	// workspacePaneTabLabels is the tab strip's labels, reused every frame.
 	workspacePaneTabLabels []string
 	tabStrip               tabStrip
+	windowBarScroll        windowBarScroll
 	tabOrientation         tabOrientation
 	tabNumbers             bool // each tab shows its place number next to the name
 	verticalTabs           verticalTabs
 	tabMenu                tabMenu
 	hostMenu               hostMenu
+	hostPrivacy            hostPrivacyState
 	localShellPicker       localShellPicker
 	snippetMenu            snippetMenu
 	sftpMenu               sftpMenu
@@ -601,6 +527,8 @@ type State struct {
 	hostActionIDs      []uint32
 	hostGroups         []hostGroup
 	hostTreeRows       []hostTreeRow
+	hostList           hostCatalogList
+	hostGridDrag       hostGridDrag
 	hostsScroll        float32
 	tabDrag            tabDrag
 	tabPreview         tabPreview
@@ -623,6 +551,7 @@ type State struct {
 	keysMenu          bool
 	keysAddButton     gfx.Rect
 	hostsBounds       gfx.Rect // the hosts page as last painted; the menus anchor to it
+	hostsGridViewport gfx.Rect // the card grid's absolute viewport as last painted
 	terminalMenu      terminalMenu
 	hostGroupEditor   text.Editor
 	groupActions      hostGroupActions
@@ -642,30 +571,30 @@ type State struct {
 	sessionImport     sessionImportPreview
 	mobaEncoding      mobaEncodingPrompt
 	knownHosts        knownHostsView
-	knownHostsLayout  ui.View
-	settingsRow       ui.View
-	partLayout        ui.View // a dialog body, a host card or a group header: one at a time
 	// selectedWorkspaceTemplateID is the template the library will apply next.
 	// It is view state only and is not persisted.
 	selectedWorkspaceTemplateID   string
 	workspaceLibraryExpanded      bool
 	workspaceLibraryPointerID     string
-	workspaceLibraryLayout        ui.View
 	workspaceLibraryScroll        float32
 	workspaceLibraryBounds        gfx.Rect
 	workspaceLibraryContent       float32
 	workspaceTemplateMoreBounds   []gfx.Rect
 	workspaceTemplateMenu         workspaceTemplateMenu
 	workspaceTemplateDelete       workspaceTemplateDelete
+	workspaceCommandEdit          workspaceCommandInline
 	workspaceTemplateFocusPending gfx.ID
 	workspaceDraft                workspaceDraft
-	workspaceHeaderLayout         ui.View
-	workspaceHeaderMenu           workspaceHeaderMenuState
-	workspacePaneTools            workspacePaneTools
-	workspaceLayoutDraft          workspaceArrangement
-	workspaceCardRegions          []workspaceCardRegion
-	workspaceCardDrag             workspaceCardDrag
-	workspaceHeaderPanes          [layoutcore.MaxPanes]layoutcore.Pane
+	// workspaceHeaderPlan and workspaceHeaderSlots are what the managed
+	// workspace's header declaration leaves for its painter.
+	workspaceHeaderPlan  workspaceHeaderPlan
+	workspaceHeaderSlots workspaceHeaderPaint
+	workspaceHeaderMenu  workspaceHeaderMenuState
+	workspacePaneTools   workspacePaneTools
+	workspaceLayoutDraft workspaceArrangement
+	workspaceCardRegions []workspaceCardRegion
+	workspaceCardDrag    workspaceCardDrag
+	workspaceHeaderPanes [layoutcore.MaxPanes]layoutcore.Pane
 	// temporaryWorkspaceLayouts marks workspaces opened from the temporary
 	// selector and keeps the column count needed to save their current shape.
 	temporaryWorkspaceLayouts map[layoutcore.WorkspaceID]layoutcore.LayoutSpec
@@ -674,15 +603,13 @@ type State struct {
 	managedWorkspaceLayouts map[layoutcore.WorkspaceID]layoutcore.LayoutSpec
 	workspaceSave           workspaceSave
 
-	forwardLayout, proxyLayout, forwardDialogLayout, proxyDialogLayout ui.View // the Port Forwarding and Proxies pages and their dialogs
-	chrome                                                             chromeLayout
+	chrome chromeLayout
 
 	// iconMotions are the rows whose icon is playing the motion of a click, by
 	// hit id; the painter drops each one when its motion is over (icon_motion.go).
 	iconMotions map[gfx.ID]iconMotionRun
 
 	// area: AI panel
-	aiFlex aiFlexViews // the assistant panel's layouts, see ai_panel_paint.go
 
 	// search is the box beside Connect: typing narrows the host list, and
 	// Connect opens what it holds. visible lists the indexes into hosts that
@@ -709,6 +636,9 @@ type State struct {
 	networkProxy        networkProxyMode
 	lookupSystemProxy   func() systemproxy.Settings
 	stopAppearanceWatch func()
+	stopLinkWatch       func()
+	linkPending         atomic.Bool
+	linkUp              atomic.Bool
 	terminalOption      terminalOptionMode
 	recentConnectSort   bool
 	recentConnections   map[string]time.Time
@@ -716,11 +646,16 @@ type State struct {
 	localStart          localStartPolicy
 	lastLocalDirectory  string // where a local shell last was; a new local terminal starts there when no local tab is in front
 	localShellMenu      localShellSelect
-	editorMenu          editorSelect
-	terminalFontSize    float32
-	terminalFontFace    gfx.MonoFace
-	terminalLineHeight  lineHeight
-	terminalScrollback  int
+	// hiddenShells are the shells the pickers leave out, by their choice path.
+	// An entry whose shell this computer stops detecting simply sits unseen:
+	// lists follow detection, so an uninstalled shell is gone either way, and
+	// one that returns comes back hidden until the eye opens it again.
+	hiddenShells       []string
+	editorMenu         editorSelect
+	terminalFontSize   float32
+	terminalFontFace   gfx.MonoFace
+	terminalLineHeight lineHeight
+	terminalScrollback int
 	// textScale is the interface text size the user chose: the scale the whole
 	// window's text is drawn at, apart from the terminal's own font size.
 	textScale           textScale
@@ -842,18 +777,29 @@ type State struct {
 	toolbarDock      toolbarDockUI
 	sftpColumnEditor sftpColumnSettingsUI
 
-	// area: settings
-	settingsPage ui.View // the whole settings workspace
-
 	// contextRect is where the last paint put the side panel (empty when there
-	// was none), so wheel events can tell which view they are over.
-	contextRect      gfx.Rect
-	shortcuts        shortcutMap
-	shortcutCapture  shortcutAction
-	shortcutError    string
-	reconnectWaiters int
-	pal              *palette
-	theme            gfx.Theme
+	// was none), so wheel events can tell which view they are over. The panel is
+	// declared inside the workbench page now, so contextPanelScope is the page
+	// container its elements live in, and contextPanelMode says which view it
+	// declared. contextDrawer is the page's drawer chrome while the panel is a
+	// narrow overlay; its description is kept for the paint that opens it.
+	contextRect              gfx.Rect
+	contextPanelScope        gfx.Scope
+	contextPanelMode         contextPanelMode
+	contextDrawer            components.Drawer
+	contextDrawerDescription string
+	contextDrawerOpen        bool
+	// The panel's Draw callbacks are method values made once: a paint that made
+	// them again would allocate.
+	contextPanelDraw   func(*ui.DrawContext)
+	contextDrawerBegin func(*ui.DrawContext)
+	contextDrawerEnd   func(*ui.DrawContext)
+	shortcuts          shortcutMap
+	shortcutCapture    shortcutAction
+	shortcutError      string
+	reconnectWaiters   int
+	pal                *palette
+	theme              gfx.Theme
 	// termPal is the terminal's own look: pal with the chosen color scheme and
 	// the highlight rules applied. termEpoch counts its rebuilds.
 	termPal   palette
@@ -868,13 +814,15 @@ type State struct {
 	// schemeFilter is the drawer's search box. View state, so it is not kept.
 	schemeFilter text.Editor
 	// schemeBrowserOpen shows the complete collection in a drawer. The drawer's
-	// view and body outlive a paint so wheel handling can use the last layout.
-	schemeBrowserOpen  bool
-	schemeDrawerView   ui.View
-	schemeDrawerBody   gfx.Rect
-	schemeDrawerFilter string
-	schemeDrawerReset  bool
-	terminalPad        terminalPad
+	// page and body outlive a paint so wheel handling can use the last layout.
+	schemeBrowserOpen bool
+	scheme            schemeUI
+	// empty is the shared empty-state slots the catalog sections paint.
+	empty emptyStateUI
+	// sectionBodies are the catalog sections' declared slots, painted once the
+	// workbench page has laid them out.
+	sectionBodies sectionBodies
+	terminalPad   terminalPad
 	// terminalGutter is the per-line number/time strip; wallClock overrides the
 	// time source it stamps lines with.
 	terminalGutter terminalGutter
@@ -920,41 +868,30 @@ type State struct {
 	snippets        snippetsUI
 	snippetSend     snippetSender
 	history         historyUI
-	historyLayout   ui.View
 	completion      completionUI
 	// broadcast is the tab whose panes type together, or zero.
 	broadcast layoutcore.WorkspaceID
 
 	// wrapped is scratch for text broken into lines while painting.
-	wrapped          [failureLines]string
-	restoredView     ui.View
-	connectionLayout ui.View
-	// filesLayout lays out the files panel, its editor and the panel before it has a list.
-	filesLayout ui.View
+	wrapped [failureLines]string
+	// sessionBodies is the declaration scratch of each session pane, indexed by
+	// pane slot: a split declares every visible pane's connection, restored or
+	// desktop body in the workbench page in one paint.
+	sessionBodies [maxRestoredSessions + 1]sessionPaneUI
 	// area: terminal and workspace panes
-	terminalPageLayout   ui.View
-	fontPickerListLayout ui.View
-	fontPickerLayout     ui.View // the font picker's list and sample
-	paneChrome           ui.View // an empty split pane and other one-at-a-time chrome
 
 	// area: files panel and transfers
-	filesList   ui.View
-	filesHeader ui.View
-	filesPopup  ui.View
-	// filesRowIcons and filesRowBoxes are scratch for the visible rows of the list.
+	// filesRowIcons is scratch for the visible rows of the list.
 	filesRowIcons []ui.Box
-	filesRowBoxes []ui.Box
 
 	// area: keychain, palette, import and the rest
-	railLayout            ui.View
-	keysLayout            ui.View
-	paletteListLayout     ui.View
-	paletteLayout         ui.View
-	importLayout          ui.View
-	knownHostsTableLayout ui.View
-	hostToggleLayout      ui.View
-	hostGridLayout        ui.View
-	hostGridItems         []hostGridItem
+	// hostGridPaint is the card grid's declaration: one control paints the cards
+	// and group headers, including the reorder surface around its items.
+	hostGridPaint hostGridPaintState
+	// hostGridHandlers owns the grid control's page identity. The cards and headers
+	// keep their application hit identities, so clicks still reach the central
+	// dispatch; the control gives the grid its focus and drag routing.
+	hostGridHandlers ui.Handlers
 	// dev is the development-only component gallery's state; a release build
 	// keeps none of it (see debug.go and debug_release.go).
 	dev devState
@@ -965,8 +902,6 @@ type State struct {
 	// paint saw it; zero before the first.
 	pixelScale            float32
 	cellWidth, cellHeight float32
-	paneCanvas            gfx.Canvas
-	contextCanvas         gfx.Canvas
 	panes                 []Pane
 	paneSplits            []PaneSplit
 	terminalDrop          terminalDrop // the terminal that files being dragged over would be uploaded from
@@ -1002,13 +937,14 @@ type State struct {
 	loginExpectStep          loginExpectStepState
 	credentialForm           credentialUI
 	commandPalette           commandPalette
+	// keyPassphraseField is the slot the passphrase dialog's field is painted
+	// into, and keyPassphraseDraw the painter kept so a repaint allocates none.
+	keyPassphraseField ui.Box
+	keyPassphraseDraw  func(*ui.DrawContext)
 	// sessionLogs is this window's local connection journal; it is off only
 	// when the user disabled metadata capture in the settings.
 	sessionLogs    sessionLogs
 	sessionLogsOff bool
-	// sessionLogsLayout is the session-log page's flex layout, reused so a paint
-	// does not allocate its nodes.
-	sessionLogsLayout ui.View
 	// ai is the built-in assistant; see ai_state.go.
 	ai                 aiState
 	localProxyPort     uint16
@@ -1043,6 +979,7 @@ func (state *State) Close() {
 	state.closeRemoteContainerDetails()
 	state.remote.serial++
 	state.closeDashboard()
+	state.closeFontPickerPage()
 	state.flushTerminalDirectories()
 	state.closeRemoteToolsWindows()
 	state.closeFileWindows()
@@ -1064,6 +1001,7 @@ func (state *State) Close() {
 	if state.stopAppearanceWatch != nil {
 		state.stopAppearanceWatch()
 	}
+	state.stopNetworkWatch()
 	state.closeWindowChrome()
 	state.closeAI()
 	state.closeHistory()
@@ -1104,27 +1042,29 @@ func (state *State) Close() {
 func New(options Options) *State {
 	messages := i18n.For(i18n.English)
 	state := &State{
-		notes:                 notesUI{noteDraft: &noteDraft{}},
-		options:               options.withDefaults(),
-		windowID:              max(1, options.WindowID),
-		revealResults:         make(chan revealResult, 1),
-		nextSessionID:         1,
-		nextHostID:            1,
-		nextIdentityID:        1,
-		nextForwardID:         1,
-		forwardStarts:         make(chan forwardStartResult, 16),
-		nextProxyID:           1,
-		activeSection:         sectionHosts,
-		language:              i18n.English,
-		messages:              messages,
-		status:                messages.StatusReadyIdle,
-		viewport:              gfx.Size{Width: 1400, Height: 900},
-		terminalFontSize:      termFontSize,
-		terminalScrollback:    scrollbackLines,
-		tabTitleMode:          tabTitleConnection,
-		startupReuse:          true,
-		startupEnabled:        true,
-		hostCatalog:           hostCatalog{systemUser: systemLogin(), connectionTimeout: 10 * time.Second},
+		notes:              notesUI{noteDraft: &noteDraft{}},
+		options:            options.withDefaults(),
+		windowID:           max(1, options.WindowID),
+		revealResults:      make(chan revealResult, 1),
+		nextSessionID:      1,
+		nextHostID:         1,
+		nextIdentityID:     1,
+		nextForwardID:      1,
+		forwardStarts:      make(chan forwardStartResult, 16),
+		nextProxyID:        1,
+		activeSection:      sectionHosts,
+		language:           i18n.English,
+		messages:           messages,
+		status:             messages.StatusReadyIdle,
+		viewport:           gfx.Size{Width: 1400, Height: 900},
+		terminalFontSize:   termFontSize,
+		terminalScrollback: scrollbackLines,
+		tabTitleMode:       tabTitleConnection,
+		startupReuse:       true,
+		startupEnabled:     true,
+		// The defaults a fresh window starts from, before the saved state is
+		// read: the same ones a state file that says nothing gets.
+		hostCatalog:           hostCatalog{systemUser: systemLogin(), connectionTimeout: 10 * time.Second, connectionKeepAlive: defaultConnectionKeepAlive},
 		sftpParallel:          DefaultSFTPParallel,
 		sftpColumns:           defaultSFTPColumnPreferences(),
 		sftpDownloadDirectory: defaultDownloadDirectory(),
@@ -1310,6 +1250,9 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 	if state.noteExit != nil {
 		return nil
 	}
+	if hit == hitWorkspaceInlineField && state.workspaceCommandEdit.template != "" && state.modal == modalNone && state.activeSection == sectionWorkspaces {
+		return &state.workspaceCommandEdit.editor
+	}
 	if editor := state.noteEditor(hit); editor != nil {
 		return editor
 	}
@@ -1493,6 +1436,13 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 			return &state.history.search
 		}
 	case modalWorkspaceDraft:
+		if index, ok := hit.In(hitWorkspaceCommandField); ok {
+			for _, host := range state.workspaceHosts() {
+				if int(host.ID) == index && workspaceCommandHost(host) && state.workspaceDraft.selected[host.CatalogID] {
+					return state.workspaceDraft.commandEditor(host.CatalogID)
+				}
+			}
+		}
 		switch hit {
 		case hitWorkspaceDraftName:
 			return &state.workspaceDraft.name
@@ -1546,6 +1496,12 @@ func (state *State) Click(id gfx.ID) {
 // not make on the control itself, such as a command palette entry standing for a
 // sidebar row: that row's icon stays still, because the row was not chosen.
 func (state *State) click(id gfx.ID, feedback bool) {
+	if state.clickWorkspaceInline(id) {
+		return
+	}
+	if !workspaceInlineOwns(id) {
+		state.workspaceCommandEdit = workspaceCommandInline{}
+	}
 	if feedback {
 		state.pressIconMotion(id)
 	}
@@ -1666,7 +1622,7 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		state.clickForm(id)
 		return
 	case modalRemoteTools:
-		state.clickRemoteTools(id)
+		// Its controls are page elements and act during the page's paint.
 		return
 	case modalToolbarSettings:
 		state.clickToolbarSettings(id)
@@ -1739,6 +1695,9 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		state.clickHostGroupActions(id) || state.clickTerminalMenu(id) || state.clickTabMenu(id) || state.clickHostMenu(id) || state.clickLocalShellPicker(id) || state.clickSnippetMenu(id) || state.clickSFTPMenu(id) {
 		return
 	}
+	if state.clickWorkspaceCommand(id) {
+		return
+	}
 	if state.clickTerminalFind(id) {
 		return
 	}
@@ -1749,9 +1708,6 @@ func (state *State) click(id gfx.ID, feedback bool) {
 	if id == hitLocalProxyOpen {
 		session, _ := state.sessionByIDPointer(state.activeSessionID)
 		state.openLocalProxy(session)
-		return
-	}
-	if state.clickVerticalTabGroup(id) {
 		return
 	}
 	if state.clickRemoteStats(id) {
@@ -1896,11 +1852,6 @@ func (state *State) click(id gfx.ID, feedback bool) {
 	case id == hitPaneRename:
 		state.renameActiveTerminal()
 	case state.clickNewTabPage(id), state.clickConnectPick(id):
-	case id == hitPaneChooseHost:
-		state.pendingWorkspace = state.deck.ActiveWorkspace()
-		state.pendingPane = state.deck.ActivePane(state.pendingWorkspace)
-		state.activeSection = sectionHosts
-		state.save()
 	case id.Scope() == hitCommandSessionList:
 		state.ActivatePane(uint32(item(id)))
 		state.save()
@@ -1935,9 +1886,20 @@ func (state *State) click(id gfx.ID, feedback bool) {
 	case tree.Within(id.Scope(), keysHits):
 		state.clickKeys(id)
 	case tree.Within(id.Scope(), sftpHits):
-		state.clickSFTP(id)
-	case id.Scope() == hitTerminalList:
-		// Pressing the terminal only focuses it; the runtime already did.
+		// While a file-manager tab is in front it is the only sftp view painted,
+		// so its overlays' window-named rows go to its window; otherwise the
+		// docked panel takes them.
+		if w := state.activeSFTPWindow(); w != nil && !w.closed {
+			w.click(id)
+		} else {
+			state.clickSFTP(id)
+		}
+	case tree.Within(id.Scope(), sftpWindowHits):
+		// The hand-painted controls of the file-manager tab keep the window's
+		// own identities; the workbench page routes the press to its window.
+		if w := state.activeSFTPWindow(); w != nil && !w.closed {
+			w.click(id)
+		}
 	case id.Scope() == hitTabCloseList:
 		state.closeWorkspace(layoutcore.WorkspaceID(uint32(item(id))))
 	case id.Scope() == hitTabList:
@@ -1968,6 +1930,9 @@ func (state *State) openNewWindow() {
 // closeSession ends a tab: its connection and shell are released and the
 // neighbouring tab, or the host list when it was the last, takes over.
 func (state *State) closeSession(id uint32) {
+	// The tab may be the last live one: after it is gone the watcher has
+	// nothing left to report on.
+	defer state.syncLinkWatch()
 	if workspace, _, ok := state.deck.PaneForSession(layoutcore.SessionID(id)); ok &&
 		state.deck.Locked(workspace) && len(state.deck.Panes(workspace, nil)) == 1 {
 		state.askCloseLockedTab(workspace)
@@ -2272,21 +2237,32 @@ func (state *State) connectParsed(parsed connection) {
 	state.openHostSession(adhoc)
 }
 
-// hostForRow maps a host row's hit identity back to its host.
+// hostForRow maps a host row's hit identity back to its host. The cards and the
+// other pages name a row with hitHostList; the list view's rows are named by its
+// Tree, whose keys the page maps back to the visible rows.
 func (state *State) hostForRow(id gfx.ID) (Host, bool) {
-	if id.Scope() != hitHostList {
-		return Host{}, false
+	if id.Scope() == hitHostList {
+		return state.hostByID(uint32(item(id)))
 	}
-	return state.hostByID(uint32(item(id)))
+	if entry, ok := state.hostListRowFromHit(id); ok && entry.Kind == hostTreeHost {
+		return state.hosts[entry.HostIndex], true
+	}
+	return Host{}, false
 }
 
 // Pointer handles the pointer events the runtime does not turn into clicks. A
 // double click on a host row connects to it.
 func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 	if state.noteExit != nil {
-		return gfx.EventResult{Handled: true, Repaint: true}
+		if isNoteExitHit(event.Target) {
+			return gfx.EventResult{}
+		}
+		return gfx.EventResult{Handled: true}
 	}
 	defer state.afterEvent(&outcome)
+	if event.Kind == gfx.PointerDown && !workspaceInlineOwns(event.Target) {
+		state.workspaceCommandEdit = workspaceCommandInline{}
+	}
 	if result := state.notesPointer(event); result.Handled {
 		return result
 	}
@@ -2324,6 +2300,12 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 		defer func() { outcome.Repaint = true }()
 	}
 	if result, handled := state.verticalTabsScrollPointer(event); handled {
+		return result
+	}
+	if state.trackWindowBarScroll(event) {
+		defer func() { outcome.Repaint = true }()
+	}
+	if result, handled := state.windowBarScrollPointer(event); handled {
 		return result
 	}
 	if result := state.toolbarSettingsPointer(event); result.Handled {
@@ -2371,7 +2353,10 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 	if result, handled := state.snippetReorderPointer(event); handled {
 		return result
 	}
-	if result, handled := state.hostGroupDragPointer(event); handled {
+	if result, handled := state.hostListPointer(event); handled {
+		return result
+	}
+	if result, handled := state.hostGroupActionsPointer(event); handled {
 		return result
 	}
 	if result, handled := state.localShellPickerPointer(event); handled {
@@ -2443,12 +2428,6 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 			changed = state.activeSessionID != session.ID
 			state.ActivatePane(session.ID)
 		}
-		_, origin, viewport, embedded := state.paneEventGeometry(session.ID, event.Viewport)
-		if embedded {
-			event.X -= origin.X
-			event.Y -= origin.Y
-			event.Viewport = viewport
-		}
 		event.Target = local
 		result := state.pointer(event)
 		result.Focus = tree.MountID(mount, result.Focus)
@@ -2458,13 +2437,36 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 		}
 		return result
 	}
-	if session := state.terminalOrBarSession(event.Target); session != nil {
-		_, origin, viewport, embedded := state.paneEventGeometry(session.ID, event.Viewport)
-		if embedded {
-			event.X -= origin.X
-			event.Y -= origin.Y
-			event.Viewport = viewport
+	// The pane bodies are part of the workbench page, so their identities and
+	// coordinates are already the window's; the page routes the event. A press
+	// still makes the pane under it the active one.
+	if session := state.terminalPageSession(event.Target); session != nil {
+		changed := false
+		if event.Kind == gfx.PointerDown {
+			changed = state.activeSessionID != session.ID
+			state.ActivatePane(session.ID)
 		}
+		result := state.pointer(event)
+		result.Repaint = result.Repaint || changed
+		if changed && event.Kind == gfx.PointerDown {
+			state.save()
+		}
+		return result
+	}
+	if session := state.terminalSession(event.Target); session != nil {
+		// A remote desktop's picture names the session itself; pressing it also
+		// makes its pane the active one.
+		changed := false
+		if event.Kind == gfx.PointerDown && state.activeSection == sectionTerminal && state.modal == modalNone {
+			changed = state.activeSessionID != session.ID
+			state.ActivatePane(session.ID)
+		}
+		result := state.pointer(event)
+		result.Repaint = result.Repaint || changed
+		if changed {
+			state.save()
+		}
+		return result
 	}
 	return state.pointer(event)
 }
@@ -2484,9 +2486,6 @@ func (state *State) pointer(event gfx.PointerEvent) gfx.EventResult {
 		}
 	}
 	if result, handled := state.updateDialogPointer(event); handled {
-		return result
-	}
-	if result, handled := state.remoteProcessMenuPointer(event); handled {
 		return result
 	}
 	if result, handled := state.remoteProcessDetailsTextPointer(event); handled {
@@ -2543,25 +2542,26 @@ func (state *State) pointer(event gfx.PointerEvent) gfx.EventResult {
 	if result, handled := state.terminalFindPointer(event); handled {
 		return result
 	}
-	if result, handled := state.terminalScrollbarPointer(event); handled {
-		return result
+	if session := state.terminalPageSession(event.Target); session != nil && state.modal == modalNone && state.activeSection == sectionTerminal {
+		if result, handled := state.terminalPagePointer(session, event); handled {
+			return result
+		}
 	}
 	if session := state.terminalSession(event.Target); session != nil && state.modal == modalNone && state.activeSection == sectionTerminal {
 		if session.desk != nil {
 			return state.desktopPointer(session, event)
 		}
-		return state.terminalPointer(session, event)
 	}
 	if result, handled := state.sftpMenuPointer(event); handled {
+		return result
+	}
+	if result, handled := state.sftpRowPointer(event); handled {
 		return result
 	}
 	if result, handled := state.sftpPathPointer(event); handled {
 		return result
 	}
 	if result, handled := state.sftpListPointer(event); handled {
-		return result
-	}
-	if result, handled := state.sftpRowPointer(event); handled {
 		return result
 	}
 	return gfx.EventResult{}
@@ -2625,8 +2625,7 @@ func (state *State) Key(event gfx.KeyEvent) (outcome gfx.EventResult) {
 		return result
 	}
 	if state.tabDrag.active && event.Key == gfx.KeyEscape {
-		state.closeTabPreview()
-		state.tabDrag = tabDrag{}
+		state.cancelTabDrag()
 		return gfx.EventResult{Handled: true, Repaint: true}
 	}
 	if state.modal == modalNone {
@@ -2642,11 +2641,24 @@ func (state *State) Key(event gfx.KeyEvent) (outcome gfx.EventResult) {
 		state.ActivatePane(session.ID)
 		mount, _ = tree.MountOf(event.Target.Scope())
 		event.Target = local
+	} else if session := state.terminalPageSession(event.Target); session != nil {
+		// A terminal pane is part of the workbench page; its identity and focus
+		// are already the window's. A key there makes that pane the active one.
+		state.ActivatePane(session.ID)
 	} else if event.Target.IsZero() && state.sftpHeaderMenuOwns(state.popups.owner) {
 		// Opening an embedded menu can temporarily leave its focus trap empty.
 		// Its first keyboard-selected row still belongs to the file panel, and the
 		// row identities are already mounted where the menu was painted.
 		mount = 0
+	}
+	if state.ai.login != nil && event.Target == hitAICLILoginTerminal {
+		// The sign-in terminal is painted inside the page's dialog: its keys go
+		// to the shell, not to the page's overlay hold; Escape ends the login.
+		if event.Key == gfx.KeyEscape {
+			state.aiStopCLILogin()
+			return gfx.EventResult{Handled: true, Repaint: true}
+		}
+		return state.aiCLILoginKey(event)
 	}
 	result := state.key(event)
 	result.Focus = tree.MountID(mount, result.Focus)
@@ -2654,6 +2666,9 @@ func (state *State) Key(event gfx.KeyEvent) (outcome gfx.EventResult) {
 }
 
 func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
+	if result, handled := state.workspaceInlineKey(event); handled {
+		return result
+	}
 	if result := state.notesKey(event); result.Handled {
 		return result
 	}
@@ -2678,8 +2693,8 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 	if result, handled := state.remoteContainerDetailsKey(event); handled {
 		return result
 	}
-	if result, handled := state.remoteProcessTableKey(event); handled {
-		return result
+	if (event.Key == gfx.KeyEnter || event.Key == gfx.KeySpace) && !event.Repeat && state.clickRemoteTableSort(event.Target) {
+		return gfx.EventResult{Handled: true, Repaint: true}
 	}
 	if result := state.workspaceDraftKey(event); result.Handled {
 		return result
@@ -2721,9 +2736,6 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		return result
 	}
 	if result := state.sftpColumnSettingsKey(event); result.Handled {
-		return result
-	}
-	if result := state.remoteRefreshKey(event); result.Handled {
 		return result
 	}
 	if result, handled := state.hostTagsKey(event); handled {
@@ -2844,21 +2856,17 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		if session.desk != nil {
 			return state.desktopKey(session, event)
 		}
-		return state.terminalKey(session, event)
+	}
+	if session := state.terminalPageSession(event.Target); session != nil && state.modal == modalNone {
+		if result, handled := state.terminalPageKey(session, event); handled {
+			return result
+		}
 	}
 	if result, handled := state.settingsSearchKey(event); handled {
 		return result
 	}
 	if result, handled := state.hostsKey(event); handled {
 		return result
-	}
-	if state.modal == modalNewForward && (event.Target == hitForwardModeLocal || event.Target == hitForwardModeRemote || event.Target == hitForwardModeSOCKS5 || event.Target == hitForwardModeHTTPConnect) {
-		options := state.forwardModeOptions()
-		next, handled := components.SegmentedControlKeyDown(event.Target, options[:], components.DirectionLTR, event.Key)
-		if handled {
-			state.Click(next)
-			return gfx.EventResult{Focus: next, FocusVisible: true, Handled: true, Repaint: true}
-		}
 	}
 	if state.modal == modalNewForward && event.Key == gfx.KeyEnter && state.EditorFor(event.Target) != nil && !event.Repeat {
 		state.submitForwardDialog()

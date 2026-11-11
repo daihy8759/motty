@@ -34,7 +34,7 @@ func openInterfaceFontPickerFor(t testing.TB, state *State) {
 	t.Helper()
 	state.Click(hitSettings)
 	state.Click(hitInterfaceFontChoose)
-	waitFor(t, state, func() bool { return !state.uiFont.loading })
+	waitForPicker(t, state, func() bool { return !state.uiFont.loading })
 	paintedTexts(state)
 }
 
@@ -46,7 +46,7 @@ func TestTheInterfaceFontIsPreviewedConfirmedKeptAndRestored(t *testing.T) {
 	if state.modal != modalFontPicker || state.fonts.kind != pickInterfaceFont || !state.uiFont.loading {
 		t.Fatalf("modal %d, kind %d, loading %v", state.modal, state.fonts.kind, state.uiFont.loading)
 	}
-	waitFor(t, state, func() bool { return !state.uiFont.loading })
+	waitForPicker(t, state, func() bool { return !state.uiFont.loading })
 	_, labels := paintedTexts(state)
 	for _, want := range append([]string{state.messages.SettingsInterfaceFontDefault}, testInterfaceFonts...) {
 		if !contains(labels, want) {
@@ -59,7 +59,7 @@ func TestTheInterfaceFontIsPreviewedConfirmedKeptAndRestored(t *testing.T) {
 
 	// A click only highlights; Cancel leaves the font as it was.
 	told2 := len(*told)
-	state.Click(hitFontPickerItemList.At(2))
+	clickFontPickerRow(t, state, 2)
 	if state.modal != modalFontPicker || state.uiFont.family != "" || len(*told) != told2 {
 		t.Fatalf("a click applied the font: modal %d, family %q, told %v", state.modal, state.uiFont.family, *told)
 	}
@@ -70,7 +70,7 @@ func TestTheInterfaceFontIsPreviewedConfirmedKeptAndRestored(t *testing.T) {
 
 	// Typing narrows the list; Enter in the search takes the highlighted row.
 	state.Click(hitInterfaceFontChoose)
-	waitFor(t, state, func() bool { return !state.uiFont.loading })
+	waitForPicker(t, state, func() bool { return !state.uiFont.loading })
 	typeInto(state, hitFontPickerSearch, "yahei")
 	paintedTexts(state)
 	if len(state.fonts.filtered) != 1 {
@@ -102,7 +102,7 @@ func TestTheInterfaceFontIsPreviewedConfirmedKeptAndRestored(t *testing.T) {
 
 	// The Default row takes the family away again.
 	openInterfaceFontPickerFor(t, reloaded)
-	reloaded.Click(hitFontPickerItemList.At(0))
+	clickFontPickerRow(t, reloaded, 0)
 	reloaded.Click(hitFontPickerConfirm)
 	if reloaded.uiFont.family != "" || lastTold(secondTold) != "" {
 		t.Fatalf("the Default row left the family %q (told %v)", reloaded.uiFont.family, *secondTold)
@@ -125,11 +125,11 @@ func TestTheInterfaceFontPickerGuardsItsButtonsLikeTheTerminalFontOne(t *testing
 	if state.modal != modalFontPicker || state.uiFont.family != "" {
 		t.Fatalf("Enter confirmed while the list was being read: modal %d, family %q", state.modal, state.uiFont.family)
 	}
-	waitFor(t, state, func() bool { return !state.uiFont.loading })
+	waitForPicker(t, state, func() bool { return !state.uiFont.loading })
 	paintedTexts(state)
 
 	// Enter on a button is that button's own.
-	state.Click(hitFontPickerItemList.At(1))
+	clickFontPickerRow(t, state, 1)
 	for _, target := range []gfx.ID{hitFontPickerCancel, hitFontPickerClose} {
 		result := state.Key(gfx.KeyEvent{Key: gfx.KeyEnter, Target: target})
 		if result.Handled || state.modal != modalFontPicker || state.uiFont.family != "" {

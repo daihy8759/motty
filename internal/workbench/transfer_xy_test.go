@@ -32,18 +32,22 @@ func startXY(t *testing.T, state *State, session *Session, mode xymodem.Mode, se
 	if state.modal != modalXYTransfer {
 		t.Fatalf("modal = %d", state.modal)
 	}
+	m := state.messages.Tools
 	var canvas gfx.Canvas
 	state.Paint(&canvas, gfx.Size{Width: 1400, Height: 900})
-	for _, id := range []gfx.ID{hitXYProtocolX, hitXYProtocol1K, hitXYProtocolY, hitXYSend, hitXYReceive, hitXYStart} {
-		if _, ok := hitByID(&canvas, id); !ok {
-			t.Fatalf("setup control %d is not painted", id)
+	for _, label := range []string{"XMODEM", "XMODEM-1K", "YMODEM", m.XYSend, m.XYReceive} {
+		if _, ok := hostChoiceIn(&canvas, label); !ok {
+			t.Fatalf("setup choice %q is not painted", label)
 		}
 	}
-	state.Click([]gfx.ID{hitXYProtocolX, hitXYProtocol1K, hitXYProtocolY}[mode])
+	if _, ok := hitByID(&canvas, hitXYStart); !ok {
+		t.Fatal("the start button is not painted")
+	}
+	clickHostChoice(t, state, []string{"XMODEM", "XMODEM-1K", "YMODEM"}[mode])
 	if sending {
-		state.Click(hitXYSend)
+		clickHostChoice(t, state, m.XYSend)
 	} else {
-		state.Click(hitXYReceive)
+		clickHostChoice(t, state, m.XYReceive)
 	}
 	state.Click(hitXYStart)
 }
@@ -151,5 +155,33 @@ func TestSetupIsRefusedWhileATransferRuns(t *testing.T) {
 	state.openXYSetup(session)
 	if state.modal == modalXYTransfer {
 		t.Fatal("a second transfer was offered")
+	}
+}
+
+func TestXYSetupChoicesHaveRovingKeyboardFocus(t *testing.T) {
+	state, session, _ := transferState(t)
+	state.openXYSetup(session)
+	m := state.messages.Tools
+
+	xmodem := hostChoiceHit(t, state, "XMODEM")
+	xmodem1k := hostChoiceHit(t, state, "XMODEM-1K")
+	result := windowKeyRoutes(state, gfx.KeyEvent{Target: xmodem.ID, Key: gfx.KeyRight})
+	if !result.Handled || result.Focus != xmodem1k.ID || result.Activate != xmodem1k.ID {
+		t.Fatalf("mode result = %+v", result)
+	}
+	activateHostChoice(t, state, result.Activate)
+	if state.xy.mode != xymodem.XMODEM1K {
+		t.Fatalf("mode = %v after the arrow picked the next option", state.xy.mode)
+	}
+
+	send := hostChoiceHit(t, state, m.XYSend)
+	receive := hostChoiceHit(t, state, m.XYReceive)
+	result = windowKeyRoutes(state, gfx.KeyEvent{Target: send.ID, Key: gfx.KeyRight})
+	if !result.Handled || result.Focus != receive.ID || result.Activate != receive.ID {
+		t.Fatalf("direction result = %+v", result)
+	}
+	activateHostChoice(t, state, result.Activate)
+	if state.xy.sending {
+		t.Fatal("the direction did not switch to receiving")
 	}
 }

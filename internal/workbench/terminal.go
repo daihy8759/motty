@@ -13,6 +13,7 @@ import (
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/keymap"
+	"github.com/vivaui/viva/ui"
 	"motty/internal/autofill"
 	"motty/internal/cmdhistory"
 	"motty/internal/i18n"
@@ -108,6 +109,25 @@ type terminal struct {
 	// label is the accessible name of the terminal, rebuilt only when the
 	// language or the address it is made from changes.
 	label, labelFormat, labelAddress string
+
+	// controlDraw is kept here so a paint builds no method value; handlers is
+	// the terminal control's input, kept with the control's state.
+	controlDraw func(*ui.DrawContext)
+	handlers    ui.Handlers
+	// controlID and parts are the workbench page's identities, made once so
+	// painting and event routing do not rebuild the page's name.
+	controlID gfx.ID
+	parts     gfx.Scope
+	// paintFinding, paintInSplit and paintInactive are the shapes the last
+	// declaration made, which the bar's slots are painted in after the page.
+	paintFinding, paintInSplit, paintInactive bool
+	paintCommandNoticeShown                   bool
+	paintCommandNotice                        ui.Box
+	paintNoticeShown                          bool
+	paintBarBackground                        gfx.Color
+	paintGeometry                             terminalGeometry
+	paintFind                                 findBarSlots
+	paintSpinner, paintLight, paintNotice     ui.Box
 
 	// preedit is the input-method composition, shown at the cursor.
 	preedit    app.TextState
@@ -308,6 +328,7 @@ func (state *State) configureTerminal(session *Session) {
 	state.attachCompletion(session)
 	state.stampTerminal(session.term)
 	state.reportTerminalColors(session.term)
+	state.installTerminalHandlers(session)
 	sessionID := session.ID
 	session.term.screen.SetSyncHold(func(on bool) {
 		if current, ok := state.sessionByIDPointer(sessionID); ok && current.term != nil {
@@ -380,6 +401,7 @@ func (state *State) configureTerminal(session *Session) {
 }
 
 func (t *terminal) resetFolderSync() {
+	t.login = loginCommand{}
 	t.inputGuard = terminalInputGuard{}
 	t.suggestionPending = nil
 	t.folderToken = rand.Text()
@@ -460,6 +482,7 @@ func (t *terminal) sendInput(p []byte, drain bool) bool {
 	if t.shell == nil || len(p) == 0 {
 		return false
 	}
+	t.pauseInitialization()
 	if drain && t.takeOutput != nil {
 		t.takeOutput()
 		if t.shell == nil {
@@ -521,6 +544,7 @@ func (t *terminal) sendAssistant(p []byte) bool {
 // sendSecret writes an autofill answer to the shell. It is not typed input, so
 // it is neither recorded nor mistaken for the user's own keys.
 func (t *terminal) sendSecret(p []byte) bool {
+	t.pauseInitialization()
 	if t.shell == nil || len(p) == 0 {
 		return false
 	}
@@ -786,9 +810,7 @@ func (state *State) shellOpened(session *Session, shell Shell, err error) {
 		t.sendProtocol(reply)
 	})
 	state.startLoginExpect(session)
-	if session.host.isSSH() && session.containerCommand == "" && session.host.LoginCommand != "" {
-		t.login.arm(session.host.LoginCommand)
-	}
+	t.armInitialization(session)
 	state.describe(session)
 }
 
@@ -943,6 +965,7 @@ func (state *State) shellEnded(session *Session) {
 	err := t.shell.Err()
 	t.shell.Close()
 	t.shell = nil
+	t.login = loginCommand{}
 	t.finishExec(endShell)
 	t.recording.finishSecrets(state.now())
 	t.releasePromptWait()
@@ -1029,7 +1052,13 @@ func terminalLayoutWithChrome(size gfx.Size, cellWidth, cellHeight float32, chro
 		Width:  size.Width,
 		Height: max(size.Height-windowBarHeight-chrome.top, 0),
 	}
-	geometry := terminalGeometry{area: area, left: pad.x + pad.gutter, top: area.Y + pad.top}
+	return terminalGeometryForArea(area, cellWidth, cellHeight, pad)
+}
+
+// terminalGeometryForArea lays a terminal's cells out in the rectangle it was
+// given, as a terminal control's Draw knows it.
+func terminalGeometryForArea(area gfx.Rect, cellWidth, cellHeight float32, pad terminalPadding) terminalGeometry {
+	geometry := terminalGeometry{area: area, left: area.X + pad.x + pad.gutter, top: area.Y + pad.top}
 	if cellWidth > 0 && cellHeight > 0 {
 		geometry.cols = max(int((area.Width-2*pad.x-pad.gutter)/cellWidth), minTerminalCols)
 		geometry.rows = max(int((area.Height-pad.top-pad.bottom)/cellHeight), minTerminalRows)
@@ -1060,6 +1089,9 @@ func (state *State) terminalChromeForSession(sessionID uint32) (terminalChrome, 
 		chrome.top = infoBarHeight
 	}
 	if state.terminalInputNoticeVisibleInWorkspace(session) && (inSplit || !finding) {
+		chrome.top += inputNoticeHeight
+	}
+	if state.workspaceCommandNoticeInWorkspace(session) && (inSplit || !finding) {
 		chrome.top += inputNoticeHeight
 	}
 	return chrome, true
@@ -1131,32 +1163,32 @@ func (state *State) layout() terminalGeometry {
 }
 
 func (state *State) layoutForSession(sessionID uint32) terminalGeometry {
-	workspaceID, paneID, ok := state.deck.PaneForSession(layoutcore.SessionID(sessionID))
-	if !ok {
-		return state.terminalLayoutForEvent(sessionID, state.viewport)
-	}
-	fraction, _, ok := state.paneFractionBounds(workspaceID, paneID)
-	if !ok {
-		return state.terminalLayoutForEvent(sessionID, state.viewport)
-	}
-	bounds := pixelBounds(state.workspacePixelBoundsFor(workspaceID, state.viewport), fraction)
-	geometry := state.terminalLayoutForEvent(sessionID, paneVirtualSize(bounds))
-	origin := paneEmbedOrigin(bounds)
-	geometry.area.X += origin.X
-	geometry.area.Y += origin.Y
-	geometry.left += origin.X
-	geometry.top += origin.Y
-	return geometry
+	return state.terminalWindowLayout(sessionID)
 }
 
-// terminalLayoutForEvent lays out a terminal using the pane-local viewport and
-// coordinates viva supplies after decoding an embedded hit.
-func (state *State) terminalLayoutForEvent(sessionID uint32, viewport gfx.Size) terminalGeometry {
+// terminalWindowLayout lays a terminal out where the window paints it: the pane
+// rectangle of the workbench page. The terminal pane is a component of the
+// window now, so its events and its Draw share these window coordinates.
+func (state *State) terminalWindowLayout(sessionID uint32) terminalGeometry {
 	chrome, sessionOK := state.terminalChromeForSession(sessionID)
 	if !sessionOK {
 		chrome = terminalChrome{top: infoBarHeight}
 	}
-	return terminalLayoutWithChrome(viewport, state.cellWidth, state.cellHeight, chrome, state.padding())
+	workspaceID, paneID, ok := state.deck.PaneForSession(layoutcore.SessionID(sessionID))
+	if !ok {
+		return terminalLayoutWithChrome(state.viewport, state.cellWidth, state.cellHeight, chrome, state.padding())
+	}
+	fraction, _, ok := state.paneFractionBounds(workspaceID, paneID)
+	if !ok {
+		return terminalLayoutWithChrome(state.viewport, state.cellWidth, state.cellHeight, chrome, state.padding())
+	}
+	bounds := pixelBounds(state.workspacePixelBoundsFor(workspaceID, state.viewport), fraction)
+	return terminalGeometryForArea(gfx.Rect{
+		X:      bounds.X,
+		Y:      bounds.Y + chrome.top,
+		Width:  bounds.Width,
+		Height: max(bounds.Height-chrome.top, 0),
+	}, state.cellWidth, state.cellHeight, state.padding())
 }
 
 // fitTerminals gives every session's screen and pty the size the window now
@@ -1235,6 +1267,12 @@ func (state *State) TerminalInput(context app.TextInputContext) *app.TextInput {
 	if session == nil {
 		session = state.terminalSession(context.ID)
 	}
+	if session == nil {
+		session = state.terminalPageSession(context.ID)
+	}
+	if session == nil {
+		session = state.terminalSessionWithoutTerm(context.ID)
+	}
 	if session == nil || session.term == nil || state.activeSessionID != 0 && session.ID != state.activeSessionID {
 		// Typing goes nowhere from here, and the page cannot show it: the text
 		// system simply gets no surface. Saying why, once per cause rather than
@@ -1247,7 +1285,20 @@ func (state *State) TerminalInput(context app.TextInputContext) *app.TextInput {
 	if session.desk != nil {
 		return state.desktopTextInput(session)
 	}
+	if input := state.terminalPageText(session, context); input != nil {
+		return input
+	}
+	return state.terminalTextInputFor(session)
+}
+
+// terminalTextInputFor is the text surface of a terminal: a preedit surface at
+// the cursor cell where input methods compose, and the receiver of committed
+// text and pastes. The returned value is reused.
+func (state *State) terminalTextInputFor(session *Session) *app.TextInput {
 	t := session.term
+	if t == nil {
+		return nil
+	}
 	geometry := state.layoutForSession(session.ID)
 	cursor := t.screen.Cursor()
 	if _, _, cells, ok := t.prediction.overlay(state.now()); ok {
@@ -1321,6 +1372,9 @@ func (state *State) terminalText(sessionID uint32, event app.TextEvent) app.Text
 		return app.TextState{}
 	}
 	t := session.term
+	if event.Kind == app.TextInsert || event.Kind == app.TextPaste || (event.Kind == app.TextSetMarked && event.Text != "") {
+		t.pauseInitialization()
+	}
 	redraw := false
 	switch event.Kind {
 	case app.TextInsert:
@@ -1621,11 +1675,6 @@ func (state *State) Scroll(event gfx.ScrollEvent) gfx.EventResult {
 	}
 	// Dialogs own the wheel even over their backdrop. Menus and scrollable
 	// dialogs above have their own handlers; nothing behind them should move.
-	if state.aiSettingsVisible() && state.ai.cfg.dialog == aiDialogImport && state.ai.cfg.importStep == aiImportPreview {
-		// The import preview is one list, not pages: the wheel scrolls it while
-		// the settings page behind the dialog stays still.
-		return state.settingsRow.Wheel(event)
-	}
 	if state.modal != modalNone || state.knownHosts.action != knownHostsActionNone ||
 		(state.aiSettingsVisible() && state.ai.cfg.dialog != aiDialogNone) {
 		return gfx.EventResult{Handled: true}
@@ -1655,10 +1704,10 @@ func (state *State) Scroll(event gfx.ScrollEvent) gfx.EventResult {
 	if result, handled := state.scrollMonitor(event); handled {
 		return result
 	}
-	// A wheel over a control of the files panel belongs to the panel's list. It
-	// must not be treated as a pane event: that would shift its coordinates by a
-	// pane's origin.
-	if mount, ok := tree.MountOf(event.Target.Scope()); ok && mount == contextMount {
+	// A wheel over a control of the files panel belongs to the panel's list. The
+	// panel is part of the workbench page now, so the event already has window
+	// coordinates and the control's own identity.
+	if state.contextPanelOwns(event.Target) {
 		if session, ok := state.sessionByIDPointer(state.activeSessionID); ok && session.files != nil && state.activeSection == sectionTerminal && state.modal == modalNone {
 			return state.scrollSFTP(session.files, event)
 		}
@@ -1672,25 +1721,22 @@ func (state *State) Scroll(event gfx.ScrollEvent) gfx.EventResult {
 		state.activeSection == sectionTerminal && pointInRect(event.X, event.Y, state.contextRect) {
 		return state.scrollSFTP(session.files, event)
 	}
-	if session, local, ok := state.decodePaneHit(event.Target); ok {
+	if _, local, ok := state.decodePaneHit(event.Target); ok {
 		// The wheel scrolls the pane under the pointer and leaves the active
-		// pane where it is: activation is for a press.
-		_, origin, viewport, embedded := state.paneEventGeometry(session.ID, event.Viewport)
-		if embedded {
-			event.X -= origin.X
-			event.Y -= origin.Y
-			event.Viewport = viewport
-		}
+		// pane where it is: activation is for a press. The bodies are part of the
+		// workbench page now, so the event already has window coordinates.
 		event.Target = local
 		return state.scroll(event)
 	}
-	if session := state.terminalOrBarSession(event.Target); session != nil {
-		_, origin, viewport, embedded := state.paneEventGeometry(session.ID, event.Viewport)
-		if embedded {
-			event.X -= origin.X
-			event.Y -= origin.Y
-			event.Viewport = viewport
-		}
+	if state.terminalPageSession(event.Target) != nil {
+		// The terminal pane is part of the workbench page, so the event already
+		// has the window's coordinates and identity.
+		return state.scroll(event)
+	}
+	if state.terminalSession(event.Target) != nil {
+		// A remote desktop's picture names the session itself; its coordinates
+		// are the window's too.
+		return state.scroll(event)
 	}
 	return state.scroll(event)
 }
@@ -1706,7 +1752,10 @@ func (state *State) scroll(event gfx.ScrollEvent) gfx.EventResult {
 		return state.scrollSessionLogs(event)
 	}
 	session, ok := state.sessionByIDPointer(state.activeSessionID)
-	if hovered := state.terminalOrBarSession(event.Target); hovered != nil {
+	paged := false
+	if hovered := state.terminalPageSession(event.Target); hovered != nil {
+		session, ok, paged = hovered, true, true
+	} else if hovered := state.terminalSession(event.Target); hovered != nil {
 		session, ok = hovered, true
 	}
 	if !ok || state.activeSection != sectionTerminal || state.modal != modalNone || session.term == nil || state.cellWidth <= 0 || state.cellHeight <= 0 || state.showsProgress(session) {
@@ -1718,9 +1767,20 @@ func (state *State) scroll(event gfx.ScrollEvent) gfx.EventResult {
 	if session.desk != nil {
 		return state.desktopScroll(session, event)
 	}
+	if paged {
+		return state.terminalPageScroll(session, event)
+	}
+	return state.terminalScroll(session, event)
+}
+
+// terminalScroll turns the wheel into scrollback, or mouse reports, or arrow
+// keys on the alternate screen, where a pager or editor owns the display and
+// has no scrollback.
+func (state *State) terminalScroll(session *Session, event gfx.ScrollEvent) gfx.EventResult {
 	t := session.term
 	modes := t.screen.Modes()
-	if modes.Mouse != term.MouseOff && event.Target == hitTerminalList.At(int(session.ID)) && event.Modifiers&gfx.ModifierShift == 0 {
+	session.term.pageIdentity(session.ID)
+	if modes.Mouse != term.MouseOff && event.Target == session.term.controlID && event.Modifiers&gfx.ModifierShift == 0 {
 		return state.terminalMouseScroll(session, event)
 	}
 	if modes.AltScreen {
@@ -1753,7 +1813,7 @@ func (state *State) scroll(event gfx.ScrollEvent) gfx.EventResult {
 
 func (state *State) terminalMouseScroll(session *Session, event gfx.ScrollEvent) gfx.EventResult {
 	terminal := session.term
-	position := state.terminalPositionAt(session, event.Viewport, event.X, event.Y)
+	position := state.terminalPositionAt(session, event.X, event.Y)
 	repaint := false
 	terminal.wheelY += event.StepY(state.cellHeight) / state.cellHeight
 	vertical := int(terminal.wheelY)

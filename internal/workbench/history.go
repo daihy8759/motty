@@ -9,6 +9,7 @@ import (
 
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/text"
+	"github.com/vivaui/viva/ui"
 	"motty/internal/cmdhistory"
 	"motty/internal/fuzzy"
 )
@@ -33,8 +34,6 @@ var (
 	hitHistoryDismiss        = tree.ID(historyHits, "history-dismiss")
 	hitHistoryClose          = tree.ID(historyHits, "history-close")
 	hitHistorySearch         = tree.ID(historyHits, "history-search")
-	hitHistoryScopeHost      = tree.ID(historyHits, "history-scope-host")
-	hitHistoryScopeAll       = tree.ID(historyHits, "history-scope-all")
 	hitHistoryItems          = tree.Sub(historyHits, tree.Name("history-items"))
 	hitSettingsHistoryToggle = tree.ID(historyHits, "settings-history")
 	hitSettingsHistoryClear  = tree.ID(historyHits, "settings-history-clear")
@@ -73,11 +72,15 @@ type historyUI struct {
 	host      string // history key of the session it was opened for
 	all       bool   // every host, not only this one
 	search    text.Editor
-	entries   []cmdhistory.Entry
-	ranked    []int // indexes into entries, best first
-	query     string
-	selected  int
-	top       int // first listed result
+	// field is the page's handle on search; the platform types into the editor it
+	// binds.
+	field    ui.Field
+	bound    bool
+	entries  []cmdhistory.Entry
+	ranked   []int // indexes into entries, best first
+	query    string
+	selected int
+	top      int // first listed result
 }
 
 // historyKey is the key under which a session's commands are kept.
@@ -264,6 +267,12 @@ func (state *State) openHistory(session *Session) {
 	h.sessionID, h.host = session.ID, historyKey(session)
 	h.all = !state.historyAvailable(session) || session.host.NoHistory
 	h.search = text.Editor{}
+	if !h.bound {
+		// The picker's search is a page field now: the page gives the platform the
+		// editor it edits, and this keeps the one the application already reads.
+		h.field.Bind(&h.search)
+		h.bound = true
+	}
 	h.query = "\x00" // never equal to a typed query, so the first refresh ranks
 	state.modal = modalHistory
 	state.loadHistory()
@@ -438,18 +447,6 @@ func (state *State) clickHistory(id gfx.ID) {
 	switch id {
 	case hitHistoryDismiss, hitHistoryClose:
 		state.closeHistoryPicker()
-	case hitHistoryScopeHost:
-		if h.all {
-			h.all = false
-			state.loadHistory()
-			state.rankHistory()
-		}
-	case hitHistoryScopeAll:
-		if !h.all {
-			h.all = true
-			state.loadHistory()
-			state.rankHistory()
-		}
 	default:
 		if slot, ok := id.In(hitHistoryItems); ok && h.top+slot < len(h.ranked) {
 			h.selected = h.top + slot

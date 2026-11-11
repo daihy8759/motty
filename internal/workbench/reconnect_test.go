@@ -112,6 +112,48 @@ func TestAutomaticReconnectUsesBoundedBackoffAndAttemptLimit(t *testing.T) {
 	}
 }
 
+// A first attempt that never reached the server is still an attempt the policy
+// covers. Without that, a change of network path — which makes the first retry
+// fail — spends the budget before the new path is ready.
+func TestAFirstDialFailureIsRetriedUnderThePolicy(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		policy  reconnectPolicy
+		pending bool
+	}{
+		{name: "three", policy: reconnectThree, pending: true},
+		{name: "forever", policy: reconnectForever, pending: true},
+		{name: "off", policy: reconnectOff, pending: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state, world, connection, _ := reconnectingSession(t, test.policy)
+			connection.set(func(status *sshconn.Status) {
+				status.Phase = sshconn.PhaseFailed
+				status.Err = errors.New("dial tcp: i/o timeout")
+			})
+			state.Wake()
+			session := &state.sessions[0]
+			if session.reconnectPending != test.pending {
+				t.Fatalf("pending = %v, want %v", session.reconnectPending, test.pending)
+			}
+			if test.pending && session.reconnectAttempt != 1 {
+				t.Fatalf("attempt = %d, want 1", session.reconnectAttempt)
+			}
+			if len(world.conns) != 1 {
+				t.Fatalf("conns = %d, want the failed attempt alone", len(world.conns))
+			}
+			if test.policy == reconnectOff {
+				// "off" must not narrate a reconnect lifecycle it never ran.
+				for _, event := range session.connectionStory {
+					if event.kind == connectionEventReconnectStopped || event.kind == connectionEventReconnectWaiting {
+						t.Fatalf("off policy recorded %v after a dial failure", event.kind)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestAutomaticReconnectStopsForCredentialAndHostKeyErrors(t *testing.T) {
 	for name, terminalError := range map[string]error{
 		"authentication":    sshconn.ErrAuthFailed,
@@ -196,8 +238,9 @@ func TestCancelCloseAndManualReconnectCancelScheduledAttempt(t *testing.T) {
 func TestTurningReconnectOffCancelsWaitingSessions(t *testing.T) {
 	state, _, connection, _ := reconnectingSession(t, reconnectForever)
 	disconnectEstablished(connection, state)
-	state.activeSection = sectionSettings
-	state.Click(hitSettingsReconnectOff)
+	state.Click(hitSettings)
+	state.selectSettingsCategory(settingsConnection)
+	clickSettingsChoiceInRow(t, state, state.messages.SettingsConnectionReconnect, state.settingsReconnectLabel(reconnectOff))
 	if state.connectionReconnect != reconnectOff || state.sessions[0].reconnectPending {
 		t.Fatalf("policy=%v pending=%v", state.connectionReconnect, state.sessions[0].reconnectPending)
 	}

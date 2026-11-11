@@ -352,9 +352,9 @@ func TestTerminalPointerCellsFollowEachPaintedSplit(t *testing.T) {
 		}
 		var canvas gfx.Canvas
 		state.Paint(&canvas, size)
-		hit, ok := hitByID(&canvas, tree.MountID(paneMount(session), hitTerminalList.At(int(session.ID))))
+		hit, ok := hitByID(&canvas, terminalTestHit(state, session))
 		if !ok {
-			t.Fatalf("session %d has no mounted terminal hit", session.ID)
+			t.Fatalf("session %d has no painted terminal hit", session.ID)
 		}
 		geometry := state.layoutForSession(session.ID)
 		x := geometry.left + state.cellWidth*1.5
@@ -388,13 +388,9 @@ func TestSplitMouseReportingUsesPaintedPaneCoordinates(t *testing.T) {
 
 	var canvas gfx.Canvas
 	state.Paint(&canvas, size)
-	hit, ok := hitByID(&canvas, tree.MountID(paneMount(session), hitTerminalList.At(int(session.ID))))
+	hit, ok := hitByID(&canvas, terminalTestHit(state, session))
 	if !ok {
 		t.Fatal("the second split has no painted terminal hit")
-	}
-	bounds, _, viewport, embedded := state.paneEventGeometry(session.ID, size)
-	if !embedded {
-		t.Fatal("the second split did not report embedded geometry")
 	}
 	geometry := state.layoutForSession(session.ID)
 	windowX := geometry.left + state.cellWidth*4.5
@@ -404,7 +400,7 @@ func TestSplitMouseReportingUsesPaintedPaneCoordinates(t *testing.T) {
 		X: windowX, Y: windowY, Viewport: size,
 	})
 	if !result.Handled || shell.typed() != "\x1b[<0;5;3M" {
-		t.Fatalf("pane=%+v viewport=%v result=%+v input=%q", bounds, viewport, result, shell.typed())
+		t.Fatalf("pane=%v result=%+v input=%q", hit.Bounds, result, shell.typed())
 	}
 }
 
@@ -427,20 +423,16 @@ func TestSplitScrollbarUsesPaintedPaneCoordinates(t *testing.T) {
 
 	var canvas gfx.Canvas
 	state.Paint(&canvas, size)
-	bar, ok := hitByID(&canvas, tree.MountID(paneMount(session), hitTerminalBar.At(int(session.ID))))
+	bar, ok := hitByID(&canvas, terminalControlParts(session.ID).At(terminalPartScrollbar))
 	if !ok {
 		t.Fatal("the second split has no painted scrollbar")
 	}
-	_, origin, _, embedded := state.paneEventGeometry(session.ID, size)
-	if !embedded {
-		t.Fatal("the second split did not report embedded geometry")
-	}
 	geometry := state.terminalScrollArea(nil, session, state.layoutForSession(session.ID).area, 1).Geometry()
-	x := bar.Bounds.X + bar.Bounds.Width/2 + origin.X
-	grab := origin.Y + geometry.VerticalThumb.Y + geometry.VerticalThumb.Height/2
+	x := bar.Bounds.X + bar.Bounds.Width/2
+	grab := geometry.VerticalThumb.Y + geometry.VerticalThumb.Height/2
 	result := state.Pointer(gfx.PointerEvent{
 		Kind: gfx.PointerDown, Button: gfx.PointerButtonPrimary,
-		Target: tree.MountID(paneMount(session), hitTerminalBar.At(int(session.ID))),
+		Target: terminalControlParts(session.ID).At(terminalPartScrollbar),
 		X:      x, Y: grab, Viewport: size,
 	})
 	if !result.Handled || !session.term.barDragging {
@@ -622,7 +614,7 @@ func TestSharedTerminalToolbarKeyboardNavigationReachesOverflow(t *testing.T) {
 
 	target := term.railIDs[0]
 	for target != lastID {
-		result := state.Key(gfx.KeyEvent{Target: target, Key: gfx.KeyDown})
+		result := windowKeyRoutes(state, gfx.KeyEvent{Target: target, Key: gfx.KeyDown})
 		if !result.Handled || result.Focus.IsZero() || result.Focus == target {
 			t.Fatalf("Down from %v returned %+v", target, result)
 		}
@@ -788,9 +780,7 @@ func TestTerminalToolbarSettingsApplyImmediatelyAndNavigate(t *testing.T) {
 	state.activeSection = sectionSettings
 	session.term.railScroll = 90
 
-	if !state.clickSettings(hitSettingsToolbarLeft) {
-		t.Fatal("toolbar position setting was not handled")
-	}
+	clickSettingsChoice(t, state, state.messages.SettingsToolbarPositionLeft)
 	if state.terminalToolbarPosition != terminalToolbarLeft || session.term.railScroll != 0 {
 		t.Fatalf("position=%v scroll=%v after immediate setting", state.terminalToolbarPosition, session.term.railScroll)
 	}
@@ -799,9 +789,18 @@ func TestTerminalToolbarSettingsApplyImmediatelyAndNavigate(t *testing.T) {
 		t.Fatalf("background terminal screen=%dx%d geometry=%dx%d after toolbar setting", cols, rows, geometry.cols, geometry.rows)
 	}
 
-	result, handled := state.settingsKey(gfx.KeyEvent{Target: hitSettingsToolbarLeft, Key: gfx.KeyRight})
-	if !handled || !result.Handled || result.Focus != hitSettingsToolbarRight || state.terminalToolbarPosition != terminalToolbarRight {
-		t.Fatalf("position keyboard result=%+v handled=%v position=%v", result, handled, state.terminalToolbarPosition)
+	left := settingsChoiceHit(t, state, state.messages.SettingsToolbarPositionLeft)
+	right := settingsChoiceHit(t, state, state.messages.SettingsToolbarPositionRight)
+	result := windowKeyRoutes(state, gfx.KeyEvent{Target: left.ID, Key: gfx.KeyRight})
+	if !result.Handled || result.Focus != right.ID || result.Activate != right.ID {
+		t.Fatalf("position keyboard result=%+v", result)
+	}
+	var rove gfx.Canvas
+	rove.BeginEventPass(result.Activate, gfx.ClickInfo{})
+	state.Paint(&rove, gfx.Size{Width: 1400, Height: 3400})
+	rove.EndEventPass()
+	if state.terminalToolbarPosition != terminalToolbarRight {
+		t.Fatalf("position=%v after the arrow key activated the next choice", state.terminalToolbarPosition)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/text"
+	"github.com/vivaui/viva/ui"
 	"motty/internal/sshconn"
 )
 
@@ -59,6 +60,14 @@ type proxyEditor struct {
 	// fromHostForm remembers that the host form opened this route dialog, so
 	// closing it returns to the form instead of to the page.
 	fromHostForm bool
+	// dialogBody is where the dialog body laid out the controls painted by hand.
+	dialogBody proxyDialogBody
+}
+
+// proxyDialogBody is where the route dialog's body put each control it paints
+// by hand.
+type proxyDialogBody struct {
+	target, jump, via, viaHelp, relay ui.Box
 }
 
 func (editor *proxyEditor) reset(targetID, jumpID uint32) {
@@ -523,14 +532,15 @@ func (state *State) refreshProxy(route *proxyRecord) {
 	}
 	var labels strings.Builder
 	var targets strings.Builder
+	for index := len(chain) - 1; index >= 0; index-- {
+		hop := chain[index]
+		labels.WriteString(hop.Label)
+		labels.WriteString(" → ")
+		targets.WriteString(hop.target)
+		targets.WriteString(" → ")
+	}
 	labels.WriteString(target.Label)
 	targets.WriteString(target.target)
-	for _, hop := range chain {
-		labels.WriteString(" → ")
-		labels.WriteString(hop.Label)
-		targets.WriteString(" → ")
-		targets.WriteString(hop.target)
-	}
 	status := state.messages.ProxyStopped
 	if !route.Stopped {
 		status = state.messages.ProxyRunning

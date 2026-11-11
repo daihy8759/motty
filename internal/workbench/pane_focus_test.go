@@ -13,7 +13,7 @@ import (
 // sees the focus and the clicks a window would.
 func paneDriver(t *testing.T, state *State, size gfx.Size) *app.Driver {
 	t.Helper()
-	driver, err := app.NewDriver(app.Config{
+	driver, err := app.NewDriver(state.WindowConfig(app.Config{
 		Title: "panes", Width: int(size.Width), Height: int(size.Height),
 		Paint: state.Paint, OnPointer: state.Pointer, OnKey: state.Key, OnShortcut: state.Shortcut, OnResize: state.Resize,
 		TextInput: func(context app.TextInputContext) *app.TextInput {
@@ -22,7 +22,7 @@ func paneDriver(t *testing.T, state *State, size gfx.Size) *app.Driver {
 			}
 			return nil
 		},
-	}, nil)
+	}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +45,11 @@ func hitOf(t *testing.T, driver *app.Driver, id gfx.ID) gfx.Hit {
 // pagedIdentity is a page identity as the window sees it: a workspace of one
 // pane paints its page in place, and panes side by side mount theirs.
 func pagedIdentity(state *State, session *Session, local gfx.ID) gfx.ID {
+	// The terminal pane is part of the workbench page; the connection and
+	// restored views still paint into an embedded canvas.
+	if state.paintsTerminalPane(session) {
+		return local
+	}
 	if len(state.Panes(nil)) > 1 {
 		return tree.MountID(paneMount(session), local)
 	}
@@ -53,7 +58,7 @@ func pagedIdentity(state *State, session *Session, local gfx.ID) gfx.ID {
 
 // terminalOf is the identity of the terminal a session's page paints.
 func terminalOf(state *State, session *Session) gfx.ID {
-	return pagedIdentity(state, session, hitTerminalList.At(int(session.ID)))
+	return pagedIdentity(state, session, terminalTestHit(state, session))
 }
 
 // paneBoundsOf is where a session's pane sits in the window.
@@ -102,7 +107,7 @@ func twoLivePanes(t *testing.T) (*State, *fakeShell, *fakeShell) {
 	if !state.splitActivePane(layoutcore.Horizontal) {
 		t.Fatal("split right")
 	}
-	state.Click(hitPaneChooseHost)
+	state.chooseHostSection()
 	state.Click(hitHostList.At(2))
 	openHost(state)
 	secondConn := world.conns[1]

@@ -1,8 +1,7 @@
 package workbench
 
 import (
-	"github.com/vivaui/viva/components"
-	"github.com/vivaui/viva/gfx"
+	"github.com/vivaui/viva/ui"
 )
 
 // transferMode says which file protocol a host's file panel uses.
@@ -44,36 +43,28 @@ func (host *Host) applyTransfer(saved string) bool {
 	return true
 }
 
-var (
-	hitDialogTransferAuto = tree.ID(hostProtocolUiHits, "dialog-transfer-auto")
-	hitDialogTransferSFTP = tree.ID(hostProtocolUiHits, "dialog-transfer-sftp")
-	hitDialogTransferSCP  = tree.ID(hostProtocolUiHits, "dialog-transfer-scp")
-)
+// hostTransferChoices is the file protocol choice of the host form.
+var hostTransferChoices = [...]transferMode{transferAuto, transferSFTP, transferSCP}
 
-// paintTransferChoice draws the file protocol choice of the host dialog.
-func (state *State) paintTransferChoice(canvas *gfx.Canvas, bounds gfx.Rect) {
-	m := state.messages.Tools
-	content := components.BeginField(canvas, state.Theme(), bounds).Paint(m.TransferField, "", "")
-	options := [...]components.SegmentOption{
-		{ID: hitDialogTransferAuto, Label: m.TransferAuto},
-		{ID: hitDialogTransferSFTP, Label: "SFTP"},
-		{ID: hitDialogTransferSCP, Label: "SCP"},
+// hostTransferChoiceLabel names one file protocol as the form's choice shows it.
+func (state *State) hostTransferChoiceLabel(mode transferMode) string {
+	switch mode {
+	case transferSFTP:
+		return "SFTP"
+	case transferSCP:
+		return "SCP"
+	default:
+		return state.messages.Tools.TransferAuto
 	}
-	components.BeginSegmentedControl(canvas, state.Theme(), content, options[:], options[state.editor.transfer].ID).Paint()
-	state.rememberHostControl(options[state.editor.transfer].ID, content)
 }
 
-// clickTransferChoice handles a click on the choice and reports whether it was one.
-func (state *State) clickTransferChoice(id gfx.ID) bool {
-	switch id {
-	case hitDialogTransferAuto:
-		state.editor.transfer = transferAuto
-	case hitDialogTransferSFTP:
-		state.editor.transfer = transferSFTP
-	case hitDialogTransferSCP:
-		state.editor.transfer = transferSCP
-	default:
-		return false
+// declareHostTransferChoice declares the file protocol choice in the form's page
+// at the slot the body reserved for it. The click already wrote editor.transfer;
+// only the form's error has to go.
+func (state *State) declareHostTransferChoice(c ui.C) ui.Box {
+	choice := hostFormChoice(c, state.messages.Tools.TransferField, hostFormRowHeight, &state.editor.transfer, hostTransferChoices[:], state.hostTransferChoiceLabel)
+	if choice.Changed() {
+		state.dialogError = ""
 	}
-	return true
+	return choice
 }

@@ -3,6 +3,7 @@ package workbench
 import (
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,13 +25,69 @@ func fontOptions(t testing.TB, families []string) Options {
 // read off the window thread and arrives through them.
 func waitFor(t testing.TB, state *State, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitBudget())
 	for !condition() {
 		if time.Now().After(deadline) {
 			t.Fatal("timed out waiting for the window")
 		}
 		state.Wake()
 		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// waitForPicker drives the window's paints until condition holds: the font list
+// is the picker page's effect, so its result lands on a paint that takes it.
+func waitForPicker(t testing.TB, state *State, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	var canvas gfx.Canvas
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the picker")
+		}
+		state.Wake()
+		canvas.Reset()
+		state.Paint(&canvas, gfx.Size{Width: 1400, Height: 900})
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// clickFontPickerRow delivers a click on a row of the open picker the way the
+// runtime does: the paint it runs is the event pass of that row's click, where
+// the row reads Clicked in place.
+func clickFontPickerRow(t testing.TB, state *State, row int) {
+	t.Helper()
+	var canvas gfx.Canvas
+	canvas.BeginEventPass(hitFontPickerItemList.At(row), gfx.ClickInfo{})
+	state.Paint(&canvas, gfx.Size{Width: 1400, Height: 900})
+	canvas.EndEventPass()
+}
+
+// Closing the picker cancels the read it started: a list the old read returns
+// later is dropped, and opening the picker again reads it anew.
+func TestClosingTheFontPickerCancelsItsRead(t *testing.T) {
+	release := make(chan []string, 2)
+	var calls atomic.Int32
+	options := fontOptions(t, nil)
+	options.MonoFamilies = func() []string {
+		calls.Add(1)
+		return <-release
+	}
+	state := newTestState(t, options)
+	state.openFontPicker(false)
+	waitForPicker(t, state, func() bool { return calls.Load() == 1 })
+	state.cancelFontPicker()
+	release <- []string{"Dropped"} // the cancelled read returns after its page is gone
+
+	state.openFontPicker(false)
+	waitForPicker(t, state, func() bool { return calls.Load() == 2 })
+	release <- testFonts
+	waitForPicker(t, state, func() bool { return !state.fonts.loading })
+	if slices.Contains(state.fonts.installed, "Dropped") {
+		t.Fatalf("a cancelled read's list was applied: %v", state.fonts.installed)
+	}
+	if !slices.Contains(state.fonts.installed, "Fira Code") {
+		t.Fatalf("the new read's list was not applied: %v", state.fonts.installed)
 	}
 }
 
@@ -45,7 +102,7 @@ func TestChoosingAnInstalledFontSwitchesTheTerminalAndIsKept(t *testing.T) {
 	}
 	var canvas gfx.Canvas
 	state.Paint(&canvas, gfx.Size{Width: 1400, Height: 900}) // "Reading the installed fonts…"
-	waitFor(t, state, func() bool { return !state.fonts.loading })
+	waitForPicker(t, state, func() bool { return !state.fonts.loading })
 	canvas = gfx.Canvas{}
 	state.Paint(&canvas, gfx.Size{Width: 1400, Height: 900})
 	texts := canvas.Texts()
@@ -125,7 +182,7 @@ func TestFontPickerKeysMoveScrollAndLeaveTheFontAloneOnEscape(t *testing.T) {
 	}
 	state := newTestState(t, fontOptions(t, many))
 	state.openFontPicker(false)
-	waitFor(t, state, func() bool { return !state.fonts.loading })
+	waitForPicker(t, state, func() bool { return !state.fonts.loading })
 	state.refreshFontPicker()
 	if len(state.fonts.filtered) != 42 || state.fonts.selected != 0 {
 		t.Fatalf("rows %d, selected %d", len(state.fonts.filtered), state.fonts.selected)
@@ -154,7 +211,7 @@ func TestFontPickerKeysMoveScrollAndLeaveTheFontAloneOnEscape(t *testing.T) {
 
 	// Clicking a row selects it for preview without closing the modal; confirm applies it.
 	state.openFontPicker(false)
-	state.Click(hitFontPickerItemList.At(3)) // System, Classic, Family A0, Family A1
+	clickFontPickerRow(t, state, 3) // System, Classic, Family A0, Family A1
 	if state.fonts.selected != 3 || state.modal != modalFontPicker || state.fonts.family != "" {
 		t.Fatalf("selected %d modal %d family %q", state.fonts.selected, state.modal, state.fonts.family)
 	}
@@ -168,8 +225,8 @@ func TestTheBuiltInFacesAreChosenFromTheSameList(t *testing.T) {
 	state := newTestState(t, fontOptions(t, testFonts))
 	state.useTerminalFont(fontEntry{family: "Menlo"})
 	state.openFontPicker(false)
-	waitFor(t, state, func() bool { return !state.fonts.loading })
-	state.Click(hitFontPickerItemList.At(1)) // Classic
+	waitForPicker(t, state, func() bool { return !state.fonts.loading })
+	clickFontPickerRow(t, state, 1) // Classic
 	state.Click(hitFontPickerConfirm)
 	if state.terminalFontFace != gfx.MonoClassic || state.fonts.family != "" {
 		t.Fatalf("face %d family %q", state.terminalFontFace, state.fonts.family)
@@ -196,7 +253,7 @@ func TestFallbackFontsAreAddedInOrderKeptAndRestored(t *testing.T) {
 	state := newTestState(t, options)
 	state.useTerminalFont(fontEntry{family: "Menlo"})
 	state.openFontPicker(true)
-	waitFor(t, state, func() bool { return !state.fonts.loading })
+	waitForPicker(t, state, func() bool { return !state.fonts.loading })
 	state.refreshFontPicker()
 	for _, index := range state.fonts.filtered {
 		if state.fonts.entries[index].family == "Menlo" || state.fonts.entries[index].family == "" {
@@ -289,11 +346,11 @@ func TestFontPickerClickSelectsAndPreviewsWithoutClosing(t *testing.T) {
 	state := newTestState(t, fontOptions(t, testFonts))
 	state.useTerminalFont(fontEntry{family: "Menlo"})
 	state.openFontPicker(false)
-	waitFor(t, state, func() bool { return !state.fonts.loading })
+	waitForPicker(t, state, func() bool { return !state.fonts.loading })
 	state.refreshFontPicker()
 
 	// System, Classic, Fira Code, Iosevka, JetBrains Mono, Menlo
-	state.Click(hitFontPickerItemList.At(3))
+	clickFontPickerRow(t, state, 3)
 	if state.modal != modalFontPicker || state.fonts.selected != 3 || state.fonts.family != "Menlo" {
 		t.Fatalf("modal %d selected %d family %q", state.modal, state.fonts.selected, state.fonts.family)
 	}
@@ -307,10 +364,10 @@ func TestFontPickerClickSelectsAndPreviewsWithoutClosing(t *testing.T) {
 func TestFontPickerDoubleClickConfirms(t *testing.T) {
 	state := newTestState(t, fontOptions(t, testFonts))
 	state.openFontPicker(false)
-	waitFor(t, state, func() bool { return !state.fonts.loading })
+	waitForPicker(t, state, func() bool { return !state.fonts.loading })
 
 	// The first press of a double click is an ordinary click: it only selects.
-	state.Click(hitFontPickerItemList.At(2))
+	clickFontPickerRow(t, state, 2)
 	if state.modal != modalFontPicker || state.fonts.selected != 2 {
 		t.Fatalf("modal %d selected %d", state.modal, state.fonts.selected)
 	}
@@ -326,8 +383,8 @@ func TestFontPickerDoubleClickConfirms(t *testing.T) {
 func TestFontPickerEnterOnAButtonIsThatButtonsOwn(t *testing.T) {
 	state := newTestState(t, fontOptions(t, testFonts))
 	state.openFontPicker(false)
-	waitFor(t, state, func() bool { return !state.fonts.loading })
-	state.Click(hitFontPickerItemList.At(2))
+	waitForPicker(t, state, func() bool { return !state.fonts.loading })
+	clickFontPickerRow(t, state, 2)
 
 	for _, target := range []gfx.ID{hitFontPickerCancel, hitFontPickerClose} {
 		result := state.Key(gfx.KeyEvent{Key: gfx.KeyEnter, Target: target})
@@ -353,7 +410,7 @@ func TestFontPickerCannotConfirmWhatTheButtonRefuses(t *testing.T) {
 	if state.modal != modalFontPicker {
 		t.Fatal("Enter confirmed while the fonts were being read")
 	}
-	waitFor(t, state, func() bool { return !state.fonts.loading })
+	waitForPicker(t, state, func() bool { return !state.fonts.loading })
 
 	typeInto(state, hitFontPickerSearch, "no such font")
 	state.refreshFontPicker()

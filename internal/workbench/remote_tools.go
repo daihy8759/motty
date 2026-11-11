@@ -23,12 +23,6 @@ import (
 var remoteToolsHits = tree.Feature("remote-tools")
 
 var (
-	hitRemoteTabProcesses  = tree.ID(remoteToolsHits, "remote-tab-processes")
-	hitRemoteTabContainers = tree.ID(remoteToolsHits, "remote-tab-containers")
-	hitRemoteTabImages     = tree.ID(remoteToolsHits, "remote-tab-images")
-	hitRemoteTabVolumes    = tree.ID(remoteToolsHits, "remote-tab-volumes")
-	hitRemoteTabNetworks   = tree.ID(remoteToolsHits, "remote-tab-networks")
-	hitRemoteTabCompose    = tree.ID(remoteToolsHits, "remote-tab-compose")
 	hitRemoteNiceLower     = tree.ID(remoteToolsHits, "remote-nice-lower")
 	hitRemoteNiceNormal    = tree.ID(remoteToolsHits, "remote-nice-normal")
 	hitRemoteNiceHigher    = tree.ID(remoteToolsHits, "remote-nice-higher")
@@ -47,12 +41,9 @@ var (
 	hitRemoteCreate        = tree.ID(remoteToolsHits, "remote-create")
 	hitRemoteRefresh       = tree.ID(remoteToolsHits, "remote-refresh")
 	hitRemoteSudo          = tree.ID(remoteToolsHits, "remote-sudo")
-	hitRemoteAutoRefresh   = tree.ID(remoteToolsHits, "remote-auto-refresh")
 	hitRemoteAutoToggle    = tree.ID(remoteToolsHits, "remote-auto-toggle")
-	hitRemoteAutoDismiss   = tree.ID(remoteToolsHits, "remote-auto-dismiss")
 	hitRemoteClose         = tree.ID(remoteToolsHits, "remote-close")
 	hitRemoteDismiss       = tree.ID(remoteToolsHits, "remote-dismiss")
-	hitRemotePrevious      = tree.ID(remoteToolsHits, "remote-previous")
 	hitRemoteNext          = tree.ID(remoteToolsHits, "remote-next")
 	hitRemoteProcessTable  = tree.ID(remoteToolsHits, "remote-process-table")
 	hitRemoteProcessScroll = tree.ID(remoteToolsHits, "remote-process-scroll")
@@ -62,7 +53,6 @@ var (
 var hitRemoteRowList = tree.Sub(remoteToolsHits, tree.Name("remote-row"))
 var hitRemoteIntervals = tree.Sub(remoteToolsHits, tree.Name("remote-refresh-interval"))
 var hitRemoteSortColumns = tree.Sub(remoteToolsHits, tree.Name("remote-sort-column"))
-var remoteAutoScope = tree.ID(remoteToolsHits, "remote-refresh-menu")
 var (
 	hitTerminalMenuTools = tree.ID(remoteToolsHits, "terminal-menu-tools")
 	// hitRemoteToolsOpen is the command palette's entry for the dialog.
@@ -103,10 +93,45 @@ const (
 	remoteCompose
 )
 
-// remoteTabHits is the control of each tab, indexed by remoteTab.
-var remoteTabHits = [...]gfx.ID{
-	remoteProcesses: hitRemoteTabProcesses, remoteContainers: hitRemoteTabContainers,
-	remoteImages: hitRemoteTabImages, remoteVolumes: hitRemoteTabVolumes, remoteNetworks: hitRemoteTabNetworks, remoteCompose: hitRemoteTabCompose,
+// remoteTabChoices are the tabs in the order the switch shows them.
+var remoteTabChoices = [...]remoteTab{remoteProcesses, remoteContainers, remoteImages, remoteVolumes, remoteNetworks, remoteCompose}
+
+func (state *State) remoteTabLabel(tab remoteTab) string {
+	m := state.messages.Tools
+	switch tab {
+	case remoteContainers:
+		return m.RemoteTabContainers
+	case remoteImages:
+		return m.RemoteTabImages
+	case remoteVolumes:
+		return m.RemoteTabVolumes
+	case remoteNetworks:
+		return m.RemoteTabNetworks
+	case remoteCompose:
+		return m.RemoteTabCompose
+	}
+	return m.RemoteTabProcesses
+}
+
+// applyRemoteTab resets the view for the tab the page's choice already wrote and
+// reads the objects that tab lists.
+func (state *State) applyRemoteTab() {
+	view := &state.remote
+	m := state.messages.Tools
+	view.selected, view.page = "", 0
+	view.rows, view.pageText = nil, ""
+	view.procs, view.containers, view.compose, view.resources = nil, nil, nil, nil
+	view.collectedAt, view.stale, view.snapshotStatus = time.Time{}, false, ""
+	view.processesTruncated, view.commandsTruncated = false, false
+	state.rebuildRemoteRows()
+	if view.noDocker && view.tab != remoteProcesses {
+		// Docker availability belongs to the connection, not its tab. Keep the
+		// empty state until an explicit or timed refresh rechecks it.
+		view.serial++
+		view.loading, view.failed, view.status = false, true, m.RemoteErrNoDocker
+		return
+	}
+	state.refreshRemoteTools()
 }
 
 // kind is the Docker object kind of an images, volumes or networks tab.
@@ -140,29 +165,53 @@ type remoteToolsView struct {
 	sort     remotetools.SortKey
 	ordering [6]components.TableSortState
 
-	procs                                 []remotetools.Process
-	containers                            []remotetools.Container
-	compose                               []remotetools.ComposeProject
-	resources                             []remotetools.Resource
-	rows                                  []remoteRow
-	selected                              string
-	page                                  int
-	pageText                              string
-	processScroll                         float32
-	processScrollBar                      components.ScrollAreaGeometry
-	processScrollDragging                 bool
-	processScrollGrab                     float32
-	processScrollValue                    string
-	processScrollFirst                    int
-	processScrollCount                    int
-	processTableBounds                    gfx.Rect
-	processColumns                        [6]components.TableColumn
-	searches                              [6]remoteSearch
-	processMenu                           remoteProcessMenu
-	processDetails                        remoteProcessDetails
-	processDetailsSerial                  uint64
-	containerDetails                      remoteContainerDetails
-	containerDetailsSerial                uint64
+	procs                  []remotetools.Process
+	containers             []remotetools.Container
+	compose                []remotetools.ComposeProject
+	resources              []remotetools.Resource
+	rows                   []remoteRow
+	selected               string
+	page                   int
+	pageText               string
+	processScroll          float32
+	processScrollBar       components.ScrollAreaGeometry
+	processScrollDragging  bool
+	processScrollGrab      float32
+	processScrollValue     string
+	processScrollFirst     int
+	processScrollCount     int
+	processTableBounds     gfx.Rect
+	tableBodyBounds        gfx.Rect
+	tableBodyFirst         int
+	tableRowHeight         float32
+	processColumns         [6]components.TableColumn
+	searches               [6]remoteSearch
+	processDetails         remoteProcessDetails
+	processDetailsSerial   uint64
+	containerDetails       remoteContainerDetails
+	containerDetailsSerial uint64
+	// tableHandlers, refreshHandlers and autoHandlers take the page controls'
+	// input. They are made once, not in each paint.
+	tableHandlers   ui.Handlers
+	refreshHandlers ui.Handlers
+	autoHandlers    ui.Handlers
+	// The page's declaration functions are made once too: method values and
+	// closures made in each paint allocate.
+	tabLabel     func(remoteTab) string
+	autoMenu     func(*ui.MenuItems)
+	processMenu  func(*ui.MenuItems)
+	autoDraw     func(*ui.DrawContext)
+	processDraw  func(*ui.DrawContext)
+	objectDraw   func(*ui.DrawContext)
+	body, footer func()
+	detailsAct   func(gfx.ID)
+	// ctx is the page declaration being used while the tools dialog declares
+	// itself. The stored body, footer and menu functions read it, because a
+	// closure cannot capture a paint's C beyond that paint.
+	ctx ui.C
+	// tablePressRow is the row a press took, so a release opens the process
+	// details only when it is the same row.
+	tablePressRow                         int
 	sourceTotal                           int
 	processesTruncated, commandsTruncated bool
 	searchSummary                         string
@@ -243,88 +292,13 @@ func (state *State) clickRemoteTools(id gfx.ID) {
 		}
 		return
 	}
-	if state.clickRemoteProcessDetails(id) {
-		return
-	}
-	if state.clickRemoteContainerDetails(id) {
-		return
-	}
-	if state.clickRemoteProcessMenu(id) {
-		return
-	}
 	if remoteMutation(id) && (view.stale || view.loading || view.collectedAt.IsZero()) {
 		view.status, view.failed = m.RemoteRefreshRequired, true
 		return
 	}
 	switch {
-	case id == hitRemoteSearchClear:
-		state.clearRemoteSearch()
 	case id == hitRemoteClose || id == hitRemoteDismiss:
 		state.closeRemoteToolsSurface()
-	case id == hitRemoteAutoRefresh:
-		view.auto.open = !view.auto.open
-	case id == hitRemoteAutoDismiss:
-		view.auto.open = false
-	case id == hitRemoteAutoToggle:
-		view.auto.enabled = !view.auto.enabled
-		view.auto.restart()
-	case id.Scope() == hitRemoteIntervals:
-		if index := item(id); index >= 0 && index < len(remoteRefreshIntervals) {
-			view.auto.interval = remoteRefreshIntervals[index]
-			view.auto.enabled = true
-			view.auto.restart()
-		}
-	case id == hitRemoteTabProcesses || id == hitRemoteTabContainers || id == hitRemoteTabImages || id == hitRemoteTabVolumes || id == hitRemoteTabNetworks || id == hitRemoteTabCompose:
-		var tab remoteTab
-		for candidate, hit := range remoteTabHits {
-			if hit == id {
-				tab = remoteTab(candidate)
-			}
-		}
-		if tab != view.tab {
-			view.tab, view.selected, view.page = tab, "", 0
-			view.rows, view.pageText = nil, ""
-			view.procs, view.containers, view.compose, view.resources = nil, nil, nil, nil
-			view.collectedAt, view.stale, view.snapshotStatus = time.Time{}, false, ""
-			view.processesTruncated, view.commandsTruncated = false, false
-			state.rebuildRemoteRows()
-			if view.noDocker && tab != remoteProcesses {
-				// Docker availability belongs to the connection, not its tab.
-				// Keep the empty state until an explicit or timed refresh rechecks it.
-				view.serial++
-				view.loading, view.failed, view.status = false, true, m.RemoteErrNoDocker
-			} else {
-				state.refreshRemoteTools()
-			}
-		}
-	case state.clickRemoteTableSort(id):
-		return
-	case id == hitRemoteRefresh:
-		if !view.loading {
-			// An explicit refresh rechecks Docker as well, so an answer from
-			// before the installation does not outlive it.
-			view.noDocker = false
-			state.refreshRemoteTools()
-		}
-	case id == hitRemotePrevious:
-		if view.page > 0 {
-			view.page--
-			view.pageText = ""
-		}
-	case id == hitRemoteNext:
-		if (view.page+1)*state.remotePageSize() < len(view.rows) {
-			view.page++
-			view.pageText = ""
-		}
-	case id.Scope() == hitRemoteRowList:
-		if index := item(id); index < len(view.rows) {
-			view.selected = view.rows[index].key
-			if view.tab == remoteProcesses {
-				if process, found := state.remoteProcessByKey(view.selected); found {
-					state.openRemoteProcessDetails(process)
-				}
-			}
-		}
 	case id == hitRemoteTerminate || id == hitRemoteKill:
 		process, ok := state.selectedProcess()
 		if !ok {
@@ -735,7 +709,7 @@ func (state *State) runRemoteAction(done string, action func(context.Context, re
 
 func (state *State) closeRemoteToolsSurface() {
 	state.remote.auto.enabled, state.remote.auto.open = false, false
-	state.remote.processMenu = remoteProcessMenu{}
+	state.remote.tablePressRow = -1
 	state.closeRemoteProcessDetails()
 	state.closeRemoteContainerDetails()
 	state.remote.serial++
@@ -854,204 +828,6 @@ func (state *State) rebuildRemoteRows() {
 		view.page = 0
 	}
 	view.pageText = ""
-}
-
-func (state *State) paintRemoteTools(canvas *gfx.Canvas, viewport gfx.Rect) {
-	theme := state.Theme()
-	_, ok := state.remoteSession()
-	if !ok {
-		state.closeRemoteToolsSurface()
-		return
-	}
-	tableHeight := components.TableHeaderHeight(theme) + remoteRowsPerPage*components.TableRowHeight(theme)
-	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
-		Layer: dialogLayer, Scope: dialogScope,
-		DismissID: hitRemoteDismiss, CloseID: hitRemoteClose, InitialFocusID: hitRemoteRefresh,
-		ContentSize: gfx.Size{Width: 940}, FitBody: true, BodyHeight: 52 + tableHeight + 34 + remoteSearchHeight,
-	})
-	layout := dialog.Begin("", "")
-	state.paintRemoteToolsBody(canvas, layout.Body)
-	actions, count := state.remoteToolActions()
-	dialog.Actions(layout, actions[:count]...)
-	state.paintRemoteRefreshMenu(canvas)
-	dialog.End()
-	state.paintRemoteProcessMenu(canvas, viewport)
-	state.paintRemoteProcessDetails(canvas, viewport)
-	state.paintRemoteContainerDetails(canvas, viewport)
-}
-
-func (state *State) paintRemoteToolsBody(canvas *gfx.Canvas, bounds gfx.Rect) {
-	m, pal, theme := state.messages.Tools, state.pal, state.Theme()
-	view := &state.remote
-	pageSize := state.remotePageSize()
-	tableHeight := components.TableHeaderHeight(theme) + float32(pageSize)*components.TableRowHeight(theme)
-	tabs := [...]components.SegmentOption{
-		{ID: hitRemoteTabProcesses, Label: m.RemoteTabProcesses},
-		{ID: hitRemoteTabContainers, Label: m.RemoteTabContainers},
-		{ID: hitRemoteTabImages, Label: m.RemoteTabImages},
-		{ID: hitRemoteTabVolumes, Label: m.RemoteTabVolumes},
-		{ID: hitRemoteTabNetworks, Label: m.RemoteTabNetworks},
-		{ID: hitRemoteTabCompose, Label: m.RemoteTabCompose},
-	}
-	selectedTab := remoteTabHits[view.tab]
-	// Tabs and refresh controls share the toolbar; sorting belongs to the table.
-	pages := (len(view.rows) + pageSize - 1) / pageSize
-	status := view.status
-	missingDocker := view.noDocker && view.tab != remoteProcesses && view.collectedAt.IsZero()
-	if view.loading && len(view.rows) == 0 && !missingDocker {
-		status = ""
-	}
-	if missingDocker && !view.loading {
-		status = ""
-	}
-	color := pal.muted
-	if view.failed {
-		color = pal.danger
-	}
-	var tabsSlot, refreshSlot, sudoSlot, tableSlot, pagesSlot, searchSlot, statusSlot, snapshotSlot ui.Box
-	f := state.partLayout.Begin(canvas, theme, bounds)
-	stacked := bounds.Width < 800
-	f.Column().Fill().Children(func() {
-		f.Row().Height(remoteToolbarHeight).Shrink(0).Gap(12).Children(func() {
-			// In a window too narrow for both they share the line instead of overlapping.
-			tabsSlot = f.Slot().Width(600).Shrink(1)
-			f.Spacer()
-			if !stacked {
-				refreshSlot = f.Slot().Width(174).Shrink(0)
-				sudoSlot = f.Slot().Width(28).Shrink(0)
-			}
-		})
-		if stacked {
-			f.Row().Height(remoteToolbarHeight).Shrink(0).MarginSides(8, 0, 0, 0).Children(func() {
-				f.Spacer()
-				refreshSlot = f.Slot().Width(174).Height(remoteToolbarHeight)
-				sudoSlot = f.Slot().Width(28).Height(remoteToolbarHeight)
-			})
-		}
-		searchSlot = f.Slot().Height(remoteSearchHeight).Shrink(0).MarginSides(8, 0, 0, 0)
-		if view.tab == remoteProcesses {
-			tableSlot = f.Slot().Grow(1).Shrink(1).MinHeight(components.TableHeaderHeight(theme)+components.TableRowHeight(theme)).MarginSides(4, 0, 0, 0)
-		} else {
-			tableSlot = f.Slot().Height(tableHeight).Shrink(0).MarginSides(4, 0, 0, 0)
-		}
-		f.Row().Height(30).Shrink(0).Items(ui.Center).MarginSides(6, 0, 0, 0).Children(func() {
-			statusSlot = f.Slot().Grow(1).Height(24)
-			snapshotSlot = f.Slot().Width(360).Height(24).Shrink(1)
-			if len(view.rows) > pageSize {
-				pagesSlot = f.Slot().Width(250).Height(30).Shrink(0)
-			}
-		})
-	})
-	f.End()
-
-	if status != "" && statusSlot.Rect().Width > 0 {
-		bounds := statusSlot.Rect()
-		canvas.Label(elide(canvas, status, metrics.FontSizeS, gfx.WeightMedium, bounds.Width), bounds,
-			gfx.TextStyle{Size: metrics.FontSizeS, Weight: gfx.WeightMedium, Color: color})
-	}
-	if view.snapshotStatus != "" && snapshotSlot.Rect().Width > 0 {
-		bounds := snapshotSlot.Rect()
-		canvas.Label(elide(canvas, view.snapshotStatus, metrics.FontSizeS, gfx.WeightMedium, bounds.Width), bounds,
-			gfx.TextStyle{Size: metrics.FontSizeS, Weight: gfx.WeightMedium, Color: pal.muted})
-		canvas.HitWithOptions(hitRemoteSnapshotStatus, bounds, view.snapshotStatus,
-			gfx.HitOptions{Role: gfx.RoleStatus, SkipFocus: true, Hint: view.searchSummary})
-	}
-	components.BeginSegmentedControl(canvas, theme, tabsSlot.Rect(), tabs[:], selectedTab).Paint()
-	state.paintRemoteRefresh(canvas, refreshSlot.Rect())
-	if session, ok := state.remoteSession(); ok && session.host.System != sshconn.SystemWindows {
-		label := state.messages.SudoCommandsEnable
-		if session.sudoCommands {
-			label = state.messages.SudoCommandsDisable
-		}
-		state.paintIconButton(canvas, hitRemoteSudo, iconLock, sudoSlot.Rect(), label, false, iconButtonQuiet, pal.surface)
-	}
-	state.paintRemoteSearch(canvas, searchSlot.Rect())
-	if missingDocker {
-		state.paintRemoteDockerEmpty(canvas, tableSlot.Rect())
-		return
-	}
-	if view.loading && len(view.rows) == 0 {
-		state.paintRemoteToolsLoading(canvas, tableSlot.Rect())
-		return
-	}
-	if view.tab == remoteProcesses {
-		state.paintRemoteProcessTable(canvas, tableSlot.Rect())
-		return
-	}
-
-	var columns []components.TableColumn
-	var headings []string
-	if view.tab == remoteCompose {
-		columns = []components.TableColumn{{Width: 220}, {Width: 200}, {Width: 0}}
-		view.columns = [6]string{m.RemoteColName, m.RemoteColStatus, m.RemoteColConfig}
-		headings = view.columns[:3]
-	} else if view.tab == remoteImages {
-		columns = []components.TableColumn{{Width: 470}, {Width: 150}, {Width: 100, Alignment: components.TableAlignRight}, {Width: 0}}
-		view.columns = [6]string{m.RemoteColName, m.RemoteColID, m.RemoteColSize, m.RemoteColCreated}
-		headings = view.columns[:4]
-	} else if view.tab == remoteVolumes {
-		columns = []components.TableColumn{{Width: 470}, {Width: 150}, {Width: 0}}
-		view.columns = [6]string{m.RemoteColName, m.RemoteColDriver, m.RemoteColScope}
-		headings = view.columns[:3]
-	} else if view.tab == remoteNetworks {
-		columns = []components.TableColumn{{Width: 300}, {Width: 160}, {Width: 150}, {Width: 0}}
-		view.columns = [6]string{m.RemoteColName, m.RemoteColID, m.RemoteColDriver, m.RemoteColScope}
-		headings = view.columns[:4]
-	} else {
-		columns = []components.TableColumn{{Width: 200}, {Width: 220}, {Width: 90}, {Width: 200}, {Width: 0}}
-		view.columns = [6]string{m.RemoteColName, m.RemoteColImage, m.RemoteColState, m.RemoteColStatus, m.RemoteColID}
-		headings = view.columns[:5]
-	}
-	var headerCells [6]components.TableHeader
-	order := view.tableSort()
-	for i, heading := range headings {
-		headerCells[i] = components.TableHeader{ID: remoteTableHeaderID(view.tab, i), Label: heading, Disabled: view.loading, FocusableWhenDisabled: true, Description: m.RemoteSortAction}
-		if order.Direction != components.TableSortNone && order.Column == i {
-			headerCells[i].Sort = order.Direction
-			if order.Direction == components.TableSortAscending {
-				headerCells[i].Description = m.RemoteSortAscending
-			} else {
-				headerCells[i].Description = m.RemoteSortDescending
-			}
-		}
-	}
-	components.FitSortableTableHeadings(canvas, theme, columns, headerCells[:len(headings)])
-	if state.remoteWindow != nil {
-		// Keep the last column visible as a native window is narrowed; fixed
-		// desktop widths otherwise consume all space before reaching it.
-		var fixed float32
-		for _, column := range columns[:len(columns)-1] {
-			fixed += column.Width
-		}
-		available := max(bounds.Width-120, 0)
-		if fixed > available {
-			for i := range columns[:len(columns)-1] {
-				columns[i].Width *= available / fixed
-			}
-		}
-	}
-	table := components.BeginTable(canvas, theme, tableSlot.Rect(), columns)
-	table.SortableHeader(headerCells[:len(headings)])
-	start := view.page * pageSize
-	end := min(start+pageSize, len(view.rows))
-	for index := start; index < end; index++ {
-		row := &view.rows[index]
-		id := hitRemoteRowList.At(index)
-		table.Row(id, row.cells[:len(headings)], row.key == view.selected)
-		if view.tab == remoteProcesses {
-			state.openRemoteProcessMenuOn(canvas, id, index)
-		}
-	}
-
-	if len(view.rows) > pageSize {
-		if view.pageText == "" {
-			view.pageText = strconv.Itoa(view.page+1) + "/" + strconv.Itoa(pages)
-		}
-		pagination := components.BeginPagination(canvas, theme, pagesSlot.Rect())
-		pagination.AddPrevious(hitRemotePrevious, state.messages.KnownHostsPrevious, view.page == 0)
-		pagination.AddPage(gfx.ID{}, view.pageText, true)
-		pagination.AddNext(hitRemoteNext, state.messages.KnownHostsNext, view.page+1 >= pages)
-	}
 }
 
 func (state *State) remoteToolActions() (actions [8]components.ButtonAction, count int) {

@@ -41,7 +41,7 @@ func TestRemoteSearchFindsIdleProcessesAndNeverSendsQueries(t *testing.T) {
 	if len(state.remote.rows) != 0 || server.ran("LC_ALL=C ps") != before {
 		t.Fatal("search text entered remote commands or was not treated literally")
 	}
-	state.Click(hitRemoteSearchClear)
+	clickRemoteToolsSearchClear(t, state)
 	if len(state.remote.rows) != 101 || state.remote.searches[remoteProcesses].editor.String() != "" {
 		t.Fatal("clearing search did not restore the complete loaded snapshot")
 	}
@@ -50,7 +50,7 @@ func TestRemoteSearchFindsIdleProcessesAndNeverSendsQueries(t *testing.T) {
 func TestRemoteSearchQueriesStayIndependentAcrossTabsAndRefresh(t *testing.T) {
 	state, _, _ := openRemoteToolsDialog(t)
 	replaceRemoteQuery(t, state, "NGINX")
-	state.Click(hitRemoteTabContainers)
+	clickSettingsChoice(t, state, state.messages.Tools.RemoteTabContainers)
 	waitFor(t, state, func() bool { return !state.remote.loading })
 	if len(state.remote.rows) != 2 {
 		t.Fatal("process query leaked into containers")
@@ -59,12 +59,12 @@ func TestRemoteSearchQueriesStayIndependentAcrossTabsAndRefresh(t *testing.T) {
 	if len(state.remote.rows) != 1 {
 		t.Fatal("container search failed")
 	}
-	state.Click(hitRemoteRefresh)
+	clickRemoteToolsAction(t, state, hitRemoteRefresh)
 	waitFor(t, state, func() bool { return !state.remote.loading })
 	if len(state.remote.rows) != 1 {
 		t.Fatal("refresh lost container query")
 	}
-	state.Click(hitRemoteTabProcesses)
+	clickSettingsChoice(t, state, state.messages.Tools.RemoteTabProcesses)
 	waitFor(t, state, func() bool { return !state.remote.loading })
 	if len(state.remote.rows) != 1 || state.remote.rows[0].cells[0] != "2211" {
 		t.Fatal("returning to process tab lost its independent query")
@@ -73,7 +73,10 @@ func TestRemoteSearchQueriesStayIndependentAcrossTabsAndRefresh(t *testing.T) {
 
 func TestRemoteSearchNativeFocusTypingAndEscape(t *testing.T) {
 	state, server, _ := openRemoteToolsDialog(t)
-	driver, err := app.NewDriver(app.Config{Title: "remote search", Width: 1400, Height: 900, Tree: Tree(), Paint: state.Paint, OnKey: state.Key, OnShortcut: state.Shortcut, OnPointer: state.Pointer, TextInput: state.RemoteToolsInput}, nil)
+	driver, err := app.NewDriver(state.WindowConfig(app.Config{
+		Title: "remote search", Width: 1400, Height: 900, Tree: Tree(),
+		Paint: state.Paint, OnKey: state.Key, OnShortcut: state.Shortcut, OnPointer: state.Pointer,
+	}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +114,7 @@ func TestRemoteSearchNativeFocusTypingAndEscape(t *testing.T) {
 func TestRemoteSearchEscapeClearsQueryAfterResultsTakeFocus(t *testing.T) {
 	state, _, _ := openRemoteToolsDialog(t)
 	replaceRemoteQuery(t, state, "nginx")
-	result := state.remoteSearchKey(gfx.KeyEvent{Target: hitRemoteRowList.At(0), Key: gfx.KeyEscape})
+	result := state.remoteSearchKey(gfx.KeyEvent{Key: gfx.KeyEscape})
 	if !result.Handled || state.remote.searches[remoteProcesses].editor.String() != "" || len(state.remote.rows) != 3 {
 		t.Fatal("Escape from the result list did not clear its query before closing")
 	}
@@ -119,10 +122,10 @@ func TestRemoteSearchEscapeClearsQueryAfterResultsTakeFocus(t *testing.T) {
 
 func TestRemoteSearchZeroMatchesDoesNotMeanNoDockerObjects(t *testing.T) {
 	state, _, _ := openRemoteToolsDialog(t)
-	state.Click(hitRemoteTabContainers)
+	clickSettingsChoice(t, state, state.messages.Tools.RemoteTabContainers)
 	waitFor(t, state, func() bool { return !state.remote.loading })
 	replaceRemoteQuery(t, state, "no-matching-container")
-	state.Click(hitRemoteRefresh)
+	clickRemoteToolsAction(t, state, hitRemoteRefresh)
 	waitFor(t, state, func() bool { return !state.remote.loading })
 	if state.remote.sourceTotal != 2 || len(state.remote.rows) != 0 || state.remote.status == state.messages.Tools.RemoteEmptyContainers {
 		t.Fatalf("filtered snapshot was reported as an empty host: %q", state.remote.status)

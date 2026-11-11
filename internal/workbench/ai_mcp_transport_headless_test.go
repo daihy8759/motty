@@ -28,7 +28,7 @@ func TestMCPTransportSectionsAndConsentThroughNativeInput(t *testing.T) {
 				state.ai.mcpAddr, state.ai.mcpToken = "127.0.0.1:4455", "transport-preview-token"
 				state.Click(aiMCPClientID(aiMCPCodex))
 				state.Click(aiAgentClientID(aiMCPCodex))
-				view, err := headless.Open(app.Config{Title: "MCP transports", Width: 1280, Height: 900, Tree: Tree(), Paint: state.Paint, OnKey: state.Key, OnPointer: state.Pointer, OnScroll: state.Scroll, OnResize: state.Resize}, nil, headless.Options{Scale: scale})
+				view, err := headless.Open(state.WindowConfig(app.Config{Title: "MCP transports", Width: 1280, Height: 900, Tree: Tree(), Paint: state.Paint, OnKey: state.Key, OnPointer: state.Pointer, OnScroll: state.Scroll, OnResize: state.Resize}), nil, headless.Options{Scale: scale})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -45,6 +45,19 @@ func TestMCPTransportSectionsAndConsentThroughNativeInput(t *testing.T) {
 						}
 					}
 					t.Fatal("missing MCP control", tree.Text(id))
+				}
+				// The access levels are page Choices: click the segment by its
+				// words, the last "Allow all" being the stdio one.
+				clickLabel := func(label string, last bool) {
+					t.Helper()
+					view.Rest()
+					hit, ok := settingsChoiceInHits(view.Snapshot().Hits, label, last)
+					if !ok {
+						t.Fatalf("missing access choice %q", label)
+					}
+					if err := view.Click(hit.Bounds.X+hit.Bounds.Width/2, hit.Bounds.Y+hit.Bounds.Height/2); err != nil {
+						t.Fatal(err)
+					}
 				}
 				shot := func(name string) {
 					t.Helper()
@@ -64,11 +77,25 @@ func TestMCPTransportSectionsAndConsentThroughNativeInput(t *testing.T) {
 					t.Fatal(err)
 				}
 				shot("stdio")
-				click(hitAISetAgentRun)
+				agentRun := state.messages.AISettings.AgentModeRun
+				allowAll := state.messages.AISettings.MCPModeAllowAll
+				clickButton := func(label string) {
+					t.Helper()
+					view.Rest()
+					hit, ok := snapshotButton(view.Snapshot(), label)
+					if !ok {
+						t.Fatalf("missing button %q", label)
+					}
+					if err := view.Click(hit.Bounds.X+hit.Bounds.Width/2, hit.Bounds.Y+hit.Bounds.Height/2); err != nil {
+						t.Fatal(err)
+					}
+				}
+				clickLabel(agentRun, false)
 				if err := view.Keys("right"); err != nil {
 					t.Fatal(err)
 				}
-				if state.ai.cfg.dialog != aiDialogAgentAllowAll || state.ai.settings.agentMode != gate.ModeAsk || view.Snapshot().Focused != hitAISetConfirmCancel {
+				cancel, ok := snapshotButton(view.Snapshot(), state.messages.Cancel)
+				if state.ai.cfg.dialog != aiDialogAgentAllowAll || state.ai.settings.agentMode != gate.ModeAsk || !ok || view.Snapshot().Focused != cancel.ID {
 					t.Fatal("stdio full access did not wait on the safe confirmation action")
 				}
 				shot("stdio-confirm")
@@ -78,15 +105,15 @@ func TestMCPTransportSectionsAndConsentThroughNativeInput(t *testing.T) {
 				if state.ai.settings.agentMode != gate.ModeAsk || state.ai.cfg.dialog != aiDialogNone {
 					t.Fatal("Enter on the default action did not cancel")
 				}
-				click(hitAISetAgentAllowAll)
+				clickLabel(allowAll, true)
 				if err := view.Keys("esc"); err != nil {
 					t.Fatal(err)
 				}
 				if state.ai.settings.agentMode != gate.ModeAsk || state.ai.cfg.dialog != aiDialogNone {
 					t.Fatal("Escape did not cancel")
 				}
-				click(hitAISetAgentAllowAll)
-				click(hitAISetConfirmAction)
+				clickLabel(allowAll, true)
+				clickButton(state.messages.AISettings.MCPAllowAllConfirm)
 				if state.ai.settings.agentMode != gate.ModeAllowAll || state.ai.settings.mcpMode != gate.ModeObserve {
 					t.Fatal("confirmation changed the wrong MCP service")
 				}
@@ -107,13 +134,26 @@ func TestMCPTransportSectionsAndConsentThroughNativeInput(t *testing.T) {
 }
 
 func TestMCPConsentSaveErrorsAreForgottenAfterNativeEscape(t *testing.T) {
-	for _, allow := range []gfx.ID{hitAISetMCPAllowAll, hitAISetAgentAllowAll} {
-		t.Run(tree.Text(allow), func(t *testing.T) {
+	for _, consent := range []struct {
+		name     string
+		httpMode bool // the first "Allow all", the HTTP level, rather than stdio's
+	}{
+		{"http", true}, {"stdio", false},
+	} {
+		t.Run(consent.name, func(t *testing.T) {
 			world := newSettingsWorld(t, newLister())
 			state := world.state
 			state.selectSettingsCategory(settingsMCP)
-			state.Click(allow)
-			view, err := headless.Open(app.Config{Title: "MCP save failure", Width: 1280, Height: 900, Tree: Tree(), Paint: state.Paint, OnKey: state.Key, OnPointer: state.Pointer, OnResize: state.Resize}, nil, headless.Options{})
+			allowAll := state.messages.AISettings.MCPModeAllowAll
+			allow := func() {
+				if consent.httpMode {
+					clickSettingsChoiceFirst(t, state, allowAll)
+					return
+				}
+				clickSettingsChoice(t, state, allowAll)
+			}
+			allow()
+			view, err := headless.Open(state.WindowConfig(app.Config{Title: "MCP save failure", Width: 1280, Height: 900, Tree: Tree(), Paint: state.Paint, OnKey: state.Key, OnPointer: state.Pointer, OnResize: state.Resize}), nil, headless.Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -121,14 +161,10 @@ func TestMCPConsentSaveErrorsAreForgottenAfterNativeEscape(t *testing.T) {
 			if err := world.db(t).Close(); err != nil {
 				t.Fatal(err)
 			}
-			found := false
-			for _, hit := range view.Snapshot().Hits {
-				if hit.ID == hitAISetConfirmAction && !hit.IsLabel {
-					if err := view.Click(hit.Bounds.X+hit.Bounds.Width/2, hit.Bounds.Y+hit.Bounds.Height/2); err != nil {
-						t.Fatal(err)
-					}
-					found = true
-					break
+			hit, found := snapshotButton(view.Snapshot(), state.messages.AISettings.MCPAllowAllConfirm)
+			if found {
+				if err := view.Click(hit.Bounds.X+hit.Bounds.Width/2, hit.Bounds.Y+hit.Bounds.Height/2); err != nil {
+					t.Fatal(err)
 				}
 			}
 			if !found || state.ai.cfg.notice == "" {
@@ -140,7 +176,7 @@ func TestMCPConsentSaveErrorsAreForgottenAfterNativeEscape(t *testing.T) {
 			if state.ai.cfg.dialog != aiDialogNone {
 				t.Fatal("Escape did not cancel the failed save")
 			}
-			state.Click(allow)
+			allow()
 			if state.ai.cfg.notice != "" || state.ai.cfg.dialog == aiDialogNone {
 				t.Fatal("a reopened confirmation retained a canceled save error")
 			}

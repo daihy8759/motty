@@ -22,8 +22,6 @@ var (
 	hitWorkspaceDraftDismiss          = tree.ID(workspaceHits, "draft-dismiss")
 	hitWorkspaceDraftCancel           = tree.ID(workspaceHits, "draft-cancel")
 	hitWorkspaceDraftSubmit           = tree.ID(workspaceHits, "draft-submit")
-	hitWorkspaceDraftTemporary        = tree.ID(workspaceHits, "draft-temporary")
-	hitWorkspaceDraftFixed            = tree.ID(workspaceHits, "draft-fixed")
 	hitWorkspaceDraftName             = tree.ID(workspaceHits, "draft-name")
 	hitWorkspaceDraftSearch           = tree.ID(workspaceHits, "draft-search")
 	hitWorkspaceDraftHostList         = tree.Sub(workspaceHits, tree.Name("draft-host"))
@@ -147,6 +145,7 @@ func (state *State) applySelectedWorkspaceTemplate() {
 		state.showActionWarning(template.Name, detail)
 		return
 	}
+	plan.Commands = template.Commands
 	plan = orderedWorkspaceLaunch(plan, template.HostIDs)
 	workspaceID, _, err := state.launchWorkspaceWithIdentity(plan, template.Name, workspaceLaunchIdentity{
 		managedLayout: template.Layout,
@@ -189,52 +188,71 @@ func (state *State) expandedWorkspaceTemplateIndex() int {
 	return index
 }
 
-// paintWorkspaceLibrary lists templates as openable catalog rows. The sidebar
-// deliberately carries no template count.
-func (state *State) paintWorkspaceLibrary(canvas *gfx.Canvas, bounds gfx.Rect) {
-	m, pal := state.messages, state.pal
-	newWidth, newIcon := toolbarButtonLayout(canvas, m.WorkspaceNew, iconPlus, iconPlus, bounds.Width < 520)
+// workspaceLibrarySectionUI is what the workspace library's declaration leaves
+// for its paint.
+type workspaceLibrarySectionUI struct {
+	content, create, empty ui.Box
+	newWidth               float32
+	newIcon                uint8
+	condensed              bool
+	// draw is the page hook that paints into these slots. It is kept so a paint
+	// does not build a closure for the hook.
+	draw func(*ui.DrawContext)
+}
 
-	var content, emptyIcon, emptyButton ui.Box
-	var create ui.Box
-	f := state.workspaceLibraryLayout.Begin(canvas, state.Theme(), bounds)
+// declareWorkspaceLibrary declares the workspace library in the workbench page:
+// its header with the create button, its rows or empty state, and its divider.
+func (state *State) declareWorkspaceLibrary(c ui.C) {
+	m, pal := state.messages, state.pal
+	bounds := state.catalogSectionBounds()
+	newWidth, newIcon := toolbarButtonLayout(c.Canvas(), m.WorkspaceNew, iconPlus, iconPlus, bounds.Width < 520)
+	view := &state.sectionBodies.workspaceLibrary
+	draw := view.draw
+	*view = workspaceLibrarySectionUI{newWidth: newWidth, newIcon: newIcon, condensed: bounds.Width < 520}
+	if draw == nil {
+		draw = func(d *ui.DrawContext) { state.paintWorkspaceLibrary(d.Canvas) }
+	}
+	view.draw = draw
 	padding := float32(22)
 	if bounds.Width < 340 {
 		padding = 12
 	}
-	f.Column().Fill().PadSides(18, padding, 0, padding).Children(func() {
+	body := ui.Column(c).Fill().PadSides(18, padding, 0, padding)
+	body.Children(func() {
 		if bounds.Width < 520 {
-			f.Text(m.WorkspaceLibraryTitle).FontSize(20).Weight(gfx.WeightSemibold).Color(pal.text).LineHeight(28).Ellipsis()
-			f.Row().Gap(8).MarginSides(12, 0, 20, 0).Children(func() {
-				create = f.Slot().Size(newWidth, toolbarHeight)
+			ui.Text(c, m.WorkspaceLibraryTitle).FontSize(20).Weight(gfx.WeightSemibold).Color(pal.text).LineHeight(28).Ellipsis()
+			ui.Row(c).Gap(8).MarginSides(12, 0, 20, 0).Children(func() {
+				view.create = state.declareButtonSized(c, hitWorkspaceNew, m.WorkspaceNew, newIcon, false, false, true, toolbarFont, bounds.Width < 520).Size(newWidth, toolbarHeight)
 			})
 		} else {
-			f.Row().MinHeight(74).Gap(10).MarginSides(0, 0, 14, 0).Items(ui.Start).Children(func() {
-				f.Column().Grow(1).Gap(6).Children(func() {
-					f.Text(m.WorkspaceLibraryTitle).FontSize(20).Weight(gfx.WeightSemibold).Color(pal.text).LineHeight(28).Ellipsis()
-					f.Paragraph(m.WorkspaceLibraryDescription, 2).FontSize(12).LineHeight(19).Color(pal.muted)
+			ui.Row(c).MinHeight(74).Gap(10).MarginSides(0, 0, 14, 0).Items(ui.Start).Children(func() {
+				ui.Column(c).Grow(1).Gap(6).Children(func() {
+					ui.Text(c, m.WorkspaceLibraryTitle).FontSize(20).Weight(gfx.WeightSemibold).Color(pal.text).LineHeight(28).Ellipsis()
+					ui.Paragraph(c, m.WorkspaceLibraryDescription, 2).FontSize(12).LineHeight(19).Color(pal.muted)
 				})
-				create = f.Slot().Size(newWidth, toolbarHeight)
+				view.create = state.declareButtonSized(c, hitWorkspaceNew, m.WorkspaceNew, newIcon, false, false, true, toolbarFont, bounds.Width < 520).Size(newWidth, toolbarHeight)
 			})
 		}
 		if len(state.templates) == 0 {
-			emptyIcon, emptyButton = state.declareEmptyPage(f, bounds, m.WorkspaceLibraryEmpty, m.WorkspaceLibraryEmptySub, m.WorkspaceNew)
+			view.empty = state.reserveEmptyPage(c, bounds, m.WorkspaceLibraryEmpty, m.WorkspaceLibraryEmptySub, m.WorkspaceNew, hitWorkspaceNew, iconColumns2, true)
 		} else {
-			content = f.Slot().Grow(1).MarginSides(0, 0, 14, 0)
+			view.content = ui.Slot(c).Grow(1).MarginSides(0, 0, 14, 0)
 		}
-		f.Divider().Background(pal.line)
+		ui.Divider(c).Background(pal.line)
 	})
-	f.End()
+	body.Clip().DrawOver(view.draw)
+}
 
+// paintWorkspaceLibrary paints the workspace library's create button, rows and
+// empty state into the slots its declaration left.
+func (state *State) paintWorkspaceLibrary(canvas *gfx.Canvas) {
+	view := &state.sectionBodies.workspaceLibrary
 	if len(state.templates) == 0 {
-		state.paintEmptyPage(canvas, emptyIcon, emptyButton, iconColumns2, hitWorkspaceNew, m.WorkspaceNew, true)
+		state.drawReservedEmptyPage(canvas, view.empty, iconColumns2)
 		return
 	}
 
-	state.paintToolbarButton(canvas, hitWorkspaceNew, create.Rect().X, create.Rect().Y,
-		newWidth, m.WorkspaceNew, newIcon, false, true, bounds.Width < 520)
-
-	state.paintWorkspaceLibraryRows(canvas, content.Rect(), state.expandedWorkspaceTemplateIndex())
+	state.paintWorkspaceLibraryRows(canvas, view.content.Rect(), state.expandedWorkspaceTemplateIndex())
 }
 
 type workspaceLibraryRow struct {
@@ -307,7 +325,7 @@ func workspaceLibraryRowHeight(template WorkspaceTemplate, width float32, expand
 	if !expanded {
 		return workspaceLibraryHeaderHeight
 	}
-	return workspaceLibraryHeaderHeight + workspaceLibraryLayoutHeight(width) + workspaceCardContentHeight(len(template.HostIDs), template.Layout) + workspaceLibraryBottomInset
+	return workspaceLibraryHeaderHeight + workspaceLibraryLayoutHeight(width) + workspaceTemplateCardHeight(template) + workspaceLibraryBottomInset
 }
 
 func (state *State) paintWorkspaceLibraryRow(canvas *gfx.Canvas, bounds gfx.Rect, index int,
@@ -408,7 +426,7 @@ func (state *State) paintWorkspaceLibraryHosts(canvas *gfx.Canvas, bounds gfx.Re
 	panel := gfx.Rect{X: bounds.X + 12, Y: bounds.Y + workspaceLibraryHeaderHeight, Width: max(0, bounds.Width-24)}
 	state.paintWorkspaceLayoutPresets(canvas, gfx.Rect{X: panel.X + 4, Y: panel.Y + 4, Width: max(0, panel.Width-8), Height: workspacePresetStripHeight(max(0, panel.Width-8))}, hitWorkspaceTemplatePresets, index*len(workspacePresets), template.Layout)
 	items := workspaceTemplateItems(template)
-	height := workspaceCardContentHeight(len(items), template.Layout)
+	height := workspaceTemplateCardHeight(template)
 	content := gfx.Rect{X: panel.X, Y: panel.Y + workspaceLibraryLayoutHeight(bounds.Width), Width: panel.Width, Height: height}
 	state.paintWorkspaceCards(canvas, content, state.workspaceLibraryBounds, items, template.Layout, workspaceCardsTemplate, template.ID, index)
 

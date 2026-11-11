@@ -419,18 +419,18 @@ func (state *State) aiLayoutChips(canvas *gfx.Canvas, width float32) {
 
 // declareAIChips declares the waiting attachments above the message box, each a
 // pill with its name and a button that takes it out again.
-func (state *State) declareAIChips(f *ui.Frame) {
+func (state *State) declareAIChips(c ui.C) {
 	chips := state.ai.panel.chips
-	f.Column().Gap(aiChipGap).Children(func() {
+	ui.Column(c).Gap(aiChipGap).Children(func() {
 		for start := 0; start < len(chips); {
 			end := start
 			for end < len(chips) && chips[end].row == chips[start].row {
 				end++
 			}
 			row := chips[start:end]
-			f.Row().Height(aiChipHeight).Gap(aiChipGap).Children(func() {
+			ui.Row(c).Height(aiChipHeight).Gap(aiChipGap).Children(func() {
 				for _, chip := range row {
-					state.declareAIChip(f, chip)
+					state.declareAIChip(c, chip)
 				}
 			})
 			start = end
@@ -438,7 +438,7 @@ func (state *State) declareAIChips(f *ui.Frame) {
 	})
 }
 
-func (state *State) declareAIChip(f *ui.Frame, chip aiChip) {
+func (state *State) declareAIChip(c ui.C, chip aiChip) {
 	pal, m := state.pal, state.messages.AIPanel
 	attachment := &state.ai.attachments[chip.index]
 	name := aiAttachmentName(attachment.file.Name)
@@ -451,48 +451,50 @@ func (state *State) declareAIChip(f *ui.Frame, chip aiChip) {
 	remove := hitAIAttachRemove.At(chip.index)
 	label := fmt.Sprintf(m.AttachRemoveFmt, name)
 	fill := gfx.Color{}
-	if f.Canvas().Pressed() == remove || f.Canvas().Hovered() == remove {
+	if canvas := c.Canvas(); canvas != nil && (canvas.Pressed() == remove || canvas.Hovered() == remove) {
 		fill = pal.surfaceHot
 	}
-	f.Row().Width(chip.width).Height(aiChipHeight).PadSides(0, 3, 0, 8).Gap(5).Shrink(0).Items(ui.Center).
+	ui.Row(c).Width(chip.width).Height(aiChipHeight).PadSides(0, 3, 0, 8).Gap(5).Shrink(0).Items(ui.Center).
 		Background(pal.surfaceSoft).Radius(aiChipHeight / 2).Children(func() {
-		f.Icon(lucideIcons[icon]).Size(13, 13).Color(pal.muted).Shrink(0)
-		f.Text(name).FontSize(aiSmallSize).Weight(gfx.WeightMedium).Color(pal.text).LineHeight(aiSmallLine).Ellipsis().Shrink(1).Grow(1)
-		f.Column().Size(18, 18).Shrink(0).Center().Background(fill).Radius(9).
+		ui.Icon(c, lucideIcons[icon]).Size(13, 13).Color(pal.muted).Shrink(0)
+		ui.Text(c, name).FontSize(aiSmallSize).Weight(gfx.WeightMedium).Color(pal.text).LineHeight(aiSmallLine).Ellipsis().Shrink(1).Grow(1)
+		ui.Column(c).Size(18, 18).Shrink(0).Center().Background(fill).Radius(9).
 			HitWith(remove, label, gfx.HitOptions{Role: gfx.RoleButton, Hint: label}).Children(func() {
-			f.Icon(lucideIcons[iconClose]).Size(11, 11).Color(pal.muted)
+			ui.Icon(c, lucideIcons[iconClose]).Size(11, 11).Color(pal.muted)
 		})
 	})
 }
 
 // declareAIAttachButton declares the paperclip in the message box that opens the
 // dialog for files to attach.
-func (state *State) declareAIAttachButton(f *ui.Frame) {
+func (state *State) declareAIAttachButton(c ui.C) {
 	pal, label := state.pal, state.messages.AIPanel.Attach
 	foreground := pal.muted
 	var fill gfx.Color
-	switch {
-	case f.Canvas().Pressed() == hitAIAttach:
-		fill, foreground = pal.surfaceHot, pal.text
-	case f.Canvas().Hovered() == hitAIAttach:
-		fill = pal.surfaceSoft
+	if canvas := c.Canvas(); canvas != nil {
+		switch {
+		case canvas.Pressed() == hitAIAttach:
+			fill, foreground = pal.surfaceHot, pal.text
+		case canvas.Hovered() == hitAIAttach:
+			fill = pal.surfaceSoft
+		}
 	}
-	f.Column().Size(aiSendSize, aiSendSize).Shrink(0).Center().Background(fill).Radius(aiSendSize/2).
+	ui.Column(c).Size(aiSendSize, aiSendSize).Shrink(0).Center().Background(fill).Radius(aiSendSize/2).
 		HitWith(hitAIAttach, label, gfx.HitOptions{Role: gfx.RoleButton, Hint: label}).Children(func() {
-		f.Icon(lucideIcons[iconPaperclip]).Size(16, 16).Color(foreground)
+		ui.Icon(c, lucideIcons[iconPaperclip]).Size(16, 16).Color(foreground)
 	})
 }
 
-func (state *State) declareAIUploadButton(f *ui.Frame) {
+func (state *State) declareAIUploadButton(c ui.C) {
 	pal, label := state.pal, state.messages.AIPanel.Upload
 	foreground := pal.muted
 	var fill gfx.Color
-	if f.Canvas().Pressed() == hitAIUpload || f.Canvas().Hovered() == hitAIUpload {
+	if canvas := c.Canvas(); canvas != nil && (canvas.Pressed() == hitAIUpload || canvas.Hovered() == hitAIUpload) {
 		fill, foreground = pal.surfaceSoft, pal.text
 	}
-	f.Column().Size(aiSendSize, aiSendSize).Shrink(0).Center().Background(fill).Radius(aiSendSize/2).
+	ui.Column(c).Size(aiSendSize, aiSendSize).Shrink(0).Center().Background(fill).Radius(aiSendSize/2).
 		HitWith(hitAIUpload, label, gfx.HitOptions{Role: gfx.RoleButton, Hint: label}).Children(func() {
-		f.Icon(lucideIcons[iconUpload]).Size(16, 16).Color(foreground)
+		ui.Icon(c, lucideIcons[iconUpload]).Size(16, 16).Color(foreground)
 	})
 }
 

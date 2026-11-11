@@ -18,6 +18,7 @@ import (
 	"motty/internal/ai/store"
 	"motty/internal/aiproviderimport"
 	"motty/internal/buildinfo"
+	"motty/internal/linkwatch"
 	"motty/internal/localshell"
 	"motty/internal/sftpclient"
 	"motty/internal/sshconn"
@@ -192,6 +193,10 @@ type Options struct {
 	// Invalidate asks the window to repaint. Connection goroutines call it
 	// when their status changes; the window then calls Wake.
 	Invalidate func()
+	// Invalidator is the same window's invalidator, for a page that declares a
+	// ui.Effect: the effect wakes the window itself when its work finishes. Nil
+	// leaves such a page's results waiting for the next paint.
+	Invalidator *app.Invalidator
 	// NewWindow creates another independent workbench window through Viva's
 	// application lifecycle. Nil means the host did not enable multi-window.
 	NewWindow func() error
@@ -301,6 +306,12 @@ type Options struct {
 	// WatchSystemAppearance calls its argument whenever the system's look changes
 	// and returns what stops that. Nil uses app.WatchSystemAppearance.
 	WatchSystemAppearance func(changed func()) (stop func())
+	// WatchNetworkChanges calls its argument after each change of the machine's
+	// network path — a different set of interface addresses, which is what a
+	// Wi-Fi switch, an unplugged cable and a VPN coming up look like — and
+	// returns what stops that. The report runs on a goroutine. Nil polls the
+	// interfaces every two seconds; tests report changes by hand.
+	WatchNetworkChanges func(report func(linkwatch.Change)) (stop func())
 	// SetNativeAppearance pins the look of what the system draws for the window
 	// (buttons, menus, dialogs, native text editing). Nil uses
 	// app.SetNativeAppearance.
@@ -421,6 +432,11 @@ func (options Options) withDefaults() Options {
 	}
 	if options.WatchSystemAppearance == nil {
 		options.WatchSystemAppearance = app.WatchSystemAppearance
+	}
+	if options.WatchNetworkChanges == nil {
+		options.WatchNetworkChanges = func(report func(linkwatch.Change)) func() {
+			return linkwatch.Watch(linkwatch.DefaultInterval, report)
+		}
 	}
 	if options.SetNativeAppearance == nil {
 		options.SetNativeAppearance = app.SetNativeAppearance
@@ -743,6 +759,10 @@ func (state *State) finishStartingConnection(session *Session, automatic bool) {
 	}
 	state.describe(session)
 	session.term.find.refreshIfChanged(session.term.screen, state.messages, 0)
+	// A dial was just started; if it is the first live connection, the network
+	// path it is bound to has to be watched from here, before any status wakes
+	// the window.
+	state.syncLinkWatch()
 }
 
 // Wake applies connection changes to the UI state and moves shell output onto
@@ -772,6 +792,7 @@ func (state *State) Wake() {
 		state.connectRestoredSessions()
 		state.openStartupSessions()
 	}
+	state.applyLinkChange()
 	state.advanceReconnects()
 	state.pumpHostTest()
 	state.probeLatency()
@@ -823,6 +844,9 @@ func (state *State) Wake() {
 	state.syncSFTPWindows()
 	state.aiPumpCLILogin()
 	state.syncRemoteToolsWindows()
+	// Sessions were created, ended, or moved into a retry above: the network
+	// watcher follows the live ones, so idle windows poll nothing.
+	state.syncLinkWatch()
 }
 
 // apply reads one status into a session: its dot, its busy flag, and the next
@@ -988,6 +1012,7 @@ func (state *State) closeDisconnectedShell(session *Session) {
 	terminal.recording.finishSecrets(state.now())
 	releaseShell(terminal.shell)
 	terminal.shell = nil
+	terminal.login = loginCommand{}
 	terminal.recording.stop()
 	terminal.recording.resetSecrets()
 	terminal.ended = true
@@ -1281,6 +1306,9 @@ func (state *State) closeModal() {
 	}
 	if state.modal == modalAutofillConfirm {
 		state.autofillRules.ask = autofillAsk{}
+	}
+	if state.modal == modalFontPicker {
+		state.closeFontPickerPage()
 	}
 	if state.modal == modalDeleteRule {
 		state.ruleDelete = ruleDelete{}

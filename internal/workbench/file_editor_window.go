@@ -3,6 +3,7 @@ package workbench
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/components"
@@ -16,11 +17,16 @@ const (
 	fileWindowTabScrollbarHeight = float32(6)
 )
 
+// fileWindowPageSeq numbers the editor pages: every content window names its
+// controls in the one window Tree, so no two windows may name them alike.
+var fileWindowPageSeq atomic.Uint64
+
 type fileWindowTabUI struct {
 	viewport, scrollbar ui.Box
 	contentWidth        float32
 	geometry            components.ScrollAreaGeometry
-	hovered, dragging   bool
+	hovered             bool
+	dragging            bool
 	grab                float32
 }
 
@@ -106,8 +112,7 @@ func (m *fileWindowManager) present(d *fileDocument) error {
 	if m.window == nil {
 		m.windowEpoch++
 		epoch := m.windowEpoch
-		config := m.config()
-		config.OnClosed = func() { m.onWindowClosed(epoch) }
+		config := m.configWithClosed(func() { m.onWindowClosed(epoch) })
 		window, err := d.owner.options.OpenContentWindow(config, nil)
 		if err != nil {
 			if m.windowEpoch == epoch {
@@ -168,6 +173,7 @@ func (m *fileWindowManager) forgetDocument(d *fileDocument) {
 			window := m.window
 			m.window = nil
 			m.windowEpoch = 0
+			m.page = nil
 			window.Close()
 			return
 		}
@@ -274,6 +280,7 @@ func (m *fileWindowManager) onWindowClosed(epoch uint64) {
 	}
 	m.window = nil
 	m.windowEpoch = 0
+	m.page = nil
 	m.active = ""
 	m.pending = ""
 	m.order = nil
@@ -300,6 +307,7 @@ func (m *fileWindowManager) forceClose() {
 	window := m.window
 	m.window = nil
 	m.windowEpoch = 0
+	m.page = nil
 	m.active = ""
 	m.pending = ""
 	m.order = nil
@@ -335,7 +343,15 @@ func (m *fileWindowManager) confirming() bool {
 }
 
 func (m *fileWindowManager) config() app.Config {
-	return app.Config{
+	return m.configWithClosed(nil)
+}
+
+// configWithClosed is config for present, whose window reports its close through
+// onClosed. The page routes the window's input and supplies its Invalidator; the
+// window's Paint stays, because it also paints what the page only lays out (the
+// editor, the menus and the notices).
+func (m *fileWindowManager) configWithClosed(onClosed func()) app.Config {
+	base := app.Config{
 		Title:          m.messagesTitle(),
 		Icon:           AppIcon(),
 		Width:          1000,
@@ -350,7 +366,11 @@ func (m *fileWindowManager) config() app.Config {
 		OnShortcut:     m.shortcut,
 		OnScroll:       m.scroll,
 		OnCloseRequest: m.requestClose,
+		OnClosed:       onClosed,
 	}
+	config := m.editPage(m.pageTheme()).Config(base)
+	config.Paint = base.Paint
+	return config
 }
 
 func (m *fileWindowManager) discardPendingDocuments() {
@@ -429,7 +449,68 @@ func documentTabLayout(available float32, count int) (width, content float32, ov
 	return width, content, overflow
 }
 
-func (m *fileWindowManager) paintTabs(f *ui.Frame, size gfx.Size) {
+// editPage is the page the window's controls are declared in. A shared window
+// keeps one page for all its documents; a window opened for one document names
+// its own. The root is unique per window, since every window names its controls
+// in the one Tree.
+func (m *fileWindowManager) editPage(theme *gfx.Theme) *ui.Page {
+	if m.page == nil {
+		root := fmt.Sprintf("file-window-%d", fileWindowPageSeq.Add(1))
+		m.page = ui.NewPage(ui.PageConfig{Tree: &tree, Root: root, Theme: theme, View: m.declareWindow})
+	}
+	return m.page
+}
+
+// declareWindow is the window's page: the active document's own declaration.
+func (m *fileWindowManager) declareWindow(c ui.C) {
+	d := m.activeDocument()
+	if d == nil {
+		return
+	}
+	if d.note != nil {
+		d.declareNoteWindow(c)
+		return
+	}
+	d.declareEditWindow(c)
+}
+
+// pageTheme is the theme the shared page paints with: the active document's
+// owner, whose theme the controls follow as the application's appearance changes.
+func (m *fileWindowManager) pageTheme() *gfx.Theme {
+	if d := m.activeDocument(); d != nil && d.owner != nil {
+		return &d.owner.theme
+	}
+	for _, key := range m.order {
+		if d := m.documents[key]; d != nil && d.owner != nil {
+			return &d.owner.theme
+		}
+	}
+	theme := gfx.LightTheme()
+	return &theme
+}
+
+// documentPage is editPage for a document painted in a window of its own.
+func (d *fileDocument) documentPage() *ui.Page {
+	if d.ui.page == nil {
+		root := fmt.Sprintf("file-document-%d", fileWindowPageSeq.Add(1))
+		d.ui.page = ui.NewPage(ui.PageConfig{Tree: &tree, Root: root, Theme: &d.owner.theme, View: d.declareWindow})
+	}
+	return d.ui.page
+}
+
+// declareWindow is a document's window page: the note or the editor it paints.
+func (d *fileDocument) declareWindow(c ui.C) {
+	if d.note != nil {
+		d.declareNoteWindow(c)
+		return
+	}
+	d.declareEditWindow(c)
+}
+
+// declareTabsSection declares the tab strip at the top of the window's page: the
+// clipped row of tabs and, when they overflow, the slot the scrollbar is painted
+// into.
+func (m *fileWindowManager) declareTabsSection(c ui.C, width float32) {
 	if len(m.order) == 0 {
 		return
 	}
@@ -439,7 +520,7 @@ func (m *fileWindowManager) paintTabs(f *ui.Frame, size gfx.Size) {
 	}
 	theme := activeDocument.owner.Theme()
 	metrics := theme.Metrics
-	available := max(size.Width-24, 1)
+	available := max(width-24, 1)
 	tabWidth, contentWidth, overflow := documentTabLayout(available, len(m.order))
 	pitch := tabWidth + barGap
 	activeIndex := -1
@@ -455,13 +536,13 @@ func (m *fileWindowManager) paintTabs(f *ui.Frame, size gfx.Size) {
 	if overflow {
 		sectionHeight += fileWindowTabScrollbarGap + fileWindowTabScrollbarHeight
 	}
-	f.Column().FillWidth().Height(sectionHeight).Shrink(0).Children(func() {
-		m.tabs.viewport = f.Row().FillWidth().Height(barTabHeight).Shrink(0).Clip()
+	ui.Column(c).FillWidth().Height(sectionHeight).Shrink(0).Children(func() {
+		m.tabs.viewport = ui.Row(c).FillWidth().Height(barTabHeight).Shrink(0).Clip()
 		m.tabs.viewport.Children(func() {
-			m.paintDocumentTabRows(f, activeDocument, metrics, scroll)
+			m.declareDocumentTabRows(c, activeDocument, metrics, scroll)
 		})
 		if overflow {
-			m.tabs.scrollbar = f.Slot().FillWidth().Height(fileWindowTabScrollbarHeight).Shrink(0).
+			m.tabs.scrollbar = ui.Slot(c).FillWidth().Height(fileWindowTabScrollbarHeight).Shrink(0).
 				MarginSides(fileWindowTabScrollbarGap, 0, 0, 0)
 		} else {
 			m.tabs.scrollbar = ui.Box{}
@@ -469,8 +550,12 @@ func (m *fileWindowManager) paintTabs(f *ui.Frame, size gfx.Size) {
 	})
 }
 
-func (m *fileWindowManager) paintDocumentTabRows(f *ui.Frame, activeDocument *fileDocument, metrics gfx.Metrics, scroll float32) {
+// declareDocumentTabRows declares one row per open document. A click on a row or
+// its close button is handled in place, after the paint, so the window's central
+// dispatcher does not see it as well.
+func (m *fileWindowManager) declareDocumentTabRows(c ui.C, activeDocument *fileDocument, metrics gfx.Metrics, scroll float32) {
 	pal := activeDocument.owner.pal
+	canvas := c.Canvas()
 	for index, key := range m.order {
 		d := m.documents[key]
 		if d == nil || d.closed {
@@ -478,7 +563,7 @@ func (m *fileWindowManager) paintDocumentTabRows(f *ui.Frame, activeDocument *fi
 		}
 		id, closeID := hitDocumentTabList.At(index), hitDocumentTabCloseList.At(index)
 		active := key == m.active
-		hovered := f.Canvas().Hovered() == id || f.Canvas().Hovered() == closeID
+		hovered := canvas != nil && (canvas.Hovered() == id || canvas.Hovered() == closeID)
 		foreground := pal.muted
 		fill, edge := pal.tab, pal.line
 		switch {
@@ -507,30 +592,44 @@ func (m *fileWindowManager) paintDocumentTabRows(f *ui.Frame, activeDocument *fi
 			first = -scroll
 		}
 		width := m.tabStrip.tabWidth
-		f.Row().Size(width, barTabHeight).Shrink(0).MarginSides(0, barGap, 0, first).
+		row := ui.Row(c).Size(width, barTabHeight).Shrink(0).MarginSides(0, barGap, 0, first).
 			PadSides(0, 3, 0, 4).Items(ui.Center).Radius(radius.item).Border(1, edge).Background(fill).
 			HitWith(id, label, gfx.HitOptions{
 				Role: gfx.RoleTab, Selected: active, Hint: hint,
-			}).Children(func() {
-			f.Row().Size(20, 20).Shrink(0).Center().MarginSides(0, 7, 0, 0).Children(func() {
-				f.Icon(icon).Size(14, 14).Color(foreground)
 			})
-			f.Text(label).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(foreground).LineHeight(20).Ellipsis()
-			f.Spacer()
+		if row.Clicked() {
+			tabIndex := index
+			c.After(func() {
+				if tab := m.tabDocument(tabIndex); tab != nil {
+					m.activate(tab.cacheKey)
+				}
+			})
+		}
+		row.Children(func() {
+			ui.Row(c).Size(20, 20).Shrink(0).Center().MarginSides(0, 7, 0, 0).Children(func() {
+				ui.Icon(c, icon).Size(14, 14).Color(foreground)
+			})
+			ui.Text(c, label).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(foreground).LineHeight(20).Ellipsis()
+			ui.Spacer(c)
 			if !active && !hovered {
-				f.Slot().Size(20, 20)
+				ui.Slot(c).Size(20, 20)
 				return
 			}
 			var closeFill gfx.Color
-			if f.Canvas().Hovered() == closeID {
+			if canvas != nil && canvas.Hovered() == closeID {
 				closeFill = pal.line
 				if active {
 					closeFill = pal.tabCloseHot
 				}
 			}
-			f.Row().Size(20, 20).Shrink(0).Center().Radius(radius.item).Background(closeFill).
-				HitWith(closeID, fmt.Sprintf(d.owner.messages.FileWindow.CloseTabFmt, d.name), gfx.HitOptions{Role: gfx.RoleButton, SkipFocus: true}).Children(func() {
-				f.Icon(lucideIcons[iconClose]).Size(14, 14).Color(foreground)
+			close := ui.Row(c).Size(20, 20).Shrink(0).Center().Radius(radius.item).Background(closeFill).
+				HitWith(closeID, fmt.Sprintf(d.owner.messages.FileWindow.CloseTabFmt, d.name), gfx.HitOptions{Role: gfx.RoleButton, SkipFocus: true})
+			if close.Clicked() {
+				tabIndex := index
+				c.After(func() { m.closeTab(tabIndex) })
+			}
+			close.Children(func() {
+				ui.Icon(c, lucideIcons[iconClose]).Size(14, 14).Color(foreground)
 			})
 		})
 	}
@@ -637,25 +736,10 @@ func (m *fileWindowManager) scrollTabs(event gfx.ScrollEvent) (gfx.EventResult, 
 	return gfx.EventResult{Handled: true, Repaint: m.tabStrip.offset != previous}, true
 }
 
+// clickTab reports a tab or close-button click that the tab page handled in
+// place: the window's central dispatcher claims it and does nothing more.
 func (m *fileWindowManager) clickTab(id gfx.ID) bool {
-	switch id.Scope() {
-	case hitDocumentTabList:
-		index, ok := id.In(hitDocumentTabList)
-		if ok {
-			if d := m.tabDocument(index); d != nil {
-				m.activate(d.cacheKey)
-			}
-		}
-		return true
-	case hitDocumentTabCloseList:
-		index, ok := id.In(hitDocumentTabCloseList)
-		if ok {
-			m.closeTab(index)
-		}
-		return true
-	default:
-		return false
-	}
+	return id.Scope() == hitDocumentTabList || id.Scope() == hitDocumentTabCloseList
 }
 
 func (m *fileWindowManager) textInput(context app.TextInputContext) *app.TextInput {

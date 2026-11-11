@@ -47,6 +47,19 @@ func toolbarDockViewAtScale(t *testing.T, scale float64) (*State, *headless.Sess
 	return state, view, options
 }
 
+// dualChoiceHit finds a page Choice segment by its label in the last frame: the
+// segments' identities belong to the page, so tests address them by what they say.
+func dualChoiceHit(t *testing.T, view *headless.Session, label string) gfx.Hit {
+	t.Helper()
+	for _, hit := range view.Snapshot().Hits {
+		if hit.Label == label && hit.Role == gfx.RoleRadio && !hit.Block {
+			return hit
+		}
+	}
+	t.Fatalf("missing choice %q", label)
+	return gfx.Hit{}
+}
+
 func TestToolbarDockSizesKeepMixedActionsReachableAcrossScales(t *testing.T) {
 	for _, scale := range []float64{1, 1.25, 1.5, 1.75, 2} {
 		t.Run(fmt.Sprint(scale), func(t *testing.T) {
@@ -70,8 +83,11 @@ func TestToolbarDockSizesKeepMixedActionsReachableAcrossScales(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					ids := [...]gfx.ID{hitToolbarSizeSmall, hitToolbarSizeMedium, hitToolbarSizeLarge}
-					click(ids[size])
+					sizeLabels := [...]string{state.messages.SettingsToolbarSizeSmall, state.messages.SettingsToolbarSizeMedium, state.messages.SettingsToolbarSizeLarge}
+					choice := dualChoiceHit(t, view, sizeLabels[size])
+					if err := view.Click(choice.Bounds.X+choice.Bounds.Width/2, choice.Bounds.Y+choice.Bounds.Height/2); err != nil {
+						t.Fatal(err)
+					}
 					if state.terminalToolbarSize != size {
 						t.Fatalf("size selector did not apply %s", size.String())
 					}
@@ -116,9 +132,18 @@ func TestToolbarDockSizesKeepMixedActionsReachableAcrossScales(t *testing.T) {
 			if err := view.Resize(760, 500); err != nil {
 				t.Fatal(err)
 			}
-			result := state.Key(gfx.KeyEvent{Target: hitToolbarSizeLarge, Key: gfx.KeyLeft})
-			if !result.Handled || result.Focus != hitToolbarSizeMedium || state.terminalToolbarSize != terminalToolbarMedium {
+			large := dualChoiceHit(t, view, state.messages.SettingsToolbarSizeLarge)
+			medium := dualChoiceHit(t, view, state.messages.SettingsToolbarSizeMedium)
+			result := windowKeyRoutes(state, gfx.KeyEvent{Target: large.ID, Key: gfx.KeyLeft})
+			if !result.Handled || result.Focus != medium.ID || result.Activate != medium.ID {
 				t.Fatalf("size keyboard navigation failed: %+v", result)
+			}
+			var roveCanvas gfx.Canvas
+			roveCanvas.BeginEventPass(result.Activate, gfx.ClickInfo{})
+			state.Paint(&roveCanvas, gfx.Size{Width: 760, Height: 500})
+			roveCanvas.EndEventPass()
+			if state.terminalToolbarSize != terminalToolbarMedium {
+				t.Fatalf("size keyboard navigation chose %s", state.terminalToolbarSize.String())
 			}
 			if err := view.Resize(760, 500); err != nil {
 				t.Fatal(err)
@@ -268,6 +293,66 @@ func TestToolbarDockPresenceCheckDoesNotAllocate(t *testing.T) {
 				t.Fatalf("toolbar presence check allocated %.1f times", allocations)
 			}
 		})
+	}
+}
+
+// The bottom and side strips are containers of the workbench page: the page
+// lays their viewports out and the window paints the tools into them. The tools
+// keep the identities the window names by hand, so a click delivered in a
+// paint's event pass still reaches the action the window dispatches for the
+// tool.
+func TestToolbarDockStripsKeepTheWindowActions(t *testing.T) {
+	state, _, _, _ := liveSession(t)
+	state.activeSection = sectionTerminal
+	size := gfx.Size{Width: 1200, Height: 800}
+	state.moveToolbarDockTool(hitTheme, toolbarDockBottom, gfx.ID{})
+	state.moveToolbarDockTool(hitAIToggle, toolbarDockSideBottom, gfx.ID{})
+	state.Resize(size)
+	var canvas gfx.Canvas
+	state.Paint(&canvas, size)
+	dock := &state.toolbarDock
+	side := toolbarDockSideAt(false)
+	// The page's declaration leaves the viewports the window paints into; a
+	// strip with tools but no slots would paint them at the window's origin.
+	if dock.bottomLeft.Rect().Width <= 0 || dock.bottomRight.Rect().Width < 0 {
+		t.Fatalf("the workbench page did not declare the bottom strip: %+v", dock.bottomLeft.Rect())
+	}
+	if dock.sideScratch[side].top.Rect().Height <= 0 || dock.sideScratch[side].top.Rect().Width <= 0 {
+		t.Fatalf("the workbench page did not declare the side rail: %+v", dock.sideScratch[side].top.Rect())
+	}
+	// The tools keep the identities the window names by hand; the window's dock
+	// dispatcher still owns their press, arrow keys and the wheel it scrolls.
+	if box, ok := hitByID(&canvas, hitTheme); !ok || box.Bounds.Y < size.Height-state.terminalToolbarMetrics().railExtent {
+		t.Fatalf("bottom tool was not painted into the bottom strip: %+v, %t", box.Bounds, ok)
+	}
+	if box, ok := hitByID(&canvas, hitAIToggle); !ok || box.Bounds.X < size.Width/2 {
+		t.Fatalf("side tool was not painted into the side rail: %+v, %t", box.Bounds, ok)
+	}
+	pass := func(target gfx.ID) {
+		t.Helper()
+		var event gfx.Canvas
+		event.BeginEventPass(target, gfx.ClickInfo{})
+		state.Paint(&event, size)
+		event.EndEventPass()
+		event.RunAfterPaint()
+	}
+	before := state.appearance
+	pass(hitTheme)
+	if state.appearance == before {
+		t.Fatal("the event pass did not reach the bottom strip's theme action")
+	}
+	if state.aiPanelVisible() {
+		t.Fatal("fixture opened the assistant before the side action")
+	}
+	pass(hitAIToggle)
+	if !state.aiPanelVisible() {
+		t.Fatal("the event pass did not reach the side strip's assistant action")
+	}
+	// The top strip has no page of its own: its tool stays the window's, and a
+	// click on it in the event pass opens the command palette.
+	pass(hitCommandPalette)
+	if state.modal != modalCommandPalette {
+		t.Fatal("the event pass did not reach the top strip's command palette action")
 	}
 }
 
@@ -862,7 +947,7 @@ func TestToolbarDockVerticalTabsSideAndBottom(t *testing.T) {
 	toolbarDockShot(t, view, "08-vertical-side-bottom")
 	// Horizontal bottom controls use Left/Right; vertical side controls retain
 	// Up/Down. Home/End also reveal tools when the corresponding strip scrolls.
-	result := state.Key(gfx.KeyEvent{Target: hitConnExport, Key: gfx.KeyRight})
+	result := windowKeyRoutes(state, gfx.KeyEvent{Target: hitConnExport, Key: gfx.KeyRight})
 	if result.Focus != hitWindowSettings || !result.Handled {
 		t.Fatalf("bottom keyboard = %+v", result)
 	}
@@ -1032,7 +1117,7 @@ func TestToolbarDockBottomLeftAndRightGroups(t *testing.T) {
 	}
 	toolbarDockShot(t, view, "13-bottom-left-right")
 	// Move across the middle between the groups with the keyboard.
-	result := state.Key(gfx.KeyEvent{Target: hitConnExport, Key: gfx.KeyRight})
+	result := windowKeyRoutes(state, gfx.KeyEvent{Target: hitConnExport, Key: gfx.KeyRight})
 	if !result.Handled || result.Focus != hitWindowSettings {
 		t.Fatalf("bottom group keyboard traversal: %+v", result)
 	}

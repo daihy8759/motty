@@ -116,6 +116,7 @@ func (state *State) clickHostOrder(id gfx.ID) bool {
 	}
 	if id == hitHostOrder {
 		state.hostOrderMenu = !state.hostOrderMenu
+		state.hostPrivacy.menu = false
 		state.hostMenu.open, state.groupActions.open = false, false
 		state.hostFilterMenu, state.hostGroupMenu, state.importMenu = false, false, false
 		state.chipMenu.open = false
@@ -158,13 +159,4 @@ func (state *State) paintHostOrder(canvas *gfx.Canvas, viewport gfx.Rect) {
 	state.menuPlaced(menu.Bounds())
 	rows.paint(&menu, nil)
 	menu.End()
-}
-
-func (state *State) paintHostOrderButton(canvas *gfx.Canvas, bounds gfx.Rect) {
-	state.hostOrderButton = bounds
-	style := iconButtonQuiet
-	if state.hostOrder != hostOrderManual {
-		style = iconButtonActive
-	}
-	state.paintIconButton(canvas, hitHostOrder, iconSliders, bounds, state.messages.HostCatalog.Order, false, style, state.pal.workspace)
 }

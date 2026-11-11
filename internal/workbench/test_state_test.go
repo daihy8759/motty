@@ -10,6 +10,7 @@ import (
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/gfx"
+	"motty/internal/linkwatch"
 	"motty/internal/localshell"
 )
 
@@ -37,6 +38,11 @@ func newTestState(t testing.TB, options Options) *State {
 	if options.WatchSystemAppearance == nil {
 		options.WatchSystemAppearance = func(func()) func() { return func() {} }
 	}
+	if options.WatchNetworkChanges == nil {
+		// A test never polls the machine's interfaces: the path a test walks is
+		// the one it reports by hand.
+		options.WatchNetworkChanges = func(func(linkwatch.Change)) func() { return func() {} }
+	}
 	if options.SetInterfaceFont == nil {
 		// Nor may a test change the process's interface font, or read the fonts of
 		// the machine it runs on.
@@ -61,6 +67,11 @@ func newTestState(t testing.TB, options Options) *State {
 		// keys in memory; the ones that exercise a missing or denied store pass
 		// their own.
 		options.Keystore = &memKeys{}
+	}
+	if options.Invalidator == nil {
+		// The window's invalidator, for pages that declare a ui.Effect: the
+		// effect wakes the window when its work finishes.
+		options.Invalidator = new(app.Invalidator)
 	}
 	state := New(options)
 	// The shells a Windows computer offers are whatever is installed on it, and

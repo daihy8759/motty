@@ -13,7 +13,7 @@ import (
 func sftpPathFocusDriver(t *testing.T, state *State) *app.Driver {
 	t.Helper()
 	var fallback app.TextInput
-	driver, err := app.NewDriver(app.Config{
+	driver, err := app.NewDriver(state.WindowConfig(app.Config{
 		Title: "SFTP path focus", Width: 1400, Height: 900, Tree: Tree(),
 		Paint: state.Paint, OnPointer: state.Pointer, OnKey: state.Key, OnShortcut: state.Shortcut,
 		OnScroll: state.Scroll, OnResize: state.Resize, OnWake: state.Wake,
@@ -30,7 +30,7 @@ func sftpPathFocusDriver(t *testing.T, state *State) *app.Driver {
 			}
 			return nil
 		},
-	}, nil)
+	}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestSFTPPathTemporaryInputRevertsWhenClickingAFile(t *testing.T) {
 			}
 			typeSFTPPathDraft(t, driver, state, "unsubmitted-folder")
 			before, reads := view.active().path, remote.readCount(view.path)
-			row := contextID(hitSFTPEntryList.At(1))
+			row := sftpListRowID(t, view.active(), 1)
 			clickSFTPPathFocusHit(t, driver, row)
 			assertSFTPPathBreadcrumbs(t, driver, view)
 			if driver.Snapshot().Focused != row || !view.active().rows[1].selected {
@@ -140,7 +140,7 @@ func TestSFTPPathPermanentInputKeepsItsDraftAfterFocusLoss(t *testing.T) {
 	driver := sftpPathFocusDriver(t, state)
 	clickSFTPPathFocusHit(t, driver, contextID(hitSFTPPath))
 	typeSFTPPathDraft(t, driver, state, "permanent draft")
-	clickSFTPPathFocusHit(t, driver, contextID(hitSFTPEntryList.At(1)))
+	clickSFTPPathFocusHit(t, driver, sftpListRowID(t, session.files.active(), 1))
 	hitOf(t, driver, contextID(hitSFTPPath))
 	if !state.sftpPathInput || session.files.pathInput().String() != "permanent draft" {
 		t.Fatal("focus loss changed the permanent-input setting or its draft")
@@ -150,7 +150,7 @@ func TestSFTPPathPermanentInputKeepsItsDraftAfterFocusLoss(t *testing.T) {
 func TestSFTPPathShortcutFocusAndInternalEditingSurviveUntilTerminalClick(t *testing.T) {
 	state, session, _, _ := openTestSFTP(t)
 	driver := sftpPathFocusDriver(t, state)
-	clickSFTPPathFocusHit(t, driver, contextID(hitSFTPEntryList.At(1)))
+	clickSFTPPathFocusHit(t, driver, sftpListRowID(t, session.files.active(), 1))
 	shortcut := state.shortcuts.chords.Chord(shortcutFilesPath)
 	if err := driver.Chord(shortcut.Modifiers, string(shortcut.Char)); err != nil {
 		t.Fatal(err)

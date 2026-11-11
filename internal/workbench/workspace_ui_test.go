@@ -66,7 +66,7 @@ func TestClosingSplitRestoresPopulatedTerminal(t *testing.T) {
 			}
 			var canvas gfx.Canvas
 			state.Paint(&canvas, size)
-			hit, ok := hitByID(&canvas, hitTerminalList.At(int(originalID)))
+			hit, ok := hitByID(&canvas, terminalTestHitByID(state, originalID))
 			if !ok || hit.Bounds.Width != 1200-terminalToolRailExtent {
 				t.Fatalf("restored terminal hit = %+v", hit)
 			}
@@ -96,7 +96,7 @@ func TestManagementUsesSidebarAndTerminalUsesFullWorkspace(t *testing.T) {
 	if bounds := state.workspacePixelBounds(size); bounds.X != 0 || bounds.Width != size.Width-terminalToolRailExtent {
 		t.Fatalf("terminal workspace = %+v, want room for the shared right rail", bounds)
 	}
-	terminalHit, ok := hitByID(&terminal, hitTerminalList.At(int(state.sessions[0].ID)))
+	terminalHit, ok := hitByID(&terminal, terminalTestHit(state, &state.sessions[0]))
 	if !ok || terminalHit.Bounds.X != 0 || terminalHit.Bounds.Width != size.Width-terminalToolRailExtent {
 		t.Fatalf("single terminal does not use full workspace: %+v", terminalHit)
 	}
@@ -218,8 +218,7 @@ func TestWorkspacePanesPaintDistinctInteractiveViews(t *testing.T) {
 		if !ok || activate.Bounds != pixelBounds(frame, panes[index].Bounds) {
 			t.Fatalf("pane %d activation hit = %+v", index, activate)
 		}
-		terminalID := hitTerminalList.At(int(session.ID))
-		terminalID = tree.MountID(paneMount(session), terminalID)
+		terminalID := terminalTestHit(state, session)
 		terminal, ok := hitByID(&canvas, terminalID)
 		if !ok {
 			t.Fatalf("pane %d terminal hit %d is missing", index, terminalID)
@@ -268,7 +267,7 @@ func TestWorkspacePaintsEverySessionPageInsideItsPane(t *testing.T) {
 	}
 
 	terminal := &state.sessions[0]
-	terminalID := tree.MountID(paneMount(terminal), hitTerminalList.At(int(terminal.ID)))
+	terminalID := terminalTestHit(state, terminal)
 	if _, ok := hitByID(&canvas, terminalID); !ok {
 		t.Fatalf("terminal page hit %d is missing", terminalID)
 	}
@@ -322,7 +321,7 @@ func TestWorkspaceBackgroundPointerActivatesPane(t *testing.T) {
 		background = state.sessions[1].ID
 	}
 	session, _ := state.sessionByIDPointer(background)
-	target := tree.MountID(paneMount(session), hitTerminalList.At(int(session.ID)))
+	target := terminalTestHit(state, session)
 	hit, ok := hitByID(&canvas, target)
 	if !ok {
 		t.Fatalf("background terminal hit %d is missing", target)
@@ -359,7 +358,7 @@ func TestWorkspaceBackgroundTerminalKeepsFocusThroughActivation(t *testing.T) {
 	if background.ID == state.activeSessionID {
 		background = &state.sessions[1]
 	}
-	target := tree.MountID(paneMount(background), hitTerminalList.At(int(background.ID)))
+	target := terminalTestHit(state, background)
 	var terminal gfx.Hit
 	for _, hit := range driver.Snapshot().Hits {
 		if hit.ID == target {
@@ -383,7 +382,7 @@ func TestNativeTextInputOnlyTargetsTheActivePane(t *testing.T) {
 	if !state.splitActivePane(layoutcore.Horizontal) {
 		t.Fatal("split right")
 	}
-	state.Click(hitPaneChooseHost)
+	state.chooseHostSection()
 	state.Click(hitHostList.At(2))
 	openHost(state)
 	secondConn := world.conns[1]
@@ -395,8 +394,8 @@ func TestNativeTextInputOnlyTargetsTheActivePane(t *testing.T) {
 
 	first := &state.sessions[0]
 	second := &state.sessions[1]
-	firstTarget := tree.MountID(paneMount(first), hitTerminalList.At(int(first.ID)))
-	secondTarget := tree.MountID(paneMount(second), hitTerminalList.At(int(second.ID)))
+	firstTarget := terminalTestHit(state, first)
+	secondTarget := terminalTestHit(state, second)
 	if input := state.TerminalInput(app.TextInputContext{ID: firstTarget, Terminal: true}); input != nil {
 		t.Fatal("inactive pane exposed a native text receiver")
 	}
@@ -825,7 +824,7 @@ func openHostInSplit(t testing.TB, state *State, hostID uint32, axis layoutcore.
 	if !state.splitActivePane(axis) {
 		t.Fatal("could not create an empty split pane")
 	}
-	state.Click(hitPaneChooseHost)
+	state.chooseHostSection()
 	state.Click(hitHostList.At(int(hostID)))
 	openHost(state)
 }
@@ -872,7 +871,7 @@ func TestPanesActivateOnPressNotOnHover(t *testing.T) {
 			other = &state.sessions[index]
 		}
 	}
-	target := tree.MountID(paneMount(other), hitTerminalList.At(int(other.ID)))
+	target := terminalTestHit(state, other)
 	state.Pointer(gfx.PointerEvent{Kind: gfx.PointerMove, Target: target, X: 20, Y: 80, Viewport: size})
 	state.Scroll(gfx.ScrollEvent{Target: target, X: 20, Y: 80, DeltaY: 40, Viewport: size})
 	if state.activeSessionID != active {
@@ -931,5 +930,141 @@ func TestSplitPaneConnectsBehindItsTerminal(t *testing.T) {
 	tab, _ := state.sessionByIDPointer(state.activeSessionID)
 	if !state.showsProgress(tab) {
 		t.Fatal("a new tab lost its progress page")
+	}
+}
+
+// The terminal panes are components of the workbench page now, not pages of
+// their own. A press, a key and typed text in either pane must reach that pane's
+// terminal through the page, not through a per-session page or a mount.
+func TestSplitPaneEventsGoThroughTheWorkbenchPage(t *testing.T) {
+	state := newTestState(t, testOptions(t))
+	openHost(state)
+	openHostInSplit(t, state, 2, layoutcore.Horizontal)
+	if len(state.sessions) < 2 {
+		t.Fatalf("split created only %d sessions", len(state.sessions))
+	}
+	size := gfx.Size{Width: 1200, Height: 800}
+	state.Resize(size)
+	shells := make([]*fakeShell, len(state.sessions))
+	for index := range state.sessions {
+		shells[index] = &fakeShell{}
+		state.sessions[index].term.shell = shells[index]
+		state.sessions[index].term.live = true
+	}
+	second := &state.sessions[1]
+	if !state.ActivatePane(second.ID) {
+		t.Fatal("activate the second pane")
+	}
+
+	var canvas gfx.Canvas
+	state.Paint(&canvas, size)
+	page := state.chrome.windowPage
+	if page == nil {
+		t.Fatal("the workbench page was not created")
+	}
+	for index := range state.sessions {
+		session := &state.sessions[index]
+		hit := terminalTestHit(state, session)
+		if !windowPageOwns(hit) {
+			t.Fatalf("session %d terminal is not in the workbench page: %v", session.ID, hit)
+		}
+		if _, ok := hitByID(&canvas, hit); !ok {
+			t.Fatalf("session %d terminal was not painted", session.ID)
+		}
+	}
+
+	// A press in the second pane goes through the page to its pointer handler.
+	hit := terminalTestHit(state, second)
+	geometry := state.layoutForSession(second.ID)
+	result := state.Pointer(gfx.PointerEvent{
+		Kind: gfx.PointerDown, Button: gfx.PointerButtonPrimary, Target: hit, ClickCount: 1,
+		X: geometry.left + state.cellWidth*1.5, Y: geometry.top + state.cellHeight*0.5, Viewport: size,
+	})
+	if !result.Handled || !second.term.selection.dragging {
+		t.Fatalf("press through the page = %+v, dragging=%v", result, second.term.selection.dragging)
+	}
+	state.Pointer(gfx.PointerEvent{
+		Kind: gfx.PointerUp, Button: gfx.PointerButtonPrimary, Target: hit, Captured: true,
+		X: geometry.left + state.cellWidth*1.5, Y: geometry.top + state.cellHeight*0.5, Viewport: size,
+	})
+
+	// Typed text and a key reach the second pane's shell through the page's
+	// control routing.
+	input := state.TerminalInput(app.TextInputContext{ID: hit, Terminal: true})
+	if input == nil || input.OnEvent == nil {
+		t.Fatal("the page gave the terminal no text surface")
+	}
+	if _, err := input.OnEvent(app.TextEvent{Kind: app.TextInsert, Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := shells[1].typed(); got != "x" {
+		t.Fatalf("typed text reached %q, want the second pane's shell", got)
+	}
+	if result := windowKeyRoutes(state, gfx.KeyEvent{Target: hit, Key: gfx.KeyEnter}); !result.Handled {
+		t.Fatalf("key through the page = %+v", result)
+	}
+	if got := shells[1].typed(); got != "x\r" {
+		t.Fatalf("key reached %q, want the second pane's shell", got)
+	}
+}
+
+// The docked files panel is a component of the workbench page now: its List's
+// rows are the page's identities, not a mount of a panel page. A click, a key
+// and typed text must reach it through the page and the window's own ids.
+func TestDockedFilesPanelEventsGoThroughTheWorkbenchPage(t *testing.T) {
+	state, session, _, _ := openTestSFTP(t)
+	size := gfx.Size{Width: 1400, Height: 900}
+	var canvas gfx.Canvas
+	state.Paint(&canvas, size)
+	page := state.chrome.windowPage
+	if page == nil {
+		t.Fatal("the workbench page was not created")
+	}
+	view := session.files
+	folder := view.active()
+	row := sftpRowIndex(t, view, "notes.txt")
+	rowID := sftpListRowID(t, folder, row)
+	if !windowPageOwns(rowID) || !state.contextPanelOwns(rowID) {
+		t.Fatalf("the files list row is not in the workbench page: %v", rowID)
+	}
+	hit, ok := hitByID(&canvas, rowID)
+	if !ok {
+		t.Fatal("the files list row was not painted")
+	}
+
+	// A press on the row selects it. The page declared the row, so the event
+	// carries the window's identity and is not translated by a mount.
+	result := state.Pointer(gfx.PointerEvent{
+		Kind: gfx.PointerDown, Button: gfx.PointerButtonPrimary, ClickCount: 1,
+		Target: rowID, X: hit.Bounds.X + hit.Bounds.Width/2, Y: hit.Bounds.Y + hit.Bounds.Height/2, Viewport: size,
+	})
+	if !result.Handled || !folder.rows[row].selected {
+		t.Fatalf("press through the page = %+v, selected=%v", result, folder.rows[row].selected)
+	}
+
+	// The arrows are the List's, routed by the workbench page.
+	if result := windowKeyRoutes(state, gfx.KeyEvent{Key: gfx.KeyUp, Target: rowID}); !result.Handled {
+		t.Fatalf("key through the page = %+v", result)
+	}
+	if folder.list.Selected() != 0 {
+		t.Fatalf("arrow moved the List to row %d, want 0", folder.list.Selected())
+	}
+
+	// Typing reaches the filter by the identity the panel paints in the window,
+	// with no embedded page to translate it.
+	state.Click(hitSFTPFilterToggle)
+	state.Paint(&canvas, size)
+	if !state.contextPanelHit(hitSFTPFilter) {
+		t.Fatal("the filter is not part of the docked panel")
+	}
+	input := state.SFTPInput(app.TextInputContext{ID: hitSFTPFilter})
+	if input == nil || input.OnEvent == nil {
+		t.Fatal("the docked filter has no native text input")
+	}
+	if _, err := input.OnEvent(app.TextEvent{Kind: app.TextInsert, Text: "note"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := folder.filterInputEditor().String(); got != "note" {
+		t.Fatalf("typed filter = %q, want note", got)
 	}
 }

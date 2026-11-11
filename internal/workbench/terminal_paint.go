@@ -41,82 +41,47 @@ const (
 	terminalBarToolGap     = float32(4)
 )
 
-// paintTerminalPage draws a session. Active panes get a configurable tool rail
-// with only connection latency and actions. Every split pane reserves the same
-// bar height and identifies its own session there, so switching focus cannot
-// move or resize a PTY. Find mode puts its search controls in that strip, as a
-// macOS terminal puts its search bar above the text rather than over it, and
-// leaves the shared rail where it is.
-func (state *State) paintTerminalPage(canvas *gfx.Canvas, size gfx.Size, session *Session) {
+// paintTerminalPaneDetails paints what the pane declares but the page does not
+// own as elements: the find bar's text surface, the spinner and status light of
+// a split bar, the completion popover and the input notice. It runs after the
+// page painted the pane, clipped to the pane as the old embedded view was.
+//
+// Active panes get a configurable tool rail with only connection latency and
+// actions. Every split pane reserves the same bar height and identifies its own
+// session there, so switching focus cannot move or resize a PTY. Find mode puts
+// its search controls in that strip, as a macOS terminal puts its search bar
+// above the text rather than over it, and leaves the shared rail where it is.
+func (state *State) paintTerminalPaneDetails(canvas *gfx.Canvas, session *Session, bounds gfx.Rect) {
+	if session.term == nil {
+		return
+	}
 	state.wantLatencyProbe(session, canvas)
-	chrome, ok := state.terminalChromeForSession(session.ID)
-	if !ok {
-		chrome = terminalChrome{top: infoBarHeight}
-	}
-	geometry := terminalLayoutWithChrome(size, state.cellWidth, state.cellHeight, chrome, state.padding())
-	inactive := state.paneIsInactive(session.ID)
-	inSplit := state.paneInSplit(session.ID)
-	barBackground, barBorder := state.pal.workspace, state.pal.line
-	if state.workspaceManaged(state.deck.ActiveWorkspace()) && !inactive {
-		barBackground = barBackground.Mix(state.pal.accent, .045)
-		barBorder = state.activePaneRimColor()
-	}
-	finding := !inactive && session.term.find.open
-	showingInputNotice := !inactive && !finding && state.terminalInputNoticeVisible(session)
-	status, _ := state.sessionStatus(session)
-	if inactive {
-		state.clearTerminalRail(session)
-	}
-	title := session.Title
-	if title == "" {
-		title = session.Address
-	}
-	var spinner, light, inputNotice ui.Box
-	var find findBarSlots
-
-	f := state.terminalPageLayout.Begin(canvas, state.Theme(), gfx.Rect{Width: size.Width, Height: size.Height})
-	f.Column().Fill().PadSides(windowBarHeight, 0, 0, 0).Children(func() {
-		if inSplit || finding {
-			f.Stack().Height(infoBarHeight).Shrink(0).Background(barBackground).Children(func() {
-				if finding {
-					find = state.declareFindBar(f, session)
-				} else {
-					spinner, light = state.declarePaneBar(f, size.Width, title, status, session, !inactive)
-				}
-				f.Row().FillWidth().Height(1).Self(ui.End).Background(barBorder)
-			})
-		}
-		f.Column().Grow(1).FillHeight().Children(func() {
-			if showingInputNotice {
-				inputNotice = f.Slot().Height(inputNoticeHeight).FillWidth().Shrink(0)
-			}
-			f.Row().Grow(1).Background(state.ground(state.termPal.terminal))
-		})
-	})
-	f.End()
-
+	t := session.term
+	canvas.Clip(bounds)
+	defer canvas.Unclip()
 	switch {
-	case finding:
-		state.paintFindBarSlots(canvas, session, find)
-	case inSplit:
+	case t.paintFinding:
+		state.paintFindBarSlots(canvas, session, t.paintFind)
+	case t.paintInSplit:
 		switch {
 		case session.busy:
 			phase := components.SpinnerPhase(canvas.Now() / spinnerStep)
-			components.PaintSpinner(canvas, state.Theme(), spinner.Rect(), phase)
+			components.PaintSpinner(canvas, state.Theme(), t.paintSpinner.Rect(), phase)
 			canvas.RequestFrameIn(spinnerStep)
-		case !inactive:
+		case !t.paintInactive:
 			// Only the active pane declares the status-light slot. Calling Rect on
 			// the empty box used by an inactive pane would dereference nil.
-			spot := light.Rect()
+			spot := t.paintLight.Rect()
 			kind, dot := state.sessionLight(session)
-			paintLight(canvas, spot.X+spot.Width/2, spot.Y+spot.Height/2, kind, dot, barBackground)
+			paintLight(canvas, spot.X+spot.Width/2, spot.Y+spot.Height/2, kind, dot, t.paintBarBackground)
 		}
 	}
-
-	state.paintGrid(canvas, session, geometry)
-	state.paintCompletionList(canvas, session, geometry)
-	if showingInputNotice {
-		state.paintTerminalInputNotice(canvas, session, inputNotice.Rect())
+	if t.paintCommandNoticeShown {
+		state.paintWorkspaceCommandNotice(canvas, session, t.paintCommandNotice.Rect())
+	}
+	state.paintCompletionList(canvas, session, t.paintGeometry)
+	if t.paintNoticeShown {
+		state.paintTerminalInputNotice(canvas, session, t.paintNotice.Rect())
 	}
 }
 
@@ -409,8 +374,8 @@ func (state *State) paintAIMarking(canvas *gfx.Canvas, geometry terminalGeometry
 // remains a reliable focus marker. Both show the name and connection state, and
 // the active bar is the only one that can carry a busy spinner in that slot.
 // Resource readings stay in the dedicated monitor surface.
-func (state *State) declarePaneBar(f *ui.Frame, width float32, title, status string, session *Session, active bool) (spinner, light ui.Box) {
-	pal, canvas := state.pal, f.Canvas()
+func (state *State) declarePaneBar(c ui.C, width float32, title, status string, session *Session, active bool) (spinner, light ui.Box) {
+	pal := state.pal
 	readout := status
 	if state.workspaceManaged(state.deck.ActiveWorkspace()) && session.quietOK() {
 		readout = ""
@@ -419,31 +384,31 @@ func (state *State) declarePaneBar(f *ui.Frame, width float32, title, status str
 	if session.busy {
 		gap = 6
 	}
-	f.Row().Fill().PadX(termPadX).Items(ui.Center).Children(func() {
+	ui.Row(c).Fill().PadX(termPadX).Items(ui.Center).Children(func() {
 		if active {
-			light = f.Slot().Size(16, 16).Shrink(0).MarginSides(0, 7, 0, 0)
+			light = ui.Slot(c).Size(16, 16).Shrink(0).MarginSides(0, 7, 0, 0)
 		} else {
-			f.Icon(lucideIcons[iconTerminal]).Size(14, 14).Color(pal.faint).MarginSides(0, 7, 0, 0)
+			ui.Icon(c, lucideIcons[iconTerminal]).Size(14, 14).Color(pal.faint).MarginSides(0, 7, 0, 0)
 		}
 		titleColor := pal.muted
 		if active {
 			titleColor = pal.text
 		}
-		f.Text(title).FontSize(barTitleSize).Weight(gfx.WeightSemibold).Color(titleColor).LineHeight(22).
+		ui.Text(c, title).FontSize(barTitleSize).Weight(gfx.WeightSemibold).Color(titleColor).LineHeight(22).
 			Ellipsis().Grow(1).Shrink(1).MinWidth(0).MarginSides(0, gap, 0, 0)
-		state.declareLatencyTag(f, canvas, session)
+		state.declareLatencyTag(c, session)
 		if session.busy {
-			spinner = f.Slot().Size(14, 14).MarginSides(0, 9, 0, 0)
+			spinner = ui.Slot(c).Size(14, 14).MarginSides(0, 9, 0, 0)
 		}
 		readoutColor := pal.faint
 		if active {
 			readoutColor = pal.muted
 		}
-		f.Text(readout).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(readoutColor).LineHeight(20).
+		ui.Text(c, readout).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(readoutColor).LineHeight(20).
 			MaxWidth(width * 0.42).Ellipsis().Shrink(1)
 		if state.broadcasting(session.ID) {
 			// Typing goes to this pane too: the one mark an inactive bar carries.
-			f.Icon(lucideIcons[iconRadio]).Size(14, 14).Color(pal.accent).MarginSides(0, 0, 0, 8)
+			ui.Icon(c, lucideIcons[iconRadio]).Size(14, 14).Color(pal.accent).MarginSides(0, 0, 0, 8)
 		}
 	})
 	return spinner, light
@@ -454,14 +419,25 @@ func (state *State) declarePaneBar(f *ui.Frame, width float32, title, status str
 // change of their content; painting a screen that did not change builds
 // nothing.
 func (state *State) paintGrid(canvas *gfx.Canvas, session *Session, geometry terminalGeometry) {
-	state.paintGridWithID(canvas, session, geometry, hitTerminalList.At(int(session.ID)), false)
+	session.term.pageIdentity(session.ID)
+	state.paintGridWithID(canvas, session, geometry, session.term.controlID, false)
+	state.paintTerminalScrollbar(canvas, session, geometry)
+}
+
+// paintGridControl paints the grid of a terminal control: the control already
+// declares the hit that focuses it, so only the cells are painted.
+func (state *State) paintGridControl(canvas *gfx.Canvas, session *Session, geometry terminalGeometry, focused bool) {
+	state.paintGridBody(canvas, session, geometry, gfx.ID{}, false, focused, false)
 	state.paintTerminalScrollbar(canvas, session, geometry)
 }
 
 func (state *State) paintGridWithID(canvas *gfx.Canvas, session *Session, geometry terminalGeometry, id gfx.ID, sensitive bool) {
+	state.paintGridBody(canvas, session, geometry, id, sensitive, canvas.Focused() == id, true)
+}
+
+func (state *State) paintGridBody(canvas *gfx.Canvas, session *Session, geometry terminalGeometry, id gfx.ID, sensitive, focused, declareHit bool) {
 	t, pal := session.term, &state.termPal
 	inactive := state.paneIsInactive(session.ID)
-	focused := canvas.Focused() == id
 	t.expireSync()
 	cols, rows := t.presentedSize()
 	cellWidth, cellHeight := state.cellWidth, state.cellHeight
@@ -653,9 +629,11 @@ func (state *State) paintGridWithID(canvas *gfx.Canvas, session *Session, geomet
 	}
 	canvas.Unclip()
 
-	canvas.HitWithOptions(id, geometry.area, t.accessibleName(state.messages.LabelTerminalFmt, session.Address), gfx.HitOptions{
-		Role: gfx.RoleTerminal, Autofocus: session.ID == state.activeSessionID,
-	})
+	if declareHit {
+		canvas.HitWithOptions(id, geometry.area, t.accessibleName(state.messages.LabelTerminalFmt, session.Address), gfx.HitOptions{
+			Role: gfx.RoleTerminal, Autofocus: session.ID == state.activeSessionID,
+		})
+	}
 }
 
 func (state *State) paintTerminalImages(canvas *gfx.Canvas, terminal *terminal, geometry terminalGeometry, behind bool, visible []uint64) {

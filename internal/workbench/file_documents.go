@@ -15,6 +15,7 @@ import (
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/text"
+	"github.com/vivaui/viva/ui"
 	"motty/internal/filecontent"
 	"motty/internal/sftpclient"
 )
@@ -30,10 +31,12 @@ type fileWindowManager struct {
 	active      string                   // UI thread only
 	// pending is the last document the user asked to open: a slow load that
 	// finishes after another one must not take the visible tab back.
-	pending    string // UI thread only
-	painting   bool   // UI thread only
-	tabStrip   tabStrip
-	tabs       fileWindowTabUI
+	pending  string // UI thread only
+	painting bool   // UI thread only
+	tabStrip tabStrip
+	tabs     fileWindowTabUI
+	// page is the window's page, made on the first paint.
+	page       *ui.Page // UI thread only
 	closingAll bool     // UI thread only
 	closeQueue []string // UI thread only
 	closeDone  func()   // UI thread only
@@ -1128,6 +1131,12 @@ func saveLocalDocument(location string, data []byte, revision sftpclient.Revisio
 	return os.Rename(name, location)
 }
 
+// config is a document's own window. Its page routes the window's controls;
+// Paint stays the document's, which paints the editor and its overlays after
+// the page lays them out.
 func (d *fileDocument) config() app.Config {
-	return app.Config{Title: d.name + " — " + d.source, Icon: AppIcon(), Width: 1000, Height: 760, MinWidth: fileWindowMinWidth, MinHeight: fileWindowMinHeight, Tree: Tree(), Paint: d.paint, TextInput: d.textInput, OnPointer: d.pointer, OnKey: d.key, OnShortcut: d.shortcut, OnScroll: d.scroll, OnCloseRequest: d.requestClose, OnClosed: d.onClosed}
+	base := app.Config{Title: d.name + " — " + d.source, Icon: AppIcon(), Width: 1000, Height: 760, MinWidth: fileWindowMinWidth, MinHeight: fileWindowMinHeight, Tree: Tree(), Paint: d.paint, TextInput: d.textInput, OnPointer: d.pointer, OnKey: d.key, OnShortcut: d.shortcut, OnScroll: d.scroll, OnCloseRequest: d.requestClose, OnClosed: d.onClosed}
+	config := d.documentPage().Config(base)
+	config.Paint = base.Paint
+	return config
 }

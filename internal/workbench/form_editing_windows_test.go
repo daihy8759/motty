@@ -12,7 +12,7 @@ import (
 func formEditingDriver(t *testing.T, state *State) *app.Driver {
 	t.Helper()
 	var input app.TextInput
-	driver, err := app.NewDriver(app.Config{
+	config := app.Config{
 		Title: "form editing", Width: 1400, Height: 1100, Tree: Tree(),
 		Paint: state.Paint, OnPointer: state.Pointer, OnKey: state.Key,
 		OnShortcut: state.Shortcut, OnResize: state.Resize,
@@ -33,7 +33,8 @@ func formEditingDriver(t *testing.T, state *State) *app.Driver {
 			input = app.TextInput{Editor: editor}
 			return &input
 		},
-	}, nil)
+	}
+	driver, err := app.NewDriver(state.WindowConfig(config), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

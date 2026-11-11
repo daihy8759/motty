@@ -6,13 +6,13 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/keymap"
 	"motty/internal/sftpclient"
-	"motty/internal/sshconn"
 )
 
 type sftpWindowDrag struct {
@@ -45,12 +45,108 @@ func (view *sftpView) deferDraggedListing(local bool, apply func()) bool {
 }
 
 func (w *sftpWindow) rowTarget(id gfx.ID) (bool, int, bool) {
+	for side := range 2 {
+		if scope := w.folder(side == 0).listRowsScope; !scope.IsZero() {
+			if index, ok := id.In(scope); ok {
+				return side == 0, index, true
+			}
+		}
+	}
+	// The scopes the rows had before they were a List still name them: the
+	// tests, and the window's own focus results that predate the List, speak in
+	// them.
 	for side, scope := range sftpWindowRows {
 		if index, ok := id.In(scope); ok {
 			return side == 0, index, true
 		}
 	}
 	return false, 0, false
+}
+
+// rowID is the identity of row index on a side: the List's, once it has
+// declared its rows, else the scope the rows had before it did.
+func (w *sftpWindow) rowID(side, index int) gfx.ID {
+	if scope := w.folder(side == 0).listRowsScope; !scope.IsZero() {
+		return scope.At(index)
+	}
+	return sftpWindowRows[side].At(index)
+}
+
+// listBlocked reports a layer above the file lists that owns the keyboard or
+// the pointer, so a row key must not reach the folder behind it.
+func (w *sftpWindow) listBlocked() bool {
+	return w.view.worker == nil || w.fileProperties.open || w.bookmark.open || w.closeConfirm || w.externalConflict != 0 ||
+		w.view.dialog != sftpDialogNone || w.ui.menuOpen || w.view.bookmarksOpen || w.headerMenuOpen()
+}
+
+// listTypeahead moves to the row whose name begins with the letters typed. The
+// window page's List has its own typeahead and sees the key first; this remains
+// for the window's own shortcut route, which is reached when a pane's List has
+// not been painted yet.
+func (w *sftpWindow) listTypeahead(event gfx.KeyEvent) (gfx.EventResult, bool) {
+	text := event.Text
+	if text == "" && event.Key == gfx.KeySpace {
+		text = " "
+	}
+	if text == "" || w.listBlocked() {
+		return gfx.EventResult{}, false
+	}
+	for side := range 2 {
+		folder := w.folder(side == 0)
+		scope := folder.listRowsScope
+		if scope.IsZero() || len(folder.rows) == 0 {
+			continue
+		}
+		if _, inside := event.Target.In(scope); !inside {
+			continue
+		}
+		rows := components.MenuTypeaheadRows{
+			N:     len(folder.rows),
+			ID:    func(i int) gfx.ID { return scope.At(i) },
+			Label: func(i int) string { return folder.rows[i].entry.Name },
+		}
+		id, ok := w.ui.typeahead[side].TypeRows(text, time.Now(), rows, event.Target)
+		if !ok {
+			return gfx.EventResult{}, false
+		}
+		index, ok := id.In(scope)
+		if !ok || index < 0 || index >= len(folder.rows) {
+			return gfx.EventResult{}, false
+		}
+		folder.selectRow(index, 0)
+		folder.list.Select(index)
+		folder.list.ScrollIntoView(index)
+		w.selectionChanged(side == 0)
+		return gfx.EventResult{Handled: true, Repaint: true, Focus: id, FocusVisible: true}, true
+	}
+	return gfx.EventResult{}, false
+}
+
+// listOffset is the rows' offset for side, handing the List an offset the model
+// (a history restore, a filter, a sort, a test) wrote since the last paint.
+func (w *sftpWindow) listOffset(side int) float32 {
+	if w.ui.offset[side] != w.ui.offsetSynced[side] {
+		return w.setListOffset(side, w.ui.offset[side])
+	}
+	return w.ui.offset[side]
+}
+
+// setListOffset moves the List to offset and mirrors it into the fields the
+// drop target, the model and the tests read between paints.
+func (w *sftpWindow) setListOffset(side int, offset float32) float32 {
+	folder := w.folder(side == 0)
+	offset = max(offset, 0)
+	if room := w.ui.bars[side].MaxOffsetY; room > 0 && offset > room {
+		offset = room
+	}
+	if scroll := folder.listScroll; scroll != nil {
+		scroll.ScrollTo(offset)
+		offset = scroll.Offset
+	}
+	w.ui.offset[side], w.ui.offsetSynced[side] = offset, offset
+	folder.scrollOffset = offset
+	folder.first = max(0, int(offset/sftpRowHeight))
+	return offset
 }
 
 // Pointer capture retains the source hit during a drag. Resolve destinations
@@ -80,6 +176,9 @@ func (w *sftpWindow) dropTarget(x, y float32, fromLocal bool) (local bool, targe
 	return
 }
 
+// pointer sends a pointer event to the window's hand-painted chrome: the split,
+// the scroll bars, the row drags and drops, and the popups. The panes' Lists are
+// part of the window page now, so their clicks complete there first.
 func (w *sftpWindow) pointer(event gfx.PointerEvent) gfx.EventResult {
 	if w.view.worker == nil {
 		return gfx.EventResult{}
@@ -172,9 +271,8 @@ func (w *sftpWindow) pointer(event gfx.PointerEvent) gfx.EventResult {
 				w.ui.queueOffset = w.ui.queueBar.VerticalOffsetForThumb(event.Y - w.ui.barGrab)
 				after = w.ui.queueOffset
 			} else {
-				before = w.ui.offset[side]
-				w.ui.offset[side] = w.ui.bars[side].VerticalOffsetForThumb(event.Y - w.ui.barGrab)
-				after = w.ui.offset[side]
+				before = w.listOffset(side)
+				after = w.setListOffset(side, w.ui.bars[side].VerticalOffsetForThumb(event.Y-w.ui.barGrab))
 			}
 			return gfx.EventResult{Handled: true, Repaint: before != after}
 		} else if event.Kind == gfx.PointerUp {
@@ -198,13 +296,13 @@ func (w *sftpWindow) pointer(event gfx.PointerEvent) gfx.EventResult {
 	for side, id := range sftpWindowBar {
 		if event.Kind == gfx.PointerDown && event.Target == id {
 			geometry := w.ui.bars[side]
-			before := w.ui.offset[side]
+			before := w.listOffset(side)
 			w.ui.barGrab = geometry.VerticalThumb.Height / 2
 			if event.Y >= geometry.VerticalThumb.Y && event.Y < geometry.VerticalThumb.Y+geometry.VerticalThumb.Height {
 				w.ui.barGrab = event.Y - geometry.VerticalThumb.Y
 			}
 			w.ui.barDrag = side + 1
-			w.ui.offset[side] = geometry.VerticalOffsetForThumb(event.Y - w.ui.barGrab)
+			w.setListOffset(side, geometry.VerticalOffsetForThumb(event.Y-w.ui.barGrab))
 			return gfx.EventResult{Handled: true, Repaint: before != w.ui.offset[side]}
 		}
 	}
@@ -297,16 +395,6 @@ func (w *sftpWindow) pointer(event gfx.PointerEvent) gfx.EventResult {
 func (w *sftpWindow) click(id gfx.ID) {
 	defer w.invalidate()
 	if w.view.worker == nil {
-		switch id {
-		case hitSFTPWindowConnectCancel:
-			w.closeHostNow()
-		case hitSFTPWindowConnectRetry:
-			if w.session.failed() || w.session.phase == sshconn.PhaseClosed {
-				w.connect()
-			}
-		case hitSFTPWindowAuthenticate:
-			w.owner.raiseSFTPAuthentication(&w.session)
-		}
 		return
 	}
 	if w.clickFileProperties(id) {
@@ -539,6 +627,15 @@ func (w *sftpWindow) key(event gfx.KeyEvent) gfx.EventResult {
 	if event.Release {
 		return gfx.EventResult{}
 	}
+	// The List submits Enter to the window; opening the row is the window's.
+	// Take it before the List's key route so a folder is entered once, not
+	// twice.
+	if !event.Repeat && event.Key == gfx.KeyEnter && event.Modifiers == 0 && !w.listBlocked() {
+		if local, index, ok := w.rowTarget(event.Target); ok {
+			w.openEntry(local, index)
+			return gfx.EventResult{Handled: true, Repaint: true}
+		}
+	}
 	handled := gfx.EventResult{Handled: true, Repaint: true}
 	if w.view.worker == nil {
 		if event.Key == gfx.KeyEscape && !event.Repeat {
@@ -711,7 +808,9 @@ func (w *sftpWindow) key(event gfx.KeyEvent) gfx.EventResult {
 		}
 	}
 	local, index, row := w.rowTarget(event.Target)
-	if row {
+	if row && event.Key != gfx.KeyTab {
+		// Tabbing through rows to reach another control does not move the
+		// side the toolbar actions apply to.
 		w.activeLocal, w.view.local = local, local
 	}
 	folder := w.folder(w.activeLocal)
@@ -773,7 +872,7 @@ func (w *sftpWindow) key(event gfx.KeyEvent) gfx.EventResult {
 		if bottom > w.ui.offset[side]+w.ui.list[side].Height {
 			w.ui.offset[side] = bottom - w.ui.list[side].Height
 		}
-		handled.Focus = sftpWindowRows[side].At(next)
+		handled.Focus = w.rowID(side, next)
 		handled.FocusVisible = true
 		return handled
 	}
@@ -781,7 +880,17 @@ func (w *sftpWindow) key(event gfx.KeyEvent) gfx.EventResult {
 }
 
 func (w *sftpWindow) shortcut(event gfx.KeyEvent) gfx.EventResult {
-	if event.Release || event.Modifiers&(gfx.ModifierControl|gfx.ModifierMeta) == 0 {
+	if event.Release {
+		return gfx.EventResult{}
+	}
+	// A printable key while a List row has the keyboard is the List's typeahead.
+	// The window owns OnShortcut, so it feeds the same session a Menu uses.
+	if event.Modifiers&^gfx.ModifierShift == 0 {
+		if result, ok := w.listTypeahead(event); ok {
+			return result
+		}
+	}
+	if event.Modifiers&(gfx.ModifierControl|gfx.ModifierMeta) == 0 {
 		return gfx.EventResult{}
 	}
 	if w.view.worker == nil && strings.ToLower(event.Text) != "w" {
@@ -826,6 +935,7 @@ func (w *sftpWindow) shortcut(event gfx.KeyEvent) gfx.EventResult {
 		for index := range folder.rows {
 			folder.rows[index].selected = true
 		}
+		folder.listNeedsSeed = true
 		w.selectionChanged(w.activeLocal)
 		return handled
 	case "l":
@@ -876,14 +986,18 @@ func (w *sftpWindow) scroll(event gfx.ScrollEvent) gfx.EventResult {
 	}
 	for side, bounds := range w.ui.list {
 		if pointInRect(event.X, event.Y, bounds) {
-			before := w.ui.offset[side]
+			before := w.listOffset(side)
+			folder := w.folder(side == 0)
 			if event.Precise {
-				w.folder(side == 0).wheel = 0
-				w.ui.offset[side] = max(0, min(w.ui.bars[side].MaxOffsetY, before+event.DeltaY))
+				// A trackpad moves exactly what it reports, as the side panel
+				// does; the List keeps the offset and its scrollbar follows.
+				folder.wheel = 0
+				w.setListOffset(side, before+event.DeltaY)
 			} else {
-				folder := w.folder(side == 0)
+				// A notch is whole rows, accumulated as the side panel does, so
+				// both lists move alike for the same wheel.
 				scrollFolder(folder, event)
-				w.ui.offset[side] = max(0, min(w.ui.bars[side].MaxOffsetY, float32(folder.first)*sftpRowHeight))
+				w.setListOffset(side, float32(folder.first)*sftpRowHeight)
 			}
 			return gfx.EventResult{Handled: true, Repaint: before != w.ui.offset[side]}
 		}

@@ -337,7 +337,7 @@ func openWorkbenchWindow(application *app.Application, status *tray, hub *workbe
 	}
 	state = workbench.New(workbench.Options{
 		DevelopmentSource: importSource,
-		Invalidate:        invalidate, NewWindow: newWindow,
+		Invalidate:        invalidate, Invalidator: &invalidator, NewWindow: newWindow,
 		OpenContentWindow: application.OpenContentWindow,
 		Group:             windowGroup, Blank: place.blank, Log: recentLog,
 		LogDir: logDirectory(), PreviousCrash: crashNoticeFor(place),
@@ -424,7 +424,7 @@ func openWorkbenchWindow(application *app.Application, status *tray, hub *workbe
 	}
 
 	var err error
-	mainWindow, err = application.OpenWindow(app.Config{
+	config := app.Config{
 		Title:          mainWindowTitle(),
 		Icon:           workbench.AppIcon(),
 		Tree:           workbench.Tree(),
@@ -478,7 +478,10 @@ func openWorkbenchWindow(application *app.Application, status *tray, hub *workbe
 				status.refresh()
 			}
 		},
-	}, &canvas)
+	}
+	// The workbench page routes the shell's own elements and the application
+	// handlers keep the events it leaves; the workbench's Paint stays its own.
+	mainWindow, err = application.OpenWindow(state.WindowConfig(config), &canvas)
 	if err == nil {
 		state.SetWindow(mainWindow.Frame, func() bool { return !mainWindow.Hidden() && !mainWindow.Closed() })
 		state.SetShortcutCapture(mainWindow.CaptureSystemShortcuts)

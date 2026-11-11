@@ -137,7 +137,7 @@ func TestSFTPFilterShortcutUsesTheFileListFocusAndLeavesTerminalFindAlone(t *tes
 	}
 
 	result = state.Shortcut(gfx.KeyEvent{
-		Target: contextID(hitTerminalList.At(int(session.ID))), Modifiers: find.Modifiers, Text: string(find.Char),
+		Target: contextID(terminalTestHit(state, session)), Modifiers: find.Modifiers, Text: string(find.Char),
 	})
 	if !result.Handled || result.Focus != hitTerminalFindField || !session.term.find.open {
 		t.Fatalf("terminal find result=%+v open=%v", result, session.term.find.open)
@@ -373,6 +373,8 @@ func TestSFTPFilterEscapeClearsThenClosesWithoutClosingThePanel(t *testing.T) {
 		return ok && context.Open && context.Kind == layoutcore.ContextSFTP
 	}
 
+	var canvas gfx.Canvas
+	state.Paint(&canvas, gfx.Size{Width: 1400, Height: 900})
 	result := state.Key(gfx.KeyEvent{Target: contextID(hitSFTPFilter), Key: gfx.KeyEscape})
 	if !result.Handled || !panelOpen() {
 		t.Fatalf("Escape in the filter closed the panel: %+v", result)
@@ -389,7 +391,7 @@ func TestSFTPFilterEscapeClearsThenClosesWithoutClosingThePanel(t *testing.T) {
 	if !result.Handled || !panelOpen() || view.sftpFolder.filterOpen {
 		t.Fatalf("second Escape did not close the filter or closed the panel: %+v open=%v", result, view.sftpFolder.filterOpen)
 	}
-	if result.Focus != contextID(hitSFTPEntryList.At(0)) {
+	if result.Focus != sftpListRowID(t, view.active(), 0) {
 		t.Fatalf("closing the filter left focus at %v, want the first file", result.Focus)
 	}
 }

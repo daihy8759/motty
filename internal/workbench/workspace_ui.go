@@ -103,14 +103,6 @@ func pixelBounds(frame gfx.Rect, bounds FractionBounds) gfx.Rect {
 	}
 }
 
-func paneVirtualSize(bounds gfx.Rect) gfx.Size {
-	return gfx.Size{Width: bounds.Width, Height: bounds.Height + windowBarHeight}
-}
-
-func paneEmbedOrigin(bounds gfx.Rect) gfx.Point {
-	return gfx.Point{X: bounds.X, Y: bounds.Y - windowBarHeight}
-}
-
 func (state *State) refreshWorkspaceViews() bool {
 	workspaceID := state.deck.ActiveWorkspace()
 	revision, ok := state.deck.Revision(workspaceID)
@@ -124,6 +116,84 @@ func (state *State) refreshWorkspaceViews() bool {
 	state.workspaceViewRevision = revision
 	state.workspaceViewBuilds++
 	return true
+}
+
+// paintsTerminalPane reports whether a session is shown by the terminal pane
+// view: a live terminal that is neither waiting on its connection page nor a
+// remote desktop. Every other visible session pane declares a connection,
+// restored or desktop body in the same workbench page.
+func (state *State) paintsTerminalPane(session *Session) bool {
+	return session.term != nil && !session.restored && !state.showsProgress(session) && session.desk == nil
+}
+
+// declareWorkspacePanes declares the terminal panes inside the workbench page:
+// one Part-named container per visible pane at its deck rectangle. The page
+// names them, so focus, keys, text, wheel and hits all use the page's routing;
+// the window bar, pane tabs, dividers and the docked SFTP panel stay outside.
+func (state *State) declareWorkspacePanes(c ui.C) {
+	state.refreshWorkspaceViews()
+	for index := range state.sessionBodies {
+		state.sessionBodies[index].declared = false
+	}
+	frame := state.workspacePixelBounds(state.viewport)
+	state.declareWorkspaceHeader(c, state.viewport)
+	c.Part(terminalWorkspacePart)
+	ui.Stack(c).Absolute().Left(frame.X).Top(frame.Y).Width(frame.Width).Height(frame.Height).Clip().Children(func() {
+		if len(state.panes) == 0 {
+			// No pane at all: the whole area is the empty tab.
+			state.declareNewTabPage(c, gfx.Rect{Width: frame.Width, Height: frame.Height})
+			return
+		}
+		for index := range state.panes {
+			pane := state.panes[index]
+			if pane.Bounds.Width <= 0 || pane.Bounds.Height <= 0 {
+				continue // a tab that is not showing
+			}
+			bounds := pixelBounds(frame, pane.Bounds)
+			session, ok := state.sessionByIDPointer(pane.SessionID)
+			if !ok {
+				// The page owns the empty pane: the active one offers the empty
+				// tab, a background one only its label.
+				state.declareEmptyPane(c, frame, bounds, index, pane.Active)
+				continue
+			}
+			// The container itself is the pane's ground: a press here is a press
+			// inside the pane. What the pane shows is declared below it, in the
+			// same page and under the same stable part name, so focus, keys, text,
+			// wheel and hits all use the page's routing.
+			part := state.panePartFor(session)
+			c.Part(part)
+			ui.Column(c).Absolute().
+				Left(bounds.X-frame.X).Top(bounds.Y-frame.Y).
+				Width(bounds.Width).Height(bounds.Height).
+				HitWith(hitPaneActivateList.At(index), state.messages.LabelNewTab, gfx.HitOptions{Role: gfx.RoleButton, SkipFocus: true}).
+				Clip().Children(func() {
+				if state.paintsTerminalPane(session) {
+					state.declareTerminalPane(c, session, bounds)
+					return
+				}
+				state.declareSessionPane(c, session, bounds)
+			})
+		}
+	})
+}
+
+// declareEmptyPane declares the page's content of a pane with no session: the
+// empty tab for the active one, its label for a background one. The pane itself
+// is the ground a press switches panes with.
+func (state *State) declareEmptyPane(c ui.C, frame, bounds gfx.Rect, index int, active bool) {
+	pane := ui.Column(c).Absolute().Left(bounds.X-frame.X).Top(bounds.Y-frame.Y).Width(bounds.Width).Height(bounds.Height).
+		HitWith(hitPaneActivateList.At(index), state.messages.LabelNewTab, gfx.HitOptions{Role: gfx.RoleButton, SkipFocus: true})
+	if !active {
+		label := state.messages.LabelNewTab
+		pane.Background(state.pal.workspace).Children(func() {
+			ui.Text(c, label).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(state.pal.muted).LineHeight(22).
+				Width(c.Canvas().TextWidthWeight(label, metrics.FontSizeM, gfx.WeightMedium)+8).
+				MaxWidth(max(bounds.Width-24, 0)).Self(ui.Start).MarginSides(42, 12, 0, 12)
+		})
+		return
+	}
+	pane.Children(func() { state.declareNewTabPage(c, gfx.Rect{Width: bounds.Width, Height: bounds.Height}) })
 }
 
 func (state *State) paintWorkspacePanes(canvas *gfx.Canvas, size gfx.Size) {
@@ -140,50 +210,33 @@ func (state *State) paintWorkspacePanes(canvas *gfx.Canvas, size gfx.Size) {
 		state.paintContextPanel(canvas, size, frame)
 		return
 	}
-	if len(state.panes) == 1 {
-		pane := state.panes[0]
-		// The pane's own ground, as in a split: a press here is a press inside the
-		// pane, so it must reach the pane rather than fall through to the window
-		// and take the keyboard away from the page.
-		canvas.HitWithOptions(hitPaneActivateList.At(0), pixelBounds(frame, pane.Bounds), state.messages.LabelNewTab, gfx.HitOptions{Role: gfx.RoleButton, SkipFocus: true})
-		if session, ok := state.sessionByIDPointer(pane.SessionID); ok {
-			state.paneCanvas.BeginEmbedded(canvas, 0)
-			state.paintSessionPage(&state.paneCanvas, paneVirtualSize(frame), session)
-			state.paneCanvas.EndFrame()
-			canvas.Clip(frame)
-			canvas.Embed(&state.paneCanvas, paneEmbedOrigin(frame), 0)
-			canvas.Unclip()
-			adoptEmbeddedFocus(canvas, &state.paneCanvas, 0)
-		} else {
-			state.paintEmptyPane(canvas, frame, pane)
-		}
-		state.paintTerminalDrop(canvas)
-		state.paintContextPanel(canvas, size, frame)
-		return
-	}
-
 	for index := range state.panes {
 		pane := state.panes[index]
 		if pane.Bounds.Width <= 0 || pane.Bounds.Height <= 0 {
 			continue // a tab that is not showing
 		}
 		bounds := pixelBounds(frame, pane.Bounds)
-		canvas.HitWithOptions(hitPaneActivateList.At(index), bounds, state.messages.LabelNewTab, gfx.HitOptions{Role: gfx.RoleButton, SkipFocus: true})
 		session, ok := state.sessionByIDPointer(pane.SessionID)
-		if !ok {
-			state.paintEmptyPane(canvas, bounds, pane)
+		if ok && state.paintsTerminalPane(session) {
+			// The page already painted the pane's chrome and terminal; what is
+			// left are the pieces it paints itself (find surface, completion,
+			// notice, spinner and status light).
+			state.paintTerminalPaneDetails(canvas, session, bounds)
 			continue
 		}
-		mount := paneMount(session)
-		state.paneCanvas.BeginEmbedded(canvas, mount)
-		state.paintSessionPage(&state.paneCanvas, paneVirtualSize(bounds), session)
-		state.paneCanvas.EndFrame()
-		canvas.Clip(bounds)
-		canvas.Embed(&state.paneCanvas, paneEmbedOrigin(bounds), mount)
-		canvas.Unclip()
-		if pane.Active {
-			adoptEmbeddedFocus(canvas, &state.paneCanvas, mount)
+		if !ok {
+			// The page owns the empty pane: only the active one paints what its
+			// declaration left by hand.
+			if pane.Active {
+				state.paintNewTabDetails(canvas)
+			}
+			continue
 		}
+		// The pane's body is part of the workbench page now; the window paints
+		// only what its declaration left by hand.
+		canvas.Clip(bounds)
+		state.paintSessionPaneDetails(canvas, session, bounds)
+		canvas.Unclip()
 	}
 	state.paintPaneDividers(canvas, frame)
 	if !state.workspaceTabbed(state.deck.ActiveWorkspace()) {
@@ -282,34 +335,9 @@ func snapRect(r gfx.Rect) gfx.Rect {
 }
 
 func (state *State) paintEmptyWorkspace(canvas *gfx.Canvas, bounds gfx.Rect) {
-	state.paintNewTabPage(canvas, bounds)
-}
-
-func (state *State) paintEmptyPane(canvas *gfx.Canvas, bounds gfx.Rect, pane Pane) {
-	if pane.Active {
-		state.paintNewTabPage(canvas, bounds)
-		return
-	}
-	f := state.paneChrome.Begin(canvas, state.Theme(), bounds)
-	label := state.messages.LabelNewTab
-	f.Column().Fill().Background(state.pal.workspace).Children(func() {
-		f.Text(label).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(state.pal.muted).LineHeight(22).
-			Width(canvas.TextWidthWeight(label, metrics.FontSizeM, gfx.WeightMedium)+8).MaxWidth(max(bounds.Width-24, 0)).Self(ui.Start).MarginSides(42, 12, 0, 12)
-	})
-	f.End()
-}
-
-func (state *State) paintSessionPage(canvas *gfx.Canvas, size gfx.Size, session *Session) {
-	switch {
-	case session.restored:
-		state.paintRestoredSessionPage(canvas, size, session)
-	case state.showsProgress(session):
-		state.paintConnectionPage(canvas, size, session)
-	case session.desk != nil:
-		state.paintDesktopPage(canvas, size, session)
-	default:
-		state.paintTerminalPage(canvas, size, session)
-	}
+	// The page declared the empty tab; only its badges and footer are painted by
+	// hand.
+	state.paintNewTabDetails(canvas)
 }
 
 func (state *State) contextSession() *Session {
@@ -320,6 +348,211 @@ func (state *State) contextSession() *Session {
 	return session
 }
 
+// The docked files panel is a component of the workbench page: one Part-named
+// container at the rect the window shows it, with the panel's view declared
+// inside. Its List and controls are the page's, so pointer, key, wheel and text
+// routing need no mount translation. When the window is too narrow to dock it,
+// the same view is declared in a drawer overlay the page paints itself.
+const (
+	contextPanelPart  = "sftp-panel"
+	contextDrawerPart = "sftp-drawer"
+)
+
+// contextPanelMode is the view the docked panel declared in the last paint.
+type contextPanelMode uint8
+
+const (
+	contextPanelNone contextPanelMode = iota
+	contextPanelEmpty
+	contextPanelList
+	contextPanelEditor
+)
+
+// contextPanelView picks the view the panel shows for a session.
+func contextPanelView(session *Session) contextPanelMode {
+	switch {
+	case session == nil || session.files == nil:
+		return contextPanelEmpty
+	case session.files.editPath != "":
+		return contextPanelEditor
+	default:
+		return contextPanelList
+	}
+}
+
+// declareContextPanel declares the docked files panel in the workbench page.
+// The panel's hand-painted parts keep their window identities; its List and the
+// page-declared controls are named under contextPanelScope, which event routing
+// reads to tell the panel's hits from the window's.
+func (state *State) declareContextPanel(c ui.C) {
+	state.contextRect = gfx.Rect{}
+	state.contextPanelScope = 0
+	state.contextPanelMode = contextPanelNone
+	state.contextDrawerOpen = false
+	size := state.viewport
+	context, ok := state.deck.Context(state.deck.ActiveWorkspace())
+	if !ok || !context.Open || state.monitorDrawer(size) || context.Kind != layoutcore.ContextSFTP {
+		return
+	}
+	session := state.contextSession()
+	if size.Width < contextDrawerAt {
+		// A narrow window shows the panel as a drawer over the workspace. The
+		// page declares its chrome, its body and the panel between them, so the
+		// panel paints after the surface and inside its focus and layer.
+		viewport := state.baseWorkspacePixelBounds(size)
+		description := ""
+		if session != nil {
+			description = session.Title
+		}
+		side := components.DrawerLeft
+		if context.Side == layoutcore.ContextRight {
+			side = components.DrawerRight
+		}
+		drawer := components.BeginDrawer(c.Canvas(), state.Theme(), viewport, components.DrawerOptions{
+			Layer: drawerLayer, Scope: dialogScope, DismissID: hitSFTPClose, CloseID: hitSFTPDrawerClose,
+			Side: side, ContentExtent: min(context.Width, size.Width*0.82),
+			InitialFocusID: hitSFTPDrawerClose,
+		})
+		layout := drawer.Layout(description)
+		state.contextDrawer = drawer
+		state.contextDrawerDescription = description
+		state.contextDrawerOpen = true
+		if state.contextDrawerBegin == nil {
+			state.contextDrawerBegin = state.beginContextDrawer
+			state.contextDrawerEnd = state.endContextDrawer
+		}
+		c.Part(contextDrawerPart)
+		overlay := ui.Stack(c).Absolute().Left(viewport.X).Top(viewport.Y).Width(viewport.Width).Height(viewport.Height)
+		overlay.Draw(state.contextDrawerBegin)
+		overlay.Children(func() {
+			state.declareContextPanelBody(c, layout.Body, gfx.Point{X: viewport.X, Y: viewport.Y}, session)
+			// The drawer closes after the panel painted: the panel's content is
+			// part of what it animates, and its scope and layer cover it.
+			ui.Slot(c).Absolute().Left(0).Top(0).Width(0).Height(0).Draw(state.contextDrawerEnd)
+		})
+		state.contextPanelScope = tree.Sub(tree.Sub(tree.Feature(shellPageRoot), tree.Name(contextDrawerPart)), tree.Name(contextPanelPart))
+		if session != nil && session.files != nil && session.files.dialog != sftpDialogNone {
+			state.declareSFTPDialog(c, gfx.Rect{Width: size.Width, Height: size.Height}, session.files)
+		}
+		return
+	}
+	layout := state.sftpPanelResizable(nil, size, context).Paint(state.messages.SFTPFiles)
+	panel := layout.First
+	if context.Side == layoutcore.ContextRight {
+		panel = layout.Second
+	}
+	state.declareContextPanelBody(c, panel, gfx.Point{}, session)
+	state.contextPanelScope = tree.Sub(tree.Feature(shellPageRoot), tree.Name(contextPanelPart))
+	if session != nil && session.files != nil && session.files.dialog != sftpDialogNone {
+		state.declareSFTPDialog(c, gfx.Rect{Width: size.Width, Height: size.Height}, session.files)
+	}
+}
+
+// declareContextPanelBody declares the panel's container at rect (offset from
+// the container it is declared in) and the view the session shows.
+func (state *State) declareContextPanelBody(c ui.C, rect gfx.Rect, origin gfx.Point, session *Session) {
+	if rect.Width <= 0 || rect.Height <= 0 {
+		return
+	}
+	mode := contextPanelView(session)
+	state.contextRect = rect
+	state.contextPanelMode = mode
+	chrome := &state.chrome
+	chrome.sftpPanel = sftpPanelScratch{bounds: rect}
+	chrome.sftpEditor = sftpEditorScratch{}
+	chrome.sftpEmpty = sftpEmptyScratch{bounds: rect}
+	switch mode {
+	case contextPanelList:
+		view := session.files
+		if folder := view.active(); folder.pathEditing && !state.sftpPathInput && c.Canvas().Focused() != hitSFTPPath {
+			folder.pathEditing = false
+			folder.resetPathInput()
+		}
+		chrome.sftpPanel.view, chrome.sftpPanel.session = view, session
+	case contextPanelEditor:
+		chrome.sftpEditor.view = session.files
+	default:
+		chrome.sftpEmpty.session = session
+	}
+	c.Part(contextPanelPart)
+	panel := ui.Column(c).Absolute().
+		Left(rect.X - origin.X).Top(rect.Y - origin.Y).
+		Width(rect.Width).Height(rect.Height).Clip()
+	if state.contextPanelDraw == nil {
+		state.contextPanelDraw = state.drawContextPanelBody
+	}
+	panel.DrawOver(state.contextPanelDraw)
+	panel.Children(func() {
+		switch mode {
+		case contextPanelList:
+			state.declareSFTPPanel(c)
+		case contextPanelEditor:
+			state.declareSFTPEditor(c)
+		default:
+			state.declareEmptyContextSFTP(c)
+		}
+	})
+}
+
+// paintContextPanelBody paints what the panel's view lays out but does not
+// paint itself: the icon buttons, the path and filter, the list's scroll bar and
+// the empty message. It runs inside the panel container, after its children, so
+// it paints in the page's order and with the panel's clip.
+func (state *State) drawContextPanelBody(d *ui.DrawContext) {
+	state.paintContextPanelBody(d.Canvas)
+}
+
+func (state *State) beginContextDrawer(*ui.DrawContext) {
+	state.contextDrawer.Begin(state.messages.SFTPFiles, state.contextDrawerDescription)
+}
+
+func (state *State) endContextDrawer(*ui.DrawContext) {
+	if state.contextDrawerOpen {
+		state.contextDrawer.End()
+		state.contextDrawerOpen = false
+	}
+}
+
+func (state *State) paintContextPanelBody(canvas *gfx.Canvas) {
+	switch state.contextPanelMode {
+	case contextPanelList:
+		state.paintSFTPPanelDetails(canvas)
+	case contextPanelEditor:
+		state.paintSFTPEditorDetails(canvas)
+	case contextPanelEmpty:
+		state.paintEmptyContextPanelDetails(canvas)
+	}
+}
+
+// contextPanelOwns reports whether id is an element the workbench page declared
+// inside the docked files panel: its List, a row, or a control of the panel's
+// view. Such an element is routed through the page, with no mount.
+func (state *State) contextPanelOwns(id gfx.ID) bool {
+	scope := state.contextPanelScope
+	return !scope.IsZero() && !id.IsZero() && tree.Within(id.Scope(), scope)
+}
+
+// contextPanelHit reports whether id belongs to the docked files panel as the
+// window sees it: a page element, or one of the hand-painted controls that keep
+// the sftp feature's names. The panel always shows the active session.
+func (state *State) contextPanelHit(id gfx.ID) bool {
+	if id.IsZero() {
+		return false
+	}
+	return state.contextPanelOwns(id) || tree.Within(id.Scope(), sftpHits)
+}
+
+// contextPanelSession resolves the active session for an identity of the docked
+// files panel. The panel is painted only for the terminal section.
+func (state *State) contextPanelSession(id gfx.ID) (*Session, bool) {
+	if state.activeSection != sectionTerminal || !state.contextPanelHit(id) {
+		return nil, false
+	}
+	return state.sessionByIDPointer(state.activeSessionID)
+}
+
+// paintContextPanel paints what belongs to the window rather than the panel: a
+// dialog it raised. The panel itself is part of the workbench page.
 func (state *State) paintContextPanel(canvas *gfx.Canvas, size gfx.Size, workspace gfx.Rect) {
 	context, ok := state.deck.Context(state.deck.ActiveWorkspace())
 	if !ok || !context.Open || state.monitorDrawer(size) {
@@ -328,117 +561,64 @@ func (state *State) paintContextPanel(canvas *gfx.Canvas, size gfx.Size, workspa
 	if context.Kind != layoutcore.ContextSFTP {
 		return
 	}
-	session := state.contextSession()
-	// A dialog belongs to the window, not to the narrow panel that raised it.
-	if session != nil && session.files != nil && session.files.dialog != sftpDialogNone {
-		defer state.paintSFTPDialog(canvas, gfx.Rect{Width: size.Width, Height: size.Height}, session.files)
+	if size.Width >= contextDrawerAt {
+		// The divider between the panel and the workspace is the window's, not
+		// the panel's: paint its line and its drag target here, after the page.
+		state.sftpPanelResizable(canvas, size, context).Paint(state.messages.SFTPFiles)
 	}
-	if size.Width < contextDrawerAt {
-		side := components.DrawerLeft
-		if context.Side == layoutcore.ContextRight {
-			side = components.DrawerRight
-		}
-		drawer := components.BeginDrawer(canvas, state.Theme(), state.baseWorkspacePixelBounds(size), components.DrawerOptions{
-			Layer: drawerLayer, Scope: dialogScope, DismissID: hitSFTPClose, CloseID: hitSFTPDrawerClose,
-			Side: side, ContentExtent: min(context.Width, size.Width*0.82),
-			InitialFocusID: hitSFTPDrawerClose,
-		})
-		description := ""
-		if session != nil {
-			description = session.Title
-		}
-		layout := drawer.Begin(state.messages.SFTPFiles, description)
-		state.paintContextSFTP(canvas, layout.Body, session)
-		drawer.End()
-		return
-	}
-	resizable := state.sftpPanelResizable(canvas, size, context)
-	layout := resizable.Paint(state.messages.SFTPFiles)
-	panel := layout.First
-	if context.Side == layoutcore.ContextRight {
-		panel = layout.Second
-	}
-	state.paintContextSFTP(canvas, panel, session)
 }
 
-func (state *State) paintContextSFTP(canvas *gfx.Canvas, bounds gfx.Rect, session *Session) {
-	if bounds.Width <= 0 || bounds.Height <= 0 {
-		return
-	}
-	state.contextRect = bounds
-	state.contextCanvas.BeginEmbedded(canvas, contextMount)
-	if session != nil && session.files != nil {
-		state.paintSFTPPage(&state.contextCanvas, gfx.Size{Width: bounds.Width, Height: bounds.Height + windowBarHeight}, session)
-	} else {
-		state.paintEmptyContextSFTP(&state.contextCanvas, gfx.Size{Width: bounds.Width, Height: bounds.Height + windowBarHeight}, session)
-	}
-	state.contextCanvas.EndFrame()
-	canvas.Clip(bounds)
-	canvas.Embed(&state.contextCanvas, gfx.Point{X: bounds.X, Y: bounds.Y - windowBarHeight}, contextMount)
-	canvas.Unclip()
-	adoptEmbeddedFocus(canvas, &state.contextCanvas, contextMount)
-}
-
-// paintEmptyContextSFTP is the panel before a file list exists: the same title
-// and close button as the list, then what the panel needs to start.
-func (state *State) paintEmptyContextSFTP(canvas *gfx.Canvas, size gfx.Size, session *Session) {
+// paintEmptyContextPanelDetails paints the panel before a file list exists: the
+// same title and close button as the list, then what the panel needs to start.
+func (state *State) paintEmptyContextPanelDetails(canvas *gfx.Canvas) {
+	s := &state.chrome.sftpEmpty
 	pal, messages := state.pal, state.messages
-	headerBackground, headerBorder := pal.workspace, pal.line
-	bounds := gfx.Rect{Y: windowBarHeight, Width: size.Width, Height: max(size.Height-windowBarHeight, 0)}
-	canConnect := session != nil && (session.isLocal() || session.hasServer() && session.conn != nil && session.phase == sshconn.PhaseConnected)
+	headerBounds := s.header.Rect()
+	canvas.Fill(gfx.Rect{X: headerBounds.X, Y: headerBounds.Y + headerBounds.Height - 1, Width: headerBounds.Width, Height: 1}, pal.line)
+	if s.session != nil {
+		titleBounds := s.sessionTitle.Rect()
+		canvas.Label(elide(canvas, s.session.Title, metrics.FontSizeS, gfx.WeightRegular, titleBounds.Width), titleBounds, gfx.TextStyle{Size: metrics.FontSizeS, Color: pal.muted})
+	}
+	if s.canConnect {
+		components.BeginButton(canvas, state.Theme(), hitSFTPOpen, s.openButton.Rect()).Default(messages.SFTPOpen)
+	}
+}
+
+// declareEmptyContextSFTP declares the panel's chrome and the one action it
+// offers while there is no list yet.
+func (state *State) declareEmptyContextSFTP(c ui.C) {
+	s := &state.chrome.sftpEmpty
+	session := s.session
+	pal, messages := state.pal, state.messages
+	bounds := s.bounds
+	s.canConnect = session != nil && (session.isLocal() || session.hasServer() && session.conn != nil && session.phase == sshconn.PhaseConnected)
 	// The message sits a little above the middle of the panel.
 	middle := bounds.Height * 0.38
+	buttonWidth := min(max(bounds.Width-2*sftpPad, 0), 160)
 
-	var header, closeButton, sideButton, sessionTitle, openButton ui.Box
-	buttonWidth := min(max(size.Width-2*sftpPad, 0), 160)
-	f := state.filesLayout.Begin(canvas, state.Theme(), bounds)
-	f.Stack().Fill().Background(pal.workspace).Children(func() {
-		f.Column().Fill().PadX(sftpPad).Children(func() {
-			header = f.Row().FillWidth().Height(infoBarHeight).Shrink(0).MarginSides(0, -sftpPad, 0, -sftpPad).PadX(sftpPad).Background(headerBackground).Gap(8).Items(ui.Center).Children(func() {
-				f.Text(messages.SFTPFiles).FontSize(metrics.FontSizeM).Weight(gfx.WeightSemibold).Color(pal.text).LineHeight(20).Grow(1)
-				sideButton = f.Slot().Size(sftpHeaderButton, sftpHeaderButton)
-				closeButton = f.Slot().Size(sftpHeaderButton, sftpHeaderButton)
+	ui.Stack(c).Fill().Background(pal.workspace).Children(func() {
+		ui.Column(c).Fill().PadX(sftpPad).Children(func() {
+			s.header = ui.Row(c).FillWidth().Height(infoBarHeight).Shrink(0).MarginSides(0, -sftpPad, 0, -sftpPad).PadX(sftpPad).Background(pal.workspace).Gap(8).Items(ui.Center)
+			s.header.Children(func() {
+				ui.Text(c, messages.SFTPFiles).FontSize(metrics.FontSizeM).Weight(gfx.WeightSemibold).Color(pal.text).LineHeight(20).Grow(1)
+				moveIcon, moveHint := state.sftpPanelMoveAction()
+				s.sideButton = state.declareIconButton(c, hitSFTPPanelSide, moveIcon, moveHint, false, iconButtonQuiet).Size(sftpHeaderButton, sftpHeaderButton)
+				s.closeButton = state.declareIconButton(c, hitSFTPClose, iconClose, messages.TipSFTPClose, false, iconButtonQuiet).Size(sftpHeaderButton, sftpHeaderButton)
 			})
 			if session != nil {
 				// Whose files these would be: the session the panel follows.
-				sessionTitle = f.Slot().Height(16).MarginSides(2, sftpHeaderButton+8, 0, 0)
+				s.sessionTitle = ui.Slot(c).Height(16).MarginSides(2, sftpHeaderButton+8, 0, 0)
 			}
 		})
-		f.Column().Fill().PadSides(0, sftpPad, 0, sftpPad).Children(func() {
-			if canConnect {
-				f.Text(messages.SFTPFiles).FontSize(metrics.FontSizeM).Weight(gfx.WeightSemibold).Color(pal.text).LineHeight(22).TextCenter().MarginSides(middle-32, 0, 10, 0)
-				openButton = f.Slot().Size(buttonWidth, 34).Self(ui.Center)
+		ui.Column(c).Fill().PadSides(0, sftpPad, 0, sftpPad).Children(func() {
+			if s.canConnect {
+				ui.Text(c, messages.SFTPFiles).FontSize(metrics.FontSizeM).Weight(gfx.WeightSemibold).Color(pal.text).LineHeight(22).TextCenter().MarginSides(middle-32, 0, 10, 0)
+				s.openButton = ui.Slot(c).Size(buttonWidth, 34).Self(ui.Center)
 			} else {
-				f.Text(messages.SFTPUnavailable).FontSize(metrics.FontSizeM).Color(pal.muted).LineHeight(24).TextCenter().MarginSides(middle-12, 0, 0, 0)
+				ui.Text(c, messages.SFTPUnavailable).FontSize(metrics.FontSizeM).Color(pal.muted).LineHeight(24).TextCenter().MarginSides(middle-12, 0, 0, 0)
 			}
 		})
 	})
-	f.End()
-
-	headerBounds := header.Rect()
-	canvas.Fill(gfx.Rect{X: headerBounds.X, Y: headerBounds.Y + headerBounds.Height - 1, Width: headerBounds.Width, Height: 1}, headerBorder)
-	state.paintIconButton(canvas, hitSFTPClose, iconClose, closeButton.Rect(), messages.TipSFTPClose, false, iconButtonQuiet, headerBackground)
-	moveIcon, moveHint := state.sftpPanelMoveAction()
-	state.paintIconButton(canvas, hitSFTPPanelSide, moveIcon, sideButton.Rect(), moveHint, false, iconButtonQuiet, headerBackground)
-	if session != nil {
-		titleBounds := sessionTitle.Rect()
-		canvas.Label(elide(canvas, session.Title, metrics.FontSizeS, gfx.WeightRegular, titleBounds.Width), titleBounds, gfx.TextStyle{Size: metrics.FontSizeS, Color: pal.muted})
-	}
-	if canConnect {
-		components.BeginButton(canvas, state.Theme(), hitSFTPOpen, openButton.Rect()).Default(messages.SFTPOpen)
-	}
-}
-
-func adoptEmbeddedFocus(canvas, child *gfx.Canvas, mount gfx.Scope) {
-	if scope := child.TrappedFocusScope(); !scope.IsZero() {
-		canvas.TrapFocus(tree.MountID(mount, scope))
-	}
-	if focus := child.InitialFocus(); !focus.IsZero() {
-		canvas.SetInitialFocus(tree.MountID(mount, focus))
-	}
-	if target := child.EscapeTarget(); !target.IsZero() {
-		canvas.SetEscapeTarget(tree.MountID(mount, target))
-	}
 }
 
 func (state *State) paintPaneDividers(canvas *gfx.Canvas, frame gfx.Rect) {
@@ -570,8 +750,11 @@ func (state *State) paneGroundFocus(session *Session) gfx.ID {
 		return hitConnRetry // the page's one action, the key it shows
 	case state.showsProgress(session):
 		return gfx.ID{}
-	case session.desk != nil, session.term != nil:
+	case session.desk != nil:
 		return hitTerminalList.At(int(session.ID))
+	case session.term != nil:
+		session.term.pageIdentity(session.ID)
+		return session.term.controlID
 	}
 	return gfx.ID{}
 }
@@ -591,11 +774,16 @@ func (state *State) paneGround(hit gfx.ID) (*Session, bool) {
 	return state.sessionByIDPointer(state.panes[index].SessionID)
 }
 
-// paneIdentity names an identity a session's page painted as the pane paints it:
-// side by side the pane's mount is part of it, while a workspace of one pane
-// paints its page in place and the page's own identity is the one the window
-// knows.
+// paneIdentity names an identity a session's page painted as the pane paints it.
+// The terminal pane is part of the workbench page now and its identities are
+// already per session. The connection and restored bodies' hand-painted buttons
+// and the desktop's controls keep their application identities, so side by side
+// each pane mounts them at its own place; a workspace of one pane paints them in
+// place.
 func (state *State) paneIdentity(session *Session, local gfx.ID) gfx.ID {
+	if state.paintsTerminalPane(session) {
+		return local
+	}
 	state.refreshWorkspaceViews()
 	if len(state.panes) > 1 {
 		return tree.MountID(paneMount(session), local)
@@ -608,7 +796,13 @@ func (state *State) activeTerminalFocusHit() gfx.ID {
 	if !ok || session.term == nil {
 		return gfx.ID{}
 	}
-	return state.paneIdentity(session, hitTerminalList.At(int(session.ID)))
+	if session.desk != nil {
+		// The desktop's picture is the session's own place, not one of the
+		// page's mounted button identities.
+		return hitTerminalList.At(int(session.ID))
+	}
+	session.term.pageIdentity(session.ID)
+	return state.paneIdentity(session, session.term.controlID)
 }
 
 func (state *State) dragPaneDivider(event gfx.PointerEvent) gfx.EventResult {
@@ -832,7 +1026,7 @@ func (state *State) sessionForPaneSlot(slot uint8) *Session {
 // as that page painted it: the page does not know which pane it is in, so its
 // handlers are given the local one. ok is false for the window's own identities
 // and for a page that was not mounted (a workspace of one pane paints its page in
-// place).
+// place, and the docked files panel is part of the workbench page now).
 func (state *State) decodePaneHit(hit gfx.ID) (*Session, gfx.ID, bool) {
 	if state.activeSection != sectionTerminal {
 		return nil, gfx.ID{}, false
@@ -844,10 +1038,6 @@ func (state *State) decodePaneHit(hit gfx.ID) (*Session, gfx.ID, bool) {
 	local, ok := tree.Local(mount, hit)
 	if !ok {
 		return nil, gfx.ID{}, false
-	}
-	if mount == contextMount {
-		session, ok := state.sessionByIDPointer(state.activeSessionID)
-		return session, local, ok
 	}
 	if tree.Parent(mount) != panesHits {
 		return nil, gfx.ID{}, false
@@ -870,17 +1060,19 @@ func (state *State) paneForSession(sessionID uint32) (Pane, bool) {
 	return Pane{}, false
 }
 
-func (state *State) paneEventGeometry(sessionID uint32, size gfx.Size) (gfx.Rect, gfx.Point, gfx.Size, bool) {
+// paneWindowBounds is where a session's pane sits in the window at size. It is
+// false for a session not in the active workspace, or whose pane the deck cannot
+// place.
+func (state *State) paneWindowBounds(sessionID uint32, size gfx.Size) (gfx.Rect, bool) {
 	workspaceID, paneID, ok := state.deck.PaneForSession(layoutcore.SessionID(sessionID))
 	if !ok || workspaceID != state.deck.ActiveWorkspace() {
-		return gfx.Rect{}, gfx.Point{}, size, false
+		return gfx.Rect{}, false
 	}
 	fraction, _, ok := state.paneFractionBounds(workspaceID, paneID)
 	if !ok {
-		return gfx.Rect{}, gfx.Point{}, size, false
+		return gfx.Rect{}, false
 	}
-	bounds := pixelBounds(state.workspacePixelBoundsFor(workspaceID, size), fraction)
-	return bounds, paneEmbedOrigin(bounds), paneVirtualSize(bounds), true
+	return pixelBounds(state.workspacePixelBoundsFor(workspaceID, size), fraction), true
 }
 
 func (state *State) paneFractionBounds(workspaceID layoutcore.WorkspaceID, paneID layoutcore.PaneID) (FractionBounds, int, bool) {

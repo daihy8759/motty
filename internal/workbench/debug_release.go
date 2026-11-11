@@ -17,7 +17,9 @@ import (
 // devState holds nothing: a release build has no gallery state.
 type devState struct{}
 
-func (state *State) devDeclareNavigation(*ui.Frame) {}
+func (state *State) devDeclareNavigation(ui.C) {}
+
+func (state *State) devDeclareWorkspace(ui.C) {}
 
 func devPlaysIconMotion(gfx.ID) bool { return false }
 
