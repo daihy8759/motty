@@ -334,10 +334,6 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 		state.paintDeleteRuleDialog(canvas, viewport)
 	case modalSFTPColumns:
 		state.paintSFTPColumnSettings(canvas, viewport)
-	case modalLoginExpectSecret:
-		state.paintLoginExpectSecretDialog(canvas, viewport)
-	case modalLoginExpectStep:
-		state.paintLoginExpectStepDialog(canvas, viewport)
 	case modalLocalProxy:
 		state.paintLocalProxyScrollbar(canvas)
 	}
@@ -2733,6 +2729,10 @@ func (state *State) declareDialogs(c ui.C) {
 		state.declareVaultUnlockDialog(c)
 	case modalVaultForget:
 		state.declareVaultForgetDialog(c)
+	case modalLoginExpectSecret:
+		state.declareLoginExpectSecretDialog(c)
+	case modalLoginExpectStep:
+		state.declareLoginExpectStepDialog(c)
 	}
 }
 
@@ -2902,6 +2902,10 @@ func (state *State) declareHostFormBody(c ui.C, title string) {
 						})
 					}
 				})
+			}
+			if !vncHost {
+				b.loginExpect = ui.Slot(c).Height(state.loginExpectSectionHeight())
+				b.loginExpect.Children(func() { state.declareLoginExpectSection(c) })
 			}
 			if vncHost {
 				b.vncRows = ui.Slot(c).Height(state.desktopRowsHeight())

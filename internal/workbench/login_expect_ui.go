@@ -45,69 +45,81 @@ func (state *State) loginExpectSectionHeight() float32 {
 	return height
 }
 
-// paintLoginExpectSection draws the collapsible Expect/Send list in the host
-// dialog. The rules themselves are edited in a dialog of their own; this shows
-// their order and lets them be moved or removed.
-func (state *State) paintLoginExpectSection(canvas *gfx.Canvas, bounds gfx.Rect) {
+// declareLoginExpectSection lays out the collapsible Expect/Send list in the
+// host dialog. The rules themselves are edited in a dialog of their own.
+func (state *State) declareLoginExpectSection(c ui.C) {
 	m, pal := state.messages.LoginExpect, state.pal
 	editor := &state.editor
 	open := editor.loginExpectOpen
-	header := gfx.Rect{X: bounds.X, Y: bounds.Y + advancedHeaderGap, Width: bounds.Width, Height: 32}
-	state.rememberHostControl(hitDialogLoginExpectHeader, header)
-	chevron := iconChevronRight
-	if open {
-		chevron = iconChevronDown
-	}
-	var icon ui.Box
-	f := state.partLayout.Begin(canvas, state.Theme(), header)
-	f.Row().Fill().PadSides(0, 0, 0, 2).Gap(8).Items(ui.Center).
-		Radius(radius.control).Hover(ui.Look{}.Background(pal.surfaceSoft)).
-		HitWith(hitDialogLoginExpectHeader, m.SectionTitle, gfx.HitOptions{Role: gfx.RoleButton, Expanded: open}).
-		Children(func() {
-			icon = f.Slot().Size(16, 16)
-			f.Text(m.SectionTitle).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(pal.muted).LineHeight(20)
+	column := ui.Column(c).Fill()
+	var enable ui.Box
+	column.Children(func() {
+		header := ui.Row(c).Height(32).FillWidth().PadSides(0, 0, 0, 2).Gap(8).Items(ui.Center).
+			Radius(radius.control).Hover(ui.Look{}.Background(pal.surfaceSoft))
+		header.HitWith(hitDialogLoginExpectHeader, m.SectionTitle, gfx.HitOptions{Role: gfx.RoleButton, Expanded: open})
+		if header.Clicked() {
+			c.After(func() { state.clickLoginExpect(hitDialogLoginExpectHeader) })
+		}
+		header.Children(func() {
+			chevron := iconChevronRight
+			if open {
+				chevron = iconChevronDown
+			}
+			ui.Icon(c, lucideIcons[chevron]).Size(16, 16).Shrink(0)
+			ui.Text(c, m.SectionTitle).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(pal.muted).LineHeight(20)
 			if count := len(editor.loginExpect.Steps); count > 0 {
-				f.Text(fmt.Sprintf("%d", count)).FontSize(metrics.FontSizeS).Color(pal.muted).LineHeight(20)
+				ui.Textf(c, "%d", count).FontSize(metrics.FontSizeS).Color(pal.muted).LineHeight(20)
 			}
 		})
-	f.End()
-	paintIcon(canvas, uint8(chevron), icon.Rect(), pal.muted)
-	if !open {
-		return
-	}
-
-	body := gfx.Rect{
-		X: bounds.X, Y: bounds.Y + advancedHeaderHeight,
-		Width: bounds.Width, Height: max(bounds.Height-advancedHeaderHeight, 0),
-	}
-	var enable ui.Box
-	f = state.partLayout.Begin(canvas, state.Theme(), body)
-	f.Column().Fill().Children(func() {
-		f.Paragraph(m.SectionHint, 2).FontSize(metrics.FontSizeS).Color(pal.muted).LineHeight(15)
-		enable = state.declareDialogCheckbox(f, m.Enabled, 6, 0)
-		for index := range editor.loginExpect.Steps {
-			state.declareLoginExpectRow(f, index)
+		if !open {
+			return
 		}
-		f.Row().Height(34).Gap(8).Children(func() {
-			f.Button(hitDialogLoginExpectAdd, m.Add).Outline()
-		})
+		ui.Paragraph(c, m.SectionHint, 2).FontSize(metrics.FontSizeS).Color(pal.muted).LineHeight(15)
+		enable = state.declareDialogCheckboxC(c, m.Enabled, 6, 0)
+		for index := range editor.loginExpect.Steps {
+			state.declareLoginExpectRow(c, index)
+		}
+		add := ui.Button(c, m.Add).Outline().HitWith(hitDialogLoginExpectAdd, m.Add, gfx.HitOptions{Role: gfx.RoleButton})
+		if add.Clicked() {
+			c.After(func() { state.clickLoginExpect(hitDialogLoginExpectAdd) })
+		}
 	})
-	f.End()
-	state.paintDialogCheckbox(canvas, hitDialogLoginExpectEnable, m.Enabled, editor.loginExpect.Enabled, enable)
+	if open {
+		column.DrawOver(func(d *ui.DrawContext) {
+			state.paintDialogCheckbox(d.Canvas, hitDialogLoginExpectEnable, m.Enabled, editor.loginExpect.Enabled, enable)
+		})
+	}
 }
 
 // declareLoginExpectRow lays out one saved rule: its summary, then the buttons
 // that move, edit and remove it. The buttons belong to the form's scroll tree.
-func (state *State) declareLoginExpectRow(f *ui.Frame, index int) {
+func (state *State) declareLoginExpectRow(c ui.C, index int) {
 	m, pal := state.messages.LoginExpect, state.pal
-	row := f.Row().Height(34).Gap(6).Items(ui.Center).Children(func() {
-		f.Text(state.loginExpectStepSummary(index)).FontSize(metrics.FontSizeS).Color(pal.text).Grow(1).LineHeight(18)
-		f.Button(hitDialogLoginExpectUpList.At(index), m.MoveUp).Small().Ghost().Disabled(index == 0)
-		f.Button(hitDialogLoginExpectDownList.At(index), m.MoveDown).Small().Ghost().Disabled(index == len(state.editor.loginExpect.Steps)-1)
-		f.Button(hitDialogLoginExpectEditList.At(index), m.Edit).Small().Outline()
-		f.Button(hitDialogLoginExpectDeleteList.At(index), m.Delete).Small().Ghost()
+	ui.Row(c.KeyInt(index)).Height(34).Gap(6).Items(ui.Center).Children(func() {
+		ui.Text(c, state.loginExpectStepSummary(index)).FontSize(metrics.FontSizeS).Color(pal.text).Grow(1).LineHeight(18)
+		upID := hitDialogLoginExpectUpList.At(index)
+		up := ui.Button(c, m.MoveUp).Small().Ghost().Disabled(index == 0).
+			HitWith(upID, m.MoveUp, gfx.HitOptions{Role: gfx.RoleButton, Disabled: index == 0})
+		if up.Clicked() {
+			c.After(func() { state.clickLoginExpect(upID) })
+		}
+		downID := hitDialogLoginExpectDownList.At(index)
+		down := ui.Button(c, m.MoveDown).Small().Ghost().Disabled(index == len(state.editor.loginExpect.Steps)-1).
+			HitWith(downID, m.MoveDown, gfx.HitOptions{Role: gfx.RoleButton, Disabled: index == len(state.editor.loginExpect.Steps)-1})
+		if down.Clicked() {
+			c.After(func() { state.clickLoginExpect(downID) })
+		}
+		editID := hitDialogLoginExpectEditList.At(index)
+		edit := ui.Button(c, m.Edit).Small().Outline().HitWith(editID, m.Edit, gfx.HitOptions{Role: gfx.RoleButton})
+		if edit.Clicked() {
+			c.After(func() { state.clickLoginExpect(editID) })
+		}
+		deleteID := hitDialogLoginExpectDeleteList.At(index)
+		remove := ui.Button(c, m.Delete).Small().Ghost().HitWith(deleteID, m.Delete, gfx.HitOptions{Role: gfx.RoleButton})
+		if remove.Clicked() {
+			c.After(func() { state.clickLoginExpect(deleteID) })
+		}
 	})
-	state.rememberHostControl(hitDialogLoginExpectEditList.At(index), row.Rect())
 }
 
 func (state *State) loginExpectStepSummary(index int) string {
@@ -306,49 +318,70 @@ func (state *State) clickLoginExpectStep(id gfx.ID) {
 	}
 }
 
-// paintLoginExpectStepDialog draws the editor for one rule.
-func (state *State) paintLoginExpectStepDialog(canvas *gfx.Canvas, viewport gfx.Rect) {
-	m, theme := state.messages.LoginExpect, state.Theme()
+// declareLoginExpectStepDialog declares the editor for one rule.
+func (state *State) declareLoginExpectStepDialog(c ui.C) {
+	m := state.messages.LoginExpect
 	editor := &state.loginExpectStep
 	title := m.StepTitleAdd
 	if editor.index >= 0 {
 		title = m.StepTitleEdit
 	}
-	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
-		Layer: dialogLayer, Scope: dialogScope,
-		DismissID: hitLoginExpectStepDismiss, CloseID: hitLoginExpectStepClose, InitialFocusID: hitLoginExpectStepExpect,
-		ContentSize: gfx.Size{Width: 520}, FitBody: true, BodyHeight: withError(356, editor.err),
+	viewport := dialogViewport(c)
+	height := dialogContentHeight(c.Canvas(), *c.Theme(), viewport, 520, "", withError(356, editor.err))
+	dialog := ui.Dialog(c, ui.DialogSpec{
+		Title: title, Width: 520, Height: height, Layer: dialogLayer,
+		Scope: dialogScope, DismissID: hitLoginExpectStepDismiss, CloseID: hitLoginExpectStepClose,
+		InitialFocusID: hitLoginExpectStepExpect,
 	})
-	layout := dialog.Begin(title, "")
-	var wait, send, timeout, delay, enterRow, modeRow, sensRow ui.Box
-	f := state.settingsRow.Begin(canvas, theme, layout.Body)
-	f.Column().Fill().PadSides(2, 4, 0, 4).Children(func() {
-		wait = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
-		send = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
-		timeout = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
-		delay = f.Slot().Height(62).MarginSides(0, 0, 4, 0)
-		enterRow = state.declareDialogCheckbox(f, m.AppendEnter, 2, 0)
-		modeRow = state.declareDialogCheckbox(f, m.CommandMode, 6, 0)
-		sensRow = state.declareDialogCheckbox(f, m.Sensitive, 6, 0)
-		state.problemLine(f, editor.err)
+	dialog.Body(func() { state.declareLoginExpectStepDialogBody(c) })
+	dialog.Footer(func() {
+		cancel := dialogButton(c, state.messages.Cancel, components.ButtonSecondary, false)
+		cancel.Hit(hitLoginExpectStepCancel, state.messages.Cancel)
+		if cancel.Clicked() {
+			c.After(func() { state.clickLoginExpectStep(hitLoginExpectStepCancel) })
+		}
+		save := dialogButton(c, m.Save, components.ButtonDefault, false)
+		save.Hit(hitLoginExpectStepSubmit, m.Save)
+		if save.Clicked() {
+			c.After(func() { state.clickLoginExpectStep(hitLoginExpectStepSubmit) })
+		}
 	})
-	f.End()
-	state.paintLoginExpectStepField(canvas, hitLoginExpectStepExpect, m.WaitLabel, m.WaitPlaceholder, &editor.expect, wait.Rect(), false, false)
-	placeholder := m.SendPlaceholder
-	if editor.sensitive {
-		placeholder = m.SensitivePlaceholder
+	if dialog.Dismissed() {
+		state.cancelLoginExpectStep()
 	}
-	state.paintLoginExpectStepField(canvas, hitLoginExpectStepSend, m.SendLabel, placeholder, &editor.send, send.Rect(), false, editor.sensitive)
-	state.paintLoginExpectStepField(canvas, hitLoginExpectStepTimeout, m.TimeoutLabel, "30", &editor.timeout, timeout.Rect(), false, false)
-	state.paintLoginExpectStepField(canvas, hitLoginExpectStepDelay, m.DelayLabel, m.DelayPlaceholder, &editor.delay, delay.Rect(), false, false)
-	state.paintDialogCheckbox(canvas, hitLoginExpectStepEnter, m.AppendEnter, editor.appendEnter, enterRow)
-	state.paintDialogCheckbox(canvas, hitLoginExpectStepCommandMode, m.CommandMode, editor.commandMode, modeRow)
-	state.paintDialogCheckbox(canvas, hitLoginExpectStepSensitive, m.Sensitive, editor.sensitive, sensRow)
-	dialog.Actions(layout,
-		components.ButtonAction{ID: hitLoginExpectStepCancel, Label: state.messages.Cancel, Variant: components.ButtonSecondary},
-		components.ButtonAction{ID: hitLoginExpectStepSubmit, Label: m.Save},
-	)
-	dialog.End()
+}
+
+func (state *State) declareLoginExpectStepDialogBody(c ui.C) {
+	m, editor := state.messages.LoginExpect, &state.loginExpectStep
+	var wait, send, timeout, delay, enterRow, modeRow, sensRow ui.Box
+	column := ui.Column(c).Fill().PadSides(2, 4, 0, 4)
+	column.Children(func() {
+		wait = ui.Slot(c).Height(62).MarginSides(0, 0, 4, 0)
+		send = ui.Slot(c).Height(62).MarginSides(0, 0, 4, 0)
+		timeout = ui.Slot(c).Height(62).MarginSides(0, 0, 4, 0)
+		delay = ui.Slot(c).Height(62).MarginSides(0, 0, 4, 0)
+		enterRow = state.declareDialogCheckboxC(c, m.AppendEnter, 2, 0)
+		modeRow = state.declareDialogCheckboxC(c, m.CommandMode, 6, 0)
+		sensRow = state.declareDialogCheckboxC(c, m.Sensitive, 6, 0)
+		if editor.err != "" {
+			ui.Text(c, editor.err).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).
+				Color(state.pal.danger).LineHeight(18).MarginSides(12, 0, 0, 0)
+		}
+	})
+	column.DrawOver(func(d *ui.DrawContext) {
+		canvas := d.Canvas
+		state.paintLoginExpectStepField(canvas, hitLoginExpectStepExpect, m.WaitLabel, m.WaitPlaceholder, &editor.expect, wait.Rect(), false, false)
+		placeholder := m.SendPlaceholder
+		if editor.sensitive {
+			placeholder = m.SensitivePlaceholder
+		}
+		state.paintLoginExpectStepField(canvas, hitLoginExpectStepSend, m.SendLabel, placeholder, &editor.send, send.Rect(), false, editor.sensitive)
+		state.paintLoginExpectStepField(canvas, hitLoginExpectStepTimeout, m.TimeoutLabel, "30", &editor.timeout, timeout.Rect(), false, false)
+		state.paintLoginExpectStepField(canvas, hitLoginExpectStepDelay, m.DelayLabel, m.DelayPlaceholder, &editor.delay, delay.Rect(), false, false)
+		state.paintDialogCheckbox(canvas, hitLoginExpectStepEnter, m.AppendEnter, editor.appendEnter, enterRow)
+		state.paintDialogCheckbox(canvas, hitLoginExpectStepCommandMode, m.CommandMode, editor.commandMode, modeRow)
+		state.paintDialogCheckbox(canvas, hitLoginExpectStepSensitive, m.Sensitive, editor.sensitive, sensRow)
+	})
 }
 
 func (state *State) paintLoginExpectStepField(canvas *gfx.Canvas, id gfx.ID, label, placeholder string, editor *text.Editor, bounds gfx.Rect, secure, disabled bool) {
@@ -362,32 +395,48 @@ func (state *State) paintLoginExpectStepField(canvas *gfx.Canvas, id gfx.ID, lab
 	})
 }
 
-// paintLoginExpectSecretDialog asks for a sensitive rule's response. The answer
-// is masked, used once, and never written to the state file or the log.
-func (state *State) paintLoginExpectSecretDialog(canvas *gfx.Canvas, viewport gfx.Rect) {
-	m, theme := state.messages.LoginExpect, state.Theme()
+// declareLoginExpectSecretDialog asks for a sensitive rule's response. The
+// answer is masked, used once, and never written to the state file or the log.
+func (state *State) declareLoginExpectSecretDialog(c ui.C) {
+	m := state.messages.LoginExpect
 	session := state.loginExpectAskSession()
 	if session == nil || session.loginExpectAsk == nil {
 		return
 	}
 	ask := session.loginExpectAsk
-	dialog := components.BeginDialog(canvas, theme, viewport, components.DialogOptions{
-		Layer: dialogLayer, Scope: dialogScope,
-		DismissID: hitLoginExpectDismiss, CloseID: hitLoginExpectClose, InitialFocusID: hitLoginExpectField,
-		ContentSize: gfx.Size{Width: 500}, FitBody: true, BodyHeight: 84,
+	viewport := dialogViewport(c)
+	height := dialogContentHeight(c.Canvas(), *c.Theme(), viewport, 500, ask.prompt, 84)
+	dialog := ui.Dialog(c, ui.DialogSpec{
+		Title: m.DialogTitle, Description: ask.prompt, Width: 500, Height: height, Layer: dialogLayer,
+		Scope: dialogScope, DismissID: hitLoginExpectDismiss, CloseID: hitLoginExpectClose,
+		InitialFocusID: hitLoginExpectField,
 	})
-	layout := dialog.Begin(m.DialogTitle, ask.prompt)
-	field := components.BeginField(canvas, theme, state.layoutSecretField(canvas, layout.Body, ""))
-	content := field.Paint(m.SendLabel, m.DialogHint, "")
-	value := ask.editor.String()
-	focused := canvas.Focused() == hitLoginExpectField
-	components.PaintInput(canvas, theme, content, components.InputSnapshot{
-		ID: hitLoginExpectField, Label: m.SendLabel, Value: value, Placeholder: m.SensitivePlaceholder,
-		Secure: true, Focused: focused, PlatformEditing: focused && value != "",
+	dialog.Body(func() {
+		field := ui.Slot(c).Fill()
+		field.DrawOver(func(d *ui.DrawContext) {
+			canvas, theme := d.Canvas, *d.Theme
+			content := components.BeginField(canvas, theme, field.Rect()).Paint(m.SendLabel, m.DialogHint, "")
+			value := ask.editor.String()
+			focused := canvas.Focused() == hitLoginExpectField
+			components.PaintInput(canvas, theme, content, components.InputSnapshot{
+				ID: hitLoginExpectField, Label: m.SendLabel, Value: value, Placeholder: m.SensitivePlaceholder,
+				Secure: true, Focused: focused, PlatformEditing: focused && value != "",
+			})
+		})
 	})
-	dialog.Actions(layout,
-		components.ButtonAction{ID: hitLoginExpectCancel, Label: state.messages.Cancel, Variant: components.ButtonSecondary},
-		components.ButtonAction{ID: hitLoginExpectSubmit, Label: state.messages.Connect},
-	)
-	dialog.End()
+	dialog.Footer(func() {
+		cancel := dialogButton(c, state.messages.Cancel, components.ButtonSecondary, false)
+		cancel.Hit(hitLoginExpectCancel, state.messages.Cancel)
+		if cancel.Clicked() {
+			c.After(func() { state.clickLoginExpectSecret(hitLoginExpectCancel) })
+		}
+		submit := dialogButton(c, state.messages.Connect, components.ButtonDefault, false)
+		submit.Hit(hitLoginExpectSubmit, state.messages.Connect)
+		if submit.Clicked() {
+			c.After(func() { state.clickLoginExpectSecret(hitLoginExpectSubmit) })
+		}
+	})
+	if dialog.Dismissed() {
+		state.clickLoginExpectSecret(hitLoginExpectDismiss)
+	}
 }

@@ -51,7 +51,7 @@ type hostFormChoiceIDs struct {
 type hostFormBody struct {
 	protocol, label, endpoint, group, tags                 ui.Box
 	iconField, colorField, transfer, proxy, jump, advanced ui.Box
-	vncRows                                                ui.Box
+	loginExpect, vncRows                                   ui.Box
 	flow, algo                                             ui.Box
 	// proxyRow and jumpRow are the controls the proxy and jump fields place,
 	// and proxyAction and jumpAction the slots their buttons are painted in.
