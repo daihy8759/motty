@@ -80,6 +80,7 @@ func (state *State) paintTerminalPaneDetails(canvas *gfx.Canvas, session *Sessio
 		state.paintWorkspaceCommandNotice(canvas, session, t.paintCommandNotice.Rect())
 	}
 	state.paintCompletionList(canvas, session, t.paintGeometry)
+	state.paintAutofillPick(canvas, session, t.paintGeometry)
 	if t.paintNoticeShown {
 		state.paintTerminalInputNotice(canvas, session, t.paintNotice.Rect())
 	}
@@ -91,7 +92,7 @@ func (state *State) activeTerminalTools(session *Session, toolList *[maxBarTools
 	}
 	tools := toolList[:0]
 	notesStyle := iconButtonQuiet
-	if state.notes.panel {
+	if state.notesPanelOpen() {
 		notesStyle = iconButtonActive
 	}
 	tools = append(tools, barTool{id: hitNotesPanel, icon: iconNotebook, hint: state.noteText("Notes", "笔记"), style: notesStyle})
@@ -202,20 +203,14 @@ func (state *State) paintWorkspaceSideRail(canvas *gfx.Canvas, size gfx.Size) {
 
 // paintTerminalSideRail draws the vertical tool rail. The latency readout is
 // an ordinary layout entry now, so it scrolls and moves with the actions.
-func (state *State) paintTerminalSideRail(canvas *gfx.Canvas, bounds gfx.Rect, session *Session, tools []barTool, background, border gfx.Color, left bool) {
+func (state *State) paintTerminalSideRail(canvas *gfx.Canvas, bounds gfx.Rect, session *Session, tools []barTool, background gfx.Color) {
 	if bounds.Width <= 0 || bounds.Height <= 0 || session.term == nil {
 		return
 	}
-	fullBounds := bounds
 	session.term.railBounds = bounds
-	canvas.Fill(fullBounds, background)
+	canvas.Fill(bounds, background)
 	viewport := gfx.Rect{X: bounds.X + 4, Y: bounds.Y + 4, Width: max(bounds.Width-8, 0), Height: max(bounds.Height-8, 0)}
 	state.paintTerminalRailTools(canvas, session, viewport, tools, background)
-	x := bounds.X
-	if left {
-		x += bounds.Width - 1
-	}
-	canvas.Fill(gfx.Rect{X: x, Y: fullBounds.Y, Width: 1, Height: fullBounds.Height}, border)
 }
 
 func (state *State) paintTerminalRailTools(canvas *gfx.Canvas, session *Session, viewport gfx.Rect, tools []barTool, background gfx.Color) {
@@ -332,10 +327,10 @@ func (state *State) paintRailLabelCenter(canvas *gfx.Canvas, text string, bounds
 	available := max(bounds.Width-4, 0)
 	if compact {
 		size = 10
-		// The titlebar slot is narrower than a rail's; one step down keeps the
-		// number readable there instead of eliding "42ms" to "42…".
-		if size > 9 && canvas.TextWidthWeight(text, size, gfx.WeightMedium) > available {
-			size = 9
+		// When the slot is narrow, step down the font size to keep the number
+		// readable instead of eliding it.
+		for size > 8 && canvas.TextWidthWeight(text, size, gfx.WeightMedium) > available {
+			size--
 		}
 	}
 	fitted := elide(canvas, text, size, gfx.WeightMedium, available)

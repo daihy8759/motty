@@ -185,6 +185,10 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 		state.ai.cfg.agentSelectOpen = false
 	}
 	state.aiPanelBeginPaint()
+	if state.noteSidebarFocusBack && state.activeSection == sectionTerminal {
+		state.noteSidebarFocusBack = false
+		canvas.RequestFocus(state.activeTerminalFocusHit())
+	}
 	// A panel closed from inside itself returns the keyboard to the terminal it
 	// covered. The request is made once: a later click decides focus again.
 	if state.ai.panel.focusBack && !state.aiPanelVisible() {
@@ -349,6 +353,7 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 	state.paintQueuedSFTPHeaderMenu(canvas)
 	state.paintHostMenus(canvas, viewport)
 	state.endMenus()
+	state.paintSnippetHoverCard(canvas, viewport)
 	state.requestReconnectFrames(canvas)
 	state.requestAutofillFrames(canvas)
 	state.requestLoginCommandFrames(canvas)
@@ -455,6 +460,7 @@ type barGeometry struct {
 	numbers           bool
 	orientation       tabOrientation
 	leading, trailing float32
+	padRight          float32
 	valid             bool
 	area, row         gfx.Rect
 	tabWidth          float32
@@ -515,6 +521,32 @@ func (state *State) aiBackgroundScrollBlocked() bool {
 		(state.aiSettingsVisible() && state.ai.cfg.dialog != aiDialogNone)
 }
 
+// windowFrameColor is the surface of the chrome around the panes: the window
+// bar, the side rails and the strip below. A full-page pane fills the window,
+// so the chrome there takes the workspace surface it frames, as the panes do;
+// the shell around a workspace card stays a step away from the card.
+func (state *State) windowFrameColor() gfx.Color {
+	if state.chrome.shellFullPage {
+		return state.pal.workspace
+	}
+	return state.pal.shell
+}
+
+// windowBarRightPad keeps the bar's last control centred over the side rail's
+// column, where that rail puts its tools. The rail comes and goes with the
+// session, so the pad follows the toolbar size rather than the rail itself:
+// connecting must not shift the bar's right end sideways. Where the platform
+// draws the window controls in the corner, their inset owns the space and the
+// bar keeps its own margin; the rail is left where it is.
+func (state *State) windowBarRightPad() float32 {
+	_, trailing := app.TitlebarInsets()
+	centred := state.terminalToolbarMetrics().railExtent/2 - barButtonSize/2
+	if centred <= trailing {
+		return trailing + barMargin
+	}
+	return centred
+}
+
 // declareShell declares the window's shell as a page: the bar over the body,
 // and under it, unless a pane fills the window, the navigation rail beside the
 // slot the sections are painted into. The inputs come from chromeLayout, kept by
@@ -529,7 +561,7 @@ func (state *State) declareShell(c ui.C) {
 	chrome, pal := &state.chrome, state.pal
 	root := ui.Column(c).Fill()
 	if !chrome.shellPicture {
-		root.Background(pal.shell)
+		root.Background(state.windowFrameColor())
 	}
 	root.Children(func() {
 		state.declareWindowBar(c, &chrome.bar, false, chrome.shellPicture, chrome.shellGeometry, chrome.shellScroll)
@@ -609,6 +641,7 @@ func (state *State) declareShell(c ui.C) {
 func (state *State) windowBarGeometry(canvas *gfx.Canvas, width float32) barGeometry {
 	chrome := &state.chrome
 	leading, trailing := app.TitlebarInsets()
+	padRight := state.windowBarRightPad()
 	buttons := state.windowBarButtons()
 	tabCount := len(state.workspaceTabs) + len(state.sftpTabs)
 	locked := false
@@ -621,7 +654,8 @@ func (state *State) windowBarGeometry(canvas *gfx.Canvas, width float32) barGeom
 		geometry.orientation == state.tabOrientation &&
 		geometry.locked == locked &&
 		geometry.numbers == state.tabNumbers &&
-		geometry.leading == leading && geometry.trailing == trailing {
+		geometry.leading == leading && geometry.trailing == trailing &&
+		geometry.padRight == padRight {
 		return *geometry
 	}
 	chrome.probeInput = barGeometry{locked: locked, numbers: state.tabNumbers}
@@ -631,7 +665,7 @@ func (state *State) windowBarGeometry(canvas *gfx.Canvas, width float32) barGeom
 	}
 	chrome.probePage.Draw(canvas, gfx.Rect{Width: width, Height: windowBarHeight}, chrome.probeView)
 	*geometry = barGeometry{
-		width: width, tabCount: tabCount, barButtons: buttons, leading: leading, trailing: trailing, valid: true,
+		width: width, tabCount: tabCount, barButtons: buttons, leading: leading, trailing: trailing, padRight: padRight, valid: true,
 		locked:      locked,
 		numbers:     state.tabNumbers,
 		orientation: state.tabOrientation,
@@ -660,7 +694,7 @@ func (state *State) declareProbeBar(c ui.C) {
 // window. With probe set only the places are declared, for windowBarGeometry.
 func (state *State) declareWindowBar(c ui.C, bar *windowBar, probe, picture bool, geometry barGeometry, scroll float32) {
 	m, pal, chrome := state.messages, state.pal, &state.chrome
-	leading, trailing := app.TitlebarInsets()
+	leading, _ := app.TitlebarInsets()
 	visibleFileTabs := 0
 	for _, tab := range state.sftpTabs {
 		if tab != nil && !tab.closed {
@@ -673,14 +707,14 @@ func (state *State) declareWindowBar(c ui.C, bar *windowBar, probe, picture bool
 	if probe {
 		chrome.probeTabs = chrome.probeTabs[:0]
 	}
-	row := ui.Row(c).Height(windowBarHeight).PadSides(0, trailing+barMargin, 0, leading+barMargin).Items(ui.Center)
+	row := ui.Row(c).Height(windowBarHeight).PadSides(0, state.windowBarRightPad(), 0, leading+barMargin).Items(ui.Center)
 	if !probe {
 		// The bar is where the window is moved from; its buttons and tabs, declared
 		// after it, take their own presses.
 		row.MovesWindow()
 	}
 	if picture {
-		row.Background(pal.shell)
+		row.Background(state.windowFrameColor())
 	}
 	row.Children(func() {
 		state.barButton(c, probe, hitHome, iconHome, m.NavHosts).MarginSides(0, barGap+2, 0, 0)
@@ -1796,7 +1830,7 @@ func (state *State) paintHostFilterMenu(canvas *gfx.Canvas, viewport gfx.Rect) {
 	menu.End()
 }
 
-func (state *State) paintHostGroupMenu(canvas *gfx.Canvas, bounds, viewport gfx.Rect) {
+func (state *State) paintFlatHostGroupMenu(canvas *gfx.Canvas, bounds, viewport gfx.Rect) {
 	// The ungrouped bucket is in the list with an empty name; "No group" already
 	// says it, so it is not offered a second time as a blank row.
 	named := 0
@@ -1824,7 +1858,7 @@ func (state *State) paintHostGroupMenu(canvas *gfx.Canvas, bounds, viewport gfx.
 		if group.Name == "" {
 			continue
 		}
-		menu.AddItem(components.DropdownMenuItem{ID: hitHostGroupItemList.At(index), Label: group.Name})
+		menu.AddItem(components.DropdownMenuItem{ID: hitHostGroupItemList.At(index), Label: group.Name, Value: group.Name})
 	}
 	menu.AddSeparator()
 	menu.AddItem(components.DropdownMenuItem{ID: hitHostGroupNew, Label: state.messages.MoveGroupNew})
@@ -2725,6 +2759,8 @@ func (state *State) declareDialogs(c ui.C) {
 		state.declareXYDialog(c)
 	case modalSnippet:
 		state.declareSnippetDialog(c)
+	case modalSnippetDelete:
+		state.declareSnippetDeleteDialog(c)
 	case modalVaultUnlock:
 		state.declareVaultUnlockDialog(c)
 	case modalVaultForget:
@@ -3379,11 +3415,20 @@ func (state *State) declareHostKeyDialog(c ui.C) {
 	if session == nil {
 		return
 	}
-	bodyHeight := float32(3*30 - 8) // three rows of address, type and fingerprint
+	changed := session.hostKey.Changed
+	title, trustLabel := m.HostKeyTitle, m.HostKeyTrust
+	if changed {
+		title, trustLabel = m.HostKeyChangedTitle, m.HostKeyUpdateAndContinue
+	}
+	saved := 0
+	if changed {
+		saved = len(session.hostKey.Known)
+	}
+	bodyHeight := float32((3+saved)*30 - 8) // address, type, fingerprint and the saved ones
 	viewport := dialogViewport(c)
 	height := dialogContentHeight(c.Canvas(), *c.Theme(), viewport, 540, state.hostKeyDescription, bodyHeight)
 	dialog := ui.Dialog(c, ui.DialogSpec{
-		Title: m.HostKeyTitle, Description: state.hostKeyDescription,
+		Title: title, Description: state.hostKeyDescription,
 		Width: 540, Height: height, Layer: dialogLayer,
 		Scope: dialogScope, DismissID: hitHostKeyDismiss, CloseID: hitHostKeyClose, InitialFocusID: hitHostKeyReject,
 	})
@@ -3392,7 +3437,7 @@ func (state *State) declareHostKeyDialog(c ui.C) {
 		actions := [...]components.ButtonAction{
 			{ID: hitHostKeyReject, Label: m.HostKeyReject, Variant: components.ButtonSecondary},
 			{ID: hitHostKeyOnce, Label: m.HostKeyOnce, Variant: components.ButtonOutline},
-			{ID: hitHostKeyTrust, Label: m.HostKeyTrust},
+			{ID: hitHostKeyTrust, Label: trustLabel},
 			{ID: hitHostKeyForget, Label: m.HostKeyForget, Variant: components.ButtonOutline},
 		}
 		count := 3
@@ -3410,15 +3455,23 @@ func (state *State) declareHostKeyBody(c ui.C) {
 		return
 	}
 	m, pal := state.messages, state.pal
-	rows := [...]struct{ label, value string }{
+	type keyRow struct{ label, value string }
+	rows := []keyRow{
 		{m.FieldAddress, session.hostKey.Address},
 		{m.HostKeyType, session.hostKey.Type},
 		{m.HostKeyFingerprint, session.hostKey.Fingerprint},
 	}
+	labelWidth := float32(90)
+	if session.hostKey.Changed {
+		labelWidth = 110
+		for _, fingerprint := range session.hostKey.Known {
+			rows = append(rows, keyRow{m.HostKeySavedFingerprint, fingerprint})
+		}
+	}
 	ui.Column(c).Fill().Gap(8).Children(func() {
 		for _, row := range rows {
 			ui.Row(c).Height(22).Gap(6).Children(func() {
-				ui.Text(c, row.label).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(pal.muted).LineHeight(22).Width(90).Shrink(0)
+				ui.Text(c, row.label).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(pal.muted).LineHeight(22).Width(labelWidth).Shrink(0)
 				ui.Text(c, row.value).FontSize(metrics.FontSizeS).Weight(gfx.WeightRegular).Color(pal.text).LineHeight(22)
 			})
 		}

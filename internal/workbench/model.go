@@ -63,6 +63,10 @@ type Host struct {
 	// It is nil unless the user turned it on; a sensitive rule asks for its
 	// response at runtime and never saves it. A pointer keeps Host comparable.
 	LoginExpect *loginexpect.Config
+	// linkPassword is the password a link carried in its userinfo. It answers
+	// that one connection and is cleared when it is used; it has no saved
+	// field, so it never reaches the state file.
+	linkPassword string
 	// Transfer is the file protocol of the host's file panel.
 	Transfer transferMode
 	// Proxy overrides the global outbound proxy for this host. Nil inherits the

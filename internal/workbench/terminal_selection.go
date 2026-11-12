@@ -68,6 +68,47 @@ func (selection *terminalSelection) dismiss() bool {
 	return changed
 }
 
+// trim follows the scrollback as it drops its oldest lines. A selection whose
+// later end went with them is gone; one whose earlier end did starts at the
+// oldest line the buffer still holds, column zero, which is where its first
+// surviving text is. Points a drag or a later Shift-click can still reach move
+// the same way. It reports whether anything changed.
+func (selection *terminalSelection) trim(screen *term.Terminal) bool {
+	if !selection.selected && !selection.dragging && !selection.marked {
+		return false
+	}
+	first, ok := screen.RetainedFrom()
+	if !ok {
+		return selection.clear()
+	}
+	if selection.selected {
+		start, end := selection.anchor, selection.focus
+		if pointBefore(end, start) {
+			start, end = end, start
+		}
+		if end.Line < first {
+			return selection.clear()
+		}
+	}
+	changed := false
+	clamp := func(point *term.Point) {
+		if point.Line < first {
+			*point = term.Point{Line: first}
+			changed = true
+		}
+	}
+	clamp(&selection.anchor)
+	clamp(&selection.focus)
+	clamp(&selection.mark)
+	for i := range selection.origin {
+		clamp(&selection.origin[i])
+	}
+	if changed && selection.selected {
+		selection.selected = selection.anchor != selection.focus
+	}
+	return changed
+}
+
 // beginUnit selects the word or line at point and leaves the drag running, so
 // that holding the button and moving on grows the selection by words or lines.
 func (selection *terminalSelection) beginUnit(screen *term.Terminal, point term.Point, unit selectionUnit) {
@@ -244,6 +285,11 @@ func (state *State) terminalPointer(session *Session, event gfx.PointerEvent) gf
 				state.terminalMenu.open = false
 				if err := state.options.SetClipboardText(terminal.selection.text(terminal.screen)); err != nil {
 					state.status = err.Error()
+				} else {
+					// The Windows Terminal convention: the copy consumes the
+					// selection, so the next right-click pastes. A failed copy
+					// keeps it, and the status line says why.
+					terminal.selection.clear()
 				}
 				return gfx.EventResult{Handled: true, Repaint: true}
 			}

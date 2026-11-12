@@ -284,15 +284,13 @@ func (editor *forwardEditor) validate(state *State) string {
 	if editor.value(forwardFieldLabel) == "" {
 		return state.messages.ErrForwardNameRequired
 	}
-	host, ok := state.hostByID(editor.hostID)
-	if !ok {
+	if _, ok := state.hostByID(editor.hostID); !ok {
 		if editor.editing {
 			return state.messages.ErrForwardHostMissing
 		}
 		return state.messages.ErrForwardHostRequired
 	}
-	localPort, localOK := editor.port(forwardFieldLocalPort)
-	if !localOK {
+	if _, ok := editor.port(forwardFieldLocalPort); !ok {
 		return state.messages.ErrForwardPortInvalid
 	}
 	if !editor.usesClientDestination() {
@@ -304,21 +302,14 @@ func (editor *forwardEditor) validate(state *State) string {
 			return state.messages.ErrForwardDestinationRequired
 		}
 	}
+	// A port may sit on several forwards: the catalog keeps only names unique,
+	// and which of them gets to listen is decided when a forward starts.
 	for _, forward := range state.forwards {
 		if editor.editing && forward.ID == editor.forwardID {
 			continue
 		}
 		if strings.EqualFold(forward.Label, editor.value(forwardFieldLabel)) {
 			return state.messages.ErrForwardNameTaken
-		}
-		if editor.mode == portforward.ModeRemote {
-			if forward.Mode == portforward.ModeRemote && forward.LocalPort == localPort && forward.matchesHost(host) {
-				return state.messages.ErrForwardRemoteTaken
-			}
-			continue
-		}
-		if forward.Mode != portforward.ModeRemote && forward.LocalPort == localPort {
-			return state.messages.ErrForwardLocalTaken
 		}
 	}
 	return ""
@@ -509,6 +500,7 @@ func (state *State) submitForwardDialog() {
 				continue
 			}
 			f := &state.forwards[index]
+			tunnelID := f.sessionID
 			f.stop()
 			localPort, _ := state.forwardEditor.port(forwardFieldLocalPort)
 			f.Label = state.forwardEditor.value(forwardFieldLabel)
@@ -528,6 +520,7 @@ func (state *State) submitForwardDialog() {
 				f.DestinationPort = 0
 			}
 			f.refresh(state.messages, state.forwardHostAvailable(*f))
+			state.releaseForwardTunnel(tunnelID)
 			state.status = state.messages.ForwardUpdated + f.Label
 			state.closeForwardDialog()
 			state.save()
@@ -588,6 +581,7 @@ func (state *State) removeSelectedForward() {
 		removed := state.forwards[index]
 		state.forwards[index].stop()
 		state.forwards = slices.Delete(state.forwards, index, index+1)
+		state.releaseForwardTunnel(removed.sessionID)
 		state.selectedForwardID = 0
 		if len(state.forwards) > 0 {
 			state.selectedForwardID = state.forwards[min(index, len(state.forwards)-1)].ID
@@ -605,9 +599,11 @@ func (state *State) toggleSelectedForward() {
 		return
 	}
 	if forward.runner != nil || forward.pending || forward.starting {
+		tunnelID := forward.sessionID
 		forward.stop()
 		forward.lastError = ""
 		forward.refresh(state.messages, state.forwardHostAvailable(*forward))
+		state.releaseForwardTunnel(tunnelID)
 		state.status = state.messages.ForwardStoppedStatus + forward.Label
 		return
 	}
@@ -618,23 +614,82 @@ func (state *State) toggleSelectedForward() {
 		state.status = state.messages.ForwardHostUnavailable
 		return
 	}
+	// A running forward already holds the port: say so before dialing anything.
+	if message := state.forwardPortConflict(*forward); message != "" {
+		state.failForward(forward, message)
+		return
+	}
 	if session := state.connectedSessionForHost(host); session != nil {
 		state.startForward(forward, session)
 		return
 	}
+	if tunnel := state.connectedForwardTunnel(host); tunnel != nil {
+		state.startForward(forward, &tunnel.session)
+		return
+	}
+	// No tab carries a connection to this host: dial one for the forwards alone,
+	// so a tunnel never costs a terminal window.
+	tunnel := state.forwardTunnelForHost(host)
+	fresh := tunnel == nil
+	if fresh {
+		tunnel = state.newForwardTunnel(host)
+	}
 	forward.pending = true
 	forward.lastError = ""
+	forward.sessionID = tunnel.id
 	forward.refresh(state.messages, true)
-	session := state.openHostSession(host)
-	forward.sessionID = session.ID
-	state.activeSection = sectionForwards
 	state.status = fmt.Sprintf(state.messages.ForwardConnectingFmt, host.Label)
+	if fresh {
+		state.dialForwardTunnel(tunnel)
+	}
 	state.save()
+}
+
+// forwardPortConflict reports the message of a running forward that already
+// listens on this forward's port, or "" when the port is free. A port can be
+// saved on several forwards; the listener decides which of them runs, so the
+// second one to start is told which port it lost.
+func (state *State) forwardPortConflict(forward forwardRecord) string {
+	for index := range state.forwards {
+		other := &state.forwards[index]
+		if other.ID == forward.ID || other.runner == nil || other.LocalPort != forward.LocalPort {
+			continue
+		}
+		if forward.Mode == portforward.ModeRemote {
+			if other.Mode == portforward.ModeRemote &&
+				other.HostAddress == forward.HostAddress && other.HostUser == forward.HostUser && other.HostPort == forward.HostPort {
+				return state.messages.ErrForwardRemoteTaken
+			}
+			continue
+		}
+		if other.Mode != portforward.ModeRemote {
+			return state.messages.ErrForwardLocalTaken
+		}
+	}
+	return ""
+}
+
+// failForward leaves a forward that could not start stopped, with the reason on
+// its row and the status line.
+func (state *State) failForward(forward *forwardRecord, message string) {
+	tunnelID := forward.sessionID
+	forward.sessionID = 0
+	forward.pending = false
+	forward.starting = false
+	forward.startID = 0
+	forward.lastError = message
+	forward.refresh(state.messages, state.forwardHostAvailable(*forward))
+	state.releaseForwardTunnel(tunnelID)
+	state.status = fmt.Sprintf(state.messages.ForwardStartFailedFmt, message)
 }
 
 func (state *State) startForward(forward *forwardRecord, session *Session) {
 	forward.pending = false
 	forward.lastError = ""
+	if message := state.forwardPortConflict(*forward); message != "" {
+		state.failForward(forward, message)
+		return
+	}
 	if forward.Mode == portforward.ModeRemote {
 		state.startRemoteForward(forward, session)
 		return
@@ -647,10 +702,7 @@ func (state *State) startForward(forward *forwardRecord, session *Session) {
 		Notify:        state.options.Invalidate,
 	})
 	if err != nil {
-		forward.sessionID = 0
-		forward.lastError = err.Error()
-		forward.refresh(state.messages, true)
-		state.status = fmt.Sprintf(state.messages.ForwardStartFailedFmt, err)
+		state.failForward(forward, err.Error())
 		return
 	}
 	forward.runner = runner
@@ -748,6 +800,13 @@ func (state *State) releaseWaitingForwards() {
 		if !forward.pending || forward.sessionID == 0 {
 			continue
 		}
+		// A tunnel owns the wait for its own connection, retries included; only
+		// a tunnel that is already gone leaves the forward to stop here.
+		if tunnel := state.forwardTunnelByID(forward.sessionID); tunnel != nil {
+			if !tunnel.closed {
+				continue
+			}
+		}
 		session, ok := state.sessionByIDPointer(forward.sessionID)
 		if ok && (session.reconnectPending || session.phase != sshconn.PhaseClosed && session.phase != sshconn.PhaseFailed) {
 			continue
@@ -788,10 +847,7 @@ func (state *State) pumpForwardStarts() {
 			forward.starting = false
 			forward.startID = 0
 			if result.err != nil {
-				forward.sessionID = 0
-				forward.lastError = result.err.Error()
-				forward.refresh(state.messages, true)
-				state.status = fmt.Sprintf(state.messages.ForwardStartFailedFmt, result.err)
+				state.failForward(forward, result.err.Error())
 				continue
 			}
 			forward.runner = result.runner

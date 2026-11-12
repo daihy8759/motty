@@ -313,6 +313,7 @@ var (
 	hitSFTPBreadcrumbList  = tree.Sub(sftpHits, tree.Name("sftp-breadcrumb"))
 	hitSFTPEntryList       = tree.Sub(sftpHits, tree.Name("sftp-entry"))
 	hitSFTPColumnList      = tree.Sub(sftpHits, tree.Name("sftp-column"))
+	hitSFTPListBackground  = tree.ID(sftpHits, "sftp-list-background")
 	hitSFTPListScrollbar   = tree.ID(sftpHits, "sftp-list-scrollbar")
 
 	// hitSFTPDrawerClose is the close button of the drawer a narrow window shows
@@ -381,9 +382,13 @@ const (
 	// one layer are not stacked: the earlier one's text lands on the later
 	// one's surface. Drawers paint before the modal pass, so they take a layer
 	// below dialogLayer and never share it with a dialog.
-	drawerLayer  = uint16(500)
-	dialogLayer  = uint16(600)
-	tooltipLayer = uint16(900)
+	drawerLayer = uint16(500)
+	dialogLayer = uint16(600)
+	// hoverCardLayer is a page's pointer preview: above the page's menus, below
+	// the tooltip so the tooltip's text never shares a layer with another
+	// overlay.
+	hoverCardLayer = uint16(800)
+	tooltipLayer   = uint16(900)
 )
 
 const (
@@ -505,20 +510,24 @@ type State struct {
 	nextForwardStartID     uint64
 	nextProxyID            uint32
 	forwards               []forwardRecord
-	selectedIdentityID     uint32
-	selectedForwardID      uint32
-	selectedProxyID        uint32
-	activeSection          uint8
-	hostFilterOn           bool   // only the group named hostFilter is listed
-	hostFilter             string // a group name; empty is the unnamed bucket
-	hostFilterMenu         bool   // the chips that did not fit, as a menu
-	hostFilterHidden       int    // the first of hostChips whose chip is in that menu
-	hostChips              []int  // the groups that get a chip, as indexes of hostGroups
-	chipMenu               hostChipMenu
-	filterMoreButton       gfx.Rect
-	hostTotalDigits        string
-	groupMenu              groupMenuAnchor // where the Move group picker opens
-	hostSelectionText      string
+	// forwardTunnels are the SSH transports forwards use when no open tab
+	// carries one. They have no terminal and are never saved.
+	forwardTunnels     []*forwardTunnel
+	selectedIdentityID uint32
+	selectedForwardID  uint32
+	selectedProxyID    uint32
+	activeSection      uint8
+	hostFilterOn       bool   // only the group named hostFilter is listed
+	hostFilter         string // a group name; empty is the unnamed bucket
+	hostFilterMenu     bool   // the chips that did not fit, as a menu
+	hostFilterHidden   int    // the first of hostChips whose chip is in that menu
+	hostChips          []int  // the groups that get a chip, as indexes of hostGroups
+	chipMenu           hostChipMenu
+	filterMoreButton   gfx.Rect
+	hostTotalDigits    string
+	groupMenu          groupMenuAnchor // where the Move group picker opens
+	moveGroups         *hostMoveGroupMenu
+	hostSelectionText  string
 	// inputGapNote is the last terminal input gap reported to the log, so a
 	// paint that keeps asking for a surface that cannot exist logs it once.
 	inputGapNote       string
@@ -747,6 +756,9 @@ type State struct {
 	terminalCopyOnSelect, terminalRightClickPaste bool
 	terminalWordSeparators                        string
 	terminalWordEditor                            text.Editor
+	// hiddenHostTags are the keys of the built-in tag suggestions deleted in
+	// Settings; see host_tag_settings.go.
+	hiddenHostTags []string
 	// tabTitleMode selects the dynamic label without changing the stored name.
 	tabTitleMode           tabTitleMode
 	backgroundOutputAlerts bool
@@ -850,11 +862,14 @@ type State struct {
 	remote        remoteToolsView
 	edits         externalEdits
 	// fontSizeText is the font size as the settings page shows it, for fontSizeShown.
-	fontSizeText  string
-	fontSizeShown float32
-	highlights    *highlight.Set
-	highlighting  highlightUI
-	notes         notesUI
+	fontSizeText         string
+	fontSizeShown        float32
+	highlights           *highlight.Set
+	highlighting         highlightUI
+	noteSidebars         map[layoutcore.WorkspaceID]*noteSidebar
+	noteSidebarWorkspace layoutcore.WorkspaceID
+	noteSidebarFocusBack bool
+	notes                notesUI
 	// noteLinks is what this window knows about the files of linked notes, and
 	// noteWatches the directory watches that follow them.
 	noteLinks      map[string]*noteLinkState
@@ -968,8 +983,8 @@ func (state *State) Close() {
 	state.save()
 	state.closeNoteWatches()
 	state.cancelNoteImages()
-	if state.notes.sidebar != nil && state.notes.sidebar.content.imageCancel != nil {
-		state.notes.sidebar.content.imageCancel()
+	for id := range state.noteSidebars {
+		state.closeNoteSidebar(id)
 	}
 	state.callbacksClosed.Store(true)
 	state.closed = true
@@ -1032,6 +1047,7 @@ func (state *State) Close() {
 	for index := range state.forwards {
 		state.forwards[index].stop()
 	}
+	state.closeForwardTunnels()
 	memoryTrim.request()
 }
 
@@ -1519,6 +1535,9 @@ func (state *State) click(id gfx.ID, feedback bool) {
 	}
 	defer state.runLaunches()
 	defer state.sshSyncCheck()
+	if state.clickAutofillPick(id) {
+		return
+	}
 	if state.clickCompletion(id) {
 		return
 	}
@@ -1608,6 +1627,9 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		return
 	case modalSnippet:
 		state.clickSnippetDialog(id)
+		return
+	case modalSnippetDelete:
+		state.clickSnippetDeleteDialog(id)
 		return
 	case modalImportSessions:
 		state.clickImportSessions(id)
@@ -2065,6 +2087,7 @@ func (state *State) closeWorkspaceNow(id layoutcore.WorkspaceID) {
 	if err != nil {
 		return
 	}
+	state.closeNoteSidebar(id)
 	delete(state.temporaryWorkspaceLayouts, id)
 	delete(state.managedWorkspaceLayouts, id)
 	state.clearWorkspaceBroadcast(id)
@@ -2220,21 +2243,36 @@ func (state *State) connectTyped() {
 }
 
 // connectParsed opens a target that was typed or came from outside: the saved
-// host it spells out, or else a temporary one.
+// host it spells out, or else a temporary one. A link's password rides on the
+// copy for this connection only.
 func (state *State) connectParsed(parsed connection) {
 	// Typing out a saved host in full is opening that host.
 	for _, host := range state.hosts {
 		if host.Protocol == parsed.protocol && strings.EqualFold(host.Address, parsed.host) && host.Port == parsed.port &&
 			(parsed.user == "" || parsed.user == host.User) {
-			state.selectedHostID = host.ID
-			state.openHostSession(host)
+			chosen := host
+			chosen.linkPassword = parsed.password
+			state.selectedHostID = chosen.ID
+			state.openParsedHost(chosen, parsed.files)
 			return
 		}
 	}
-	adhoc := Host{Label: parsed.host, Address: parsed.host, User: parsed.user, Port: parsed.port, Protocol: parsed.protocol}
+	adhoc := Host{Label: parsed.host, Address: parsed.host, User: parsed.user, Port: parsed.port, Protocol: parsed.protocol, linkPassword: parsed.password}
 	adhoc.finish()
 	adhoc.Label = adhoc.target
-	state.openHostSession(adhoc)
+	state.openParsedHost(adhoc, parsed.files)
+}
+
+// openParsedHost opens the terminal a target asked for, or the file window when
+// the request came from an Xftp or sftp link. The user's Files setting decides
+// how a window appears; when files are set to live in the session panel, the
+// link opens the session that owns one.
+func (state *State) openParsedHost(host Host, files bool) {
+	if files && host.isSSH() && state.sftpManagersAvailable() {
+		state.openHostSFTPWindow(host)
+		return
+	}
+	state.openHostSession(host)
 }
 
 // hostForRow maps a host row's hit identity back to its host. The cards and the
@@ -2505,6 +2543,13 @@ func (state *State) pointer(event gfx.PointerEvent) gfx.EventResult {
 			return result
 		}
 	}
+	if state.hostGroupMenu {
+		if menu := state.moveGroupTree(); menu != nil {
+			if result := menu.Pointer(event); result.Handled {
+				return result
+			}
+		}
+	}
 	if state.modal == modalNewHost && state.editor.groupPicker.control.Open {
 		if event.Kind == gfx.PointerDown && event.Button == gfx.PointerButtonPrimary && !isHostGroupPickerTarget(event.Target) {
 			state.editor.groupPicker.control.Open = false
@@ -2637,14 +2682,23 @@ func (state *State) Key(event gfx.KeyEvent) (outcome gfx.EventResult) {
 		return result
 	}
 	var mount gfx.Scope
+	// Only a press aims the keyboard at a pane. A release carries the identity of
+	// the press it ends, so after a tab switch it still names the terminal the
+	// press began on; activating that one would pull the user back to the tab
+	// they just left. The release still routes to that terminal: the program
+	// that asked for releases must see the end of a press it already saw.
 	if session, local, ok := state.decodePaneHit(event.Target); ok {
-		state.ActivatePane(session.ID)
+		if !event.Release {
+			state.ActivatePane(session.ID)
+		}
 		mount, _ = tree.MountOf(event.Target.Scope())
 		event.Target = local
 	} else if session := state.terminalPageSession(event.Target); session != nil {
 		// A terminal pane is part of the workbench page; its identity and focus
 		// are already the window's. A key there makes that pane the active one.
-		state.ActivatePane(session.ID)
+		if !event.Release {
+			state.ActivatePane(session.ID)
+		}
 	} else if event.Target.IsZero() && state.sftpHeaderMenuOwns(state.popups.owner) {
 		// Opening an embedded menu can temporarily leave its focus trap empty.
 		// Its first keyboard-selected row still belongs to the file panel, and the
@@ -2679,6 +2733,9 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		return result
 	}
 	if result, handled := state.terminalInputKey(event); handled {
+		return result
+	}
+	if result, handled := state.autofillPickKey(event); handled {
 		return result
 	}
 	if result, handled := state.completionKey(event); handled {
@@ -2748,6 +2805,9 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		return result
 	}
 	if result, handled := state.transferCenterKey(event); handled {
+		return result
+	}
+	if result, handled := state.hostMoveGroupKey(event); handled {
 		return result
 	}
 	// A tooltip is the topmost transient thing when no popup menu is open:

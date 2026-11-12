@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/ui"
@@ -154,8 +155,12 @@ func (state *State) declareToolbarDockTop(c ui.C, probe bool) {
 		// The measuring pass only needs the same room; it paints nothing.
 		area := ui.Row(c).Shrink(0).MinWidth(barButtonSize).Height(barButtonSize).MarginSides(0, 0, 0, 10).Gap(2)
 		area.Children(func() {
-			for range tools {
-				ui.Slot(c).Size(barButtonSize, barButtonSize).Shrink(0)
+			for _, tool := range tools {
+				slotWidth := barButtonSize
+				if tool.id == hitToolbarLatency {
+					slotWidth = state.toolbarTopLatencyWidth(c.Canvas(), barButtonSize)
+				}
+				ui.Slot(c).Size(slotWidth, barButtonSize).Shrink(0)
 			}
 			if overflow {
 				ui.Slot(c).Size(barButtonSize, barButtonSize).Shrink(0)
@@ -165,13 +170,25 @@ func (state *State) declareToolbarDockTop(c ui.C, probe bool) {
 	}
 	dock.topTools, dock.topOverflow = tools, overflow
 	dock.topSlots = dock.topSlots[:0]
-	count := len(tools)
-	if overflow {
-		count++
+	width := float32(0)
+	for i, tool := range tools {
+		if i > 0 {
+			width += 2
+		}
+		slotWidth := barButtonSize
+		if tool.id == hitToolbarLatency {
+			slotWidth = state.toolbarTopLatencyWidth(c.Canvas(), barButtonSize)
+		}
+		width += slotWidth
 	}
-	width := barButtonSize
-	if count > 0 {
-		width = float32(count)*barButtonSize + float32(count-1)*2
+	if overflow {
+		if len(tools) > 0 {
+			width += 2
+		}
+		width += barButtonSize
+	}
+	if width <= 0 {
+		width = barButtonSize
 	}
 	area := ui.Row(c).Shrink(0).Width(width).Height(barButtonSize).MarginSides(0, 0, 0, 10).Gap(2)
 	dock.topArea = area
@@ -179,7 +196,8 @@ func (state *State) declareToolbarDockTop(c ui.C, probe bool) {
 		for _, tool := range tools {
 			var box ui.Box
 			if tool.id == hitToolbarLatency {
-				box = ui.Slot(c).Size(barButtonSize, barButtonSize).Shrink(0)
+				slotWidth := state.toolbarTopLatencyWidth(c.Canvas(), barButtonSize)
+				box = ui.Slot(c).Size(slotWidth, barButtonSize).Shrink(0)
 			} else {
 				// Titlebar window actions must leave typing focused on the terminal.
 				entry, _ := toolbarDockIdentity(tool.id)
@@ -199,6 +217,23 @@ func (state *State) declareToolbarDockTop(c ui.C, probe bool) {
 			dock.topSlots = append(dock.topSlots, toolbarDockSlot{barTool{id: hitToolbarDockMore}, box})
 		}
 	})
+}
+
+func (state *State) toolbarTopLatencyWidth(canvas *gfx.Canvas, defaultWidth float32) float32 {
+	session, ok := state.terminalSideRailSession()
+	if !ok {
+		return defaultWidth
+	}
+	text, _, ok := state.latencyInfo(session)
+	if !ok {
+		return defaultWidth
+	}
+	label := strings.TrimPrefix(text, "RTT ")
+	if canvas == nil {
+		return defaultWidth
+	}
+	textWidth := canvas.TextWidthWeight(label, 10, gfx.WeightMedium)
+	return max(defaultWidth, textWidth+14)
 }
 
 func (state *State) paintToolbarDockTop(canvas *gfx.Canvas) {
@@ -441,7 +476,7 @@ func (state *State) paintToolbarDockBottom(canvas *gfx.Canvas, size gfx.Size) {
 	}
 	bounds := state.toolbarDockBottomBounds(size, false)
 	dock.zones[3], dock.zones[6] = toolbarDockBottomZones(bounds)
-	canvas.Fill(bounds, state.pal.shell)
+	canvas.Fill(bounds, state.windowFrameColor())
 	canvas.Fill(gfx.Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: 1}, state.pal.line)
 	state.paintToolbarDockBottomGroup(canvas, left, toolbarDockBottom, dock.bottomLeft.Rect())
 	state.paintToolbarDockBottomGroup(canvas, right, toolbarDockBottomRight, dock.bottomRight.Rect())
@@ -495,7 +530,7 @@ func (state *State) paintToolbarDockBottomGroup(canvas *gfx.Canvas, tools []barT
 				continue
 			}
 		} else {
-			state.paintIconButtonSized(canvas, tool.id, tool.icon, rect, tool.hint, tool.disabled, tool.style, state.pal.shell, metrics.iconSize)
+			state.paintIconButtonSized(canvas, tool.id, tool.icon, rect, tool.hint, tool.disabled, tool.style, state.windowFrameColor(), metrics.iconSize)
 		}
 		state.registerToolbarDockTool(canvas, tool, zone, clipped)
 	}
@@ -573,23 +608,20 @@ func (state *State) paintToolbarDockSide(canvas *gfx.Canvas, size gfx.Size) {
 		dock := &state.toolbarDock
 		dock.zones[toolbarDockZoneIndex(topZone)] = gfx.Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: bounds.Height / 2}
 		dock.zones[toolbarDockZoneIndex(bottomZone)] = gfx.Rect{X: bounds.X, Y: bounds.Y + bounds.Height/2, Width: bounds.Width, Height: bounds.Height / 2}
-		background, border := state.pal.shell, state.pal.line
-		if terminalVisible {
-			background, border = state.pal.workspace, state.pal.line
-			if primary {
-				state.setTerminalRailTools(session, append(top, bottom...))
-				if len(bottom) == 0 {
-					state.paintTerminalSideRail(canvas, bounds, session, top, background, border, left)
-					continue
-				}
+		// The rail is part of the window frame, like the bar above it and the
+		// strip below, so it takes the frame's surface rather than a color of its
+		// own: on a full-page pane that is the workspace it borders. No divider is
+		// drawn beside it: the frame and the pane are one surface, and the tools
+		// read as a column of that surface.
+		background := state.windowFrameColor()
+		if terminalVisible && primary {
+			state.setTerminalRailTools(session, append(top, bottom...))
+			if len(bottom) == 0 {
+				state.paintTerminalSideRail(canvas, bounds, session, top, background)
+				continue
 			}
 		}
 		canvas.Fill(bounds, background)
-		x := bounds.X
-		if left {
-			x += bounds.Width - 1
-		}
-		canvas.Fill(gfx.Rect{X: x, Y: bounds.Y, Width: 1, Height: bounds.Height}, border)
 		if terminalVisible && primary {
 			session.term.railBounds = bounds
 		}
