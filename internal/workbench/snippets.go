@@ -112,6 +112,10 @@ type snippetsUI struct {
 	sort      components.TableSortState
 	grid      components.ReorderGridState
 	countText string
+	// detailHeight and detailLineHeight are the band the expanded command takes,
+	// measured when the page declares the scroll area.
+	detailHeight     float32
+	detailLineHeight float32
 	// sendAt is where the menu of terminals opens from the Send button.
 	sendAt gfx.Point
 	// deleting is the snippet index plus one the delete confirmation asks about;

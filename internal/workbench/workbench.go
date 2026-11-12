@@ -29,6 +29,7 @@ import (
 
 var (
 	hitHosts                   = tree.ID(shellHits, "hosts")
+	hitHostListBar             = tree.ID(shellHits, "host-list-bar")
 	hitWorkspaces              = tree.ID(shellHits, "workspaces")
 	hitKeychain                = tree.ID(shellHits, "keychain")
 	hitProxies                 = tree.ID(shellHits, "proxies")
@@ -201,6 +202,7 @@ var (
 	hitKeysCopyPublic  = tree.ID(keysHits, "keys-copy-public")
 	hitKeysRemove      = tree.ID(keysHits, "keys-remove")
 	hitKeysPassphrase  = tree.ID(keysHits, "keys-passphrase")
+	hitKeysScrollThumb = tree.ID(keysHits, "keys-scroll-thumb")
 	hitKeyRowList      = tree.Sub(keysHits, tree.Name("key-row"))
 )
 
@@ -224,6 +226,7 @@ var (
 	hitForwardHostTrigger           = tree.ID(forwardsHits, "forward-host-trigger")
 	hitForwardHostScroll            = tree.ID(forwardsHits, "forward-host-scroll")
 	hitForwardHostPickerScope       = tree.ID(forwardsHits, "forward-host-picker-scope")
+	hitForwardScrollThumb           = tree.ID(forwardsHits, "forward-scroll-thumb")
 	hitForwardRowList               = tree.Sub(forwardsHits, tree.Name("forward-row"))
 	hitForwardHostItemList          = tree.Sub(forwardsHits, tree.Name("forward-host-item"))
 )
@@ -267,6 +270,7 @@ var (
 	hitProxyJumpScroll        = tree.ID(proxiesHits, "proxy-jump-scroll")
 	hitProxyTargetPickerScope = tree.ID(proxiesHits, "proxy-target-picker-scope")
 	hitProxyJumpPickerScope   = tree.ID(proxiesHits, "proxy-jump-picker-scope")
+	hitProxyScrollThumb       = tree.ID(proxiesHits, "proxy-scroll-thumb")
 	hitProxyRowList           = tree.Sub(proxiesHits, tree.Name("proxy-row"))
 	hitProxyTargetItemList    = tree.Sub(proxiesHits, tree.Name("proxy-target-item"))
 	hitProxyJumpItemList      = tree.Sub(proxiesHits, tree.Name("proxy-jump-item"))
@@ -516,18 +520,33 @@ type State struct {
 	selectedIdentityID uint32
 	selectedForwardID  uint32
 	selectedProxyID    uint32
-	activeSection      uint8
-	hostFilterOn       bool   // only the group named hostFilter is listed
-	hostFilter         string // a group name; empty is the unnamed bucket
-	hostFilterMenu     bool   // the chips that did not fit, as a menu
-	hostFilterHidden   int    // the first of hostChips whose chip is in that menu
-	hostChips          []int  // the groups that get a chip, as indexes of hostGroups
-	chipMenu           hostChipMenu
-	filterMoreButton   gfx.Rect
-	hostTotalDigits    string
-	groupMenu          groupMenuAnchor // where the Move group picker opens
-	moveGroups         *hostMoveGroupMenu
-	hostSelectionText  string
+	forwardTable       ui.TableState
+	keysTable          ui.TableState
+	proxyTable         ui.TableState
+	forwardRows        forwardTableSource
+	keysRows           keyTableSource
+	proxyRows          proxyTableSource
+	// The catalog tables' columns and headings live here rather than in each
+	// paint: a table's spec keeps them until the paint ends, so a local array
+	// would escape and allocate every frame.
+	forwardColumns    [5]components.TableColumn
+	forwardHeadings   [5]string
+	keysColumns       [4]components.TableColumn
+	keysHeadings      [4]string
+	proxyColumns      [4]components.TableColumn
+	proxyHeadings     [4]string
+	activeSection     uint8
+	hostFilterOn      bool   // only the group named hostFilter is listed
+	hostFilter        string // a group name; empty is the unnamed bucket
+	hostFilterMenu    bool   // the chips that did not fit, as a menu
+	hostFilterHidden  int    // the first of hostChips whose chip is in that menu
+	hostChips         []int  // the groups that get a chip, as indexes of hostGroups
+	chipMenu          hostChipMenu
+	filterMoreButton  gfx.Rect
+	hostTotalDigits   string
+	groupMenu         groupMenuAnchor // where the Move group picker opens
+	moveGroups        *hostMoveGroupMenu
+	hostSelectionText string
 	// inputGapNote is the last terminal input gap reported to the log, so a
 	// paint that keeps asking for a surface that cannot exist logs it once.
 	inputGapNote       string
@@ -565,6 +584,10 @@ type State struct {
 	hostGroupEditor   text.Editor
 	groupActions      hostGroupActions
 	tabRename         tabRename
+	tabInline         tabInline
+	// pendingFocus asks the click that just ran for the keyboard, for a click
+	// that opened a field of its own and has no event result to carry it out.
+	pendingFocus      gfx.ID
 	tabsClose         tabsClose
 	sessionLink       sessionLink
 	hostDialogMode    hostDialogMode
@@ -1027,6 +1050,7 @@ func (state *State) Close() {
 	state.dropExternalEdits(0)
 	for index := range state.sessions {
 		session := &state.sessions[index]
+		session.closeSSHBrowser()
 		state.cancelReconnect(session)
 		state.closeSFTP(session)
 		state.stopRemoteStats(session)
@@ -1108,6 +1132,7 @@ func New(options Options) *State {
 	state.initSecrets()
 
 	state.starting = true
+	state.forwardRows.records, state.keysRows.records, state.proxyRows.records = &state.forwards, &state.identities, &state.proxies
 	state.configDefaults = defaultsOf(state.snapshot())
 	config, saved, configBase, report, err := openConfig(state.options.StatePath, state.windowID)
 	state.config, state.configBase = config, configBase
@@ -1268,6 +1293,9 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 	}
 	if hit == hitWorkspaceInlineField && state.workspaceCommandEdit.template != "" && state.modal == modalNone && state.activeSection == sectionWorkspaces {
 		return &state.workspaceCommandEdit.editor
+	}
+	if hit == hitTabInline && state.tabInlineActive() && state.modal == modalNone {
+		return &state.tabInline.editor
 	}
 	if editor := state.noteEditor(hit); editor != nil {
 		return editor
@@ -1517,6 +1545,13 @@ func (state *State) click(id gfx.ID, feedback bool) {
 	}
 	if !workspaceInlineOwns(id) {
 		state.workspaceCommandEdit = workspaceCommandInline{}
+	}
+	// The pointer path above already ends the edit on a press; this catches the
+	// clicks no press made, such as the ones keys synthesize. The click the first
+	// press of a double click leaves behind activates the tab being renamed, and
+	// must not close the field the second press just opened.
+	if state.tabInlineActive() && id != hitTabInline && id != hitTabList.At(int(state.tabInline.workspace)) {
+		state.commitTabInline()
 	}
 	if feedback {
 		state.pressIconMotion(id)
@@ -1974,6 +2009,7 @@ func (state *State) closeSession(id uint32) {
 	defer memoryTrim.request()
 	session := &state.sessions[index]
 	state.stopLoginExpect(session)
+	session.closeSSHBrowser()
 	state.leaveLocalProxy(session)
 	// Closing a tab cancels its connection and deletes the Session in this call,
 	// so the terminal PhaseClosed is never observed; the row is finalized here.
@@ -2246,18 +2282,42 @@ func (state *State) connectTyped() {
 // host it spells out, or else a temporary one. A link's password rides on the
 // copy for this connection only.
 func (state *State) connectParsed(parsed connection) {
+	open := func(host Host) {
+		chosen := host
+		chosen.linkPassword = parsed.password
+		state.selectedHostID = chosen.ID
+		state.openParsedHost(chosen, parsed.files)
+	}
 	// Typing out a saved host in full is opening that host.
 	for _, host := range state.hosts {
 		if host.Protocol == parsed.protocol && strings.EqualFold(host.Address, parsed.host) && host.Port == parsed.port &&
 			(parsed.user == "" || parsed.user == host.User) {
-			chosen := host
-			chosen.linkPassword = parsed.password
-			state.selectedHostID = chosen.ID
-			state.openParsedHost(chosen, parsed.files)
+			open(host)
 			return
 		}
 	}
-	adhoc := Host{Label: parsed.host, Address: parsed.host, User: parsed.user, Port: parsed.port, Protocol: parsed.protocol, linkPassword: parsed.password}
+	// A target typed without naming its protocol also opens a saved host of
+	// another protocol at that endpoint: the search box's bare address already
+	// does, and a remote desktop's card prints its address without "ssh://".
+	if !parsed.explicitProtocol {
+		for _, host := range state.hosts {
+			if strings.EqualFold(host.Address, parsed.host) && host.Port == parsed.port &&
+				(parsed.user == "" || parsed.user == host.User) {
+				open(host)
+				return
+			}
+		}
+	}
+	if parsed.protocol == protocolRDP && parsed.user == "" {
+		// A saved RDP host carries its own account, but a typed target has to
+		// name it: the server never asks for the Windows login itself.
+		state.showActionWarning(state.messages.Connect, state.messages.Desktop.ErrRDPUser)
+		return
+	}
+	adhoc := Host{
+		Label: parsed.host, Address: parsed.host, User: parsed.user, Port: parsed.port,
+		Protocol: parsed.protocol, ViaSSH: parsed.viaSSH, linkPassword: parsed.password,
+	}
 	adhoc.finish()
 	adhoc.Label = adhoc.target
 	state.openParsedHost(adhoc, parsed.files)
@@ -2298,8 +2358,19 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 		return gfx.EventResult{Handled: true}
 	}
 	defer state.afterEvent(&outcome)
+	if state.trackHostListBar(event) {
+		defer func() { outcome.Repaint = true }()
+	}
 	if event.Kind == gfx.PointerDown && !workspaceInlineOwns(event.Target) {
 		state.workspaceCommandEdit = workspaceCommandInline{}
+	}
+	// A press anywhere but on the tab-name field applies the drafted name, the
+	// way an in-place edit ends when its surface loses the pointer. The press
+	// then goes on to what it hit, with the tab already named.
+	if event.Kind == gfx.PointerDown && state.tabInlineActive() && event.Target != hitTabInline {
+		if !state.commitTabInline() {
+			return gfx.EventResult{Handled: true, Focus: hitTabInline, Repaint: true}
+		}
 	}
 	if result := state.notesPointer(event); result.Handled {
 		return result
@@ -2389,6 +2460,9 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 		return result
 	}
 	if result, handled := state.snippetReorderPointer(event); handled {
+		return result
+	}
+	if result, handled := state.hostListBarPointer(event); handled {
 		return result
 	}
 	if result, handled := state.hostListPointer(event); handled {
@@ -2723,6 +2797,9 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 	if result, handled := state.workspaceInlineKey(event); handled {
 		return result
 	}
+	if result, handled := state.tabInlineKey(event); handled {
+		return result
+	}
 	if result := state.notesKey(event); result.Handled {
 		return result
 	}
@@ -2782,6 +2859,24 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 	}
 	if result, handled := state.forwardDialogKey(event); handled {
 		return result
+	}
+	if state.activeSection == sectionForwards && state.modal == modalNone {
+		if result := state.forwardTable.Key(event); result.Handled {
+			state.takeForwardTableSelection()
+			return result
+		}
+	}
+	if state.activeSection == sectionKeys && state.modal == modalNone {
+		if result := state.keysTable.Key(event); result.Handled {
+			state.takeKeyTableSelection()
+			return result
+		}
+	}
+	if state.activeSection == sectionProxies && state.modal == modalNone {
+		if result := state.proxyTable.Key(event); result.Handled {
+			state.takeProxyTableSelection()
+			return result
+		}
 	}
 	if result, handled := state.snippetGroupKey(event); handled {
 		return result

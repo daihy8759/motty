@@ -625,6 +625,12 @@ type Messages struct {
 	MenuRenameTerminal     string
 	MenuLockTab            string
 	MenuUnlockTab          string
+
+	MenuOpenSSHBrowser    string
+	MenuCloseSSHBrowser   string
+	SSHBrowserNotFound    string
+	SSHBrowserStartFailed string
+
 	// TabLockedHint is the tab's accessible description while it is protected.
 	TabLockedHint                 string
 	CloseLockedTabTitle           string
@@ -644,7 +650,6 @@ type Messages struct {
 	DisconnectTitleFmt            string
 	DisconnectDescription         string
 	DisconnectConfirm             string
-	RenameTabTitle                string
 	RenameTerminalTitle           string
 	RenameTerminalPlaceholder     string
 	RenameTabField                string
@@ -807,6 +812,7 @@ type Messages struct {
 	KeyEmpty                    string
 	KeyEmptySub                 string
 	KeyCountFmt                 string
+	KeyListScroll               string
 	KeyUnavailable              string
 	KeyUnencrypted              string
 	KeyPassphraseProtected      string
@@ -881,6 +887,7 @@ type Messages struct {
 	ForwardEmpty                  string
 	ForwardEmptySub               string
 	ForwardCountFmt               string
+	ForwardListScroll             string
 	ForwardStopped                string
 	ForwardStoppedError           string
 	ForwardWaiting                string
@@ -950,6 +957,7 @@ type Messages struct {
 	ProxyEmpty                 string
 	ProxyEmptySub              string
 	ProxyCountFmt              string
+	ProxyListScroll            string
 	ProxySelected              string
 	ProxyAdded                 string
 	ProxyStartedStatus         string

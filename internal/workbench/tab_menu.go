@@ -17,6 +17,8 @@ var (
 	hitTabMenuCloseOthers   = tree.ID(tabMenuHits, "tab-menu-close-others")
 	hitTabMenuCloseRight    = tree.ID(tabMenuHits, "tab-menu-close-right")
 	hitTabMenuDuplicate     = tree.ID(tabMenuHits, "tab-menu-duplicate")
+	hitTabMenuBrowserOpen   = tree.ID(tabMenuHits, "tab-menu-open-ssh-browser")
+	hitTabMenuBrowserClose  = tree.ID(tabMenuHits, "tab-menu-close-ssh-browser")
 	hitTabMenuEditHost      = tree.ID(tabMenuHits, "tab-menu-edit-host")
 	hitTabMenuNewWindow     = tree.ID(tabMenuHits, "tab-menu-new-window")
 	hitTabMenuCopyAddress   = tree.ID(tabMenuHits, "tab-menu-copy-address")
@@ -69,13 +71,24 @@ type tabMenu struct {
 
 // tabMenuPointer closes an open menu on a secondary press outside it (the
 // backdrop swallows the press; only a primary one is also a click). Opening it is
-// the paint of a tab (openTabMenuOn).
+// the paint of a tab (openTabMenuOn). A press on the rename row starts the
+// in-place rename here, on the press, so the field is handed the keyboard by the
+// same event that opens it.
 func (state *State) tabMenuPointer(event gfx.PointerEvent) (gfx.EventResult, bool) {
-	if event.Kind != gfx.PointerDown || event.Button == gfx.PointerButtonNone || event.Button == gfx.PointerButtonPrimary {
+	if event.Kind != gfx.PointerDown || event.Button == gfx.PointerButtonNone {
 		return gfx.EventResult{}, false
 	}
-	if state.tabMenu.open && event.Target == hitTabMenuDismiss {
+	if state.tabMenu.open && event.Target == hitTabMenuDismiss && event.Button != gfx.PointerButtonPrimary {
 		state.tabMenu.open = false
+		return gfx.EventResult{Handled: true, Repaint: true}, true
+	}
+	if state.tabMenu.open && event.Target == hitTabMenuRename {
+		workspace := state.tabMenu.workspace
+		state.tabMenu.open = false
+		state.beginTabInline(workspace)
+		if state.tabInlineActive() {
+			return gfx.EventResult{Handled: true, Repaint: true, Focus: hitTabInline}, true
+		}
 		return gfx.EventResult{Handled: true, Repaint: true}, true
 	}
 	return gfx.EventResult{}, false
@@ -165,6 +178,13 @@ func (state *State) paintTabMenu(canvas *gfx.Canvas, viewport gfx.Rect) {
 	rows.separate()
 	rows.add(components.ContextMenuItem{ID: hitTabMenuCopyAddress, Label: messages.CopyAddressAndPort, Icon: icon(iconCopy), Disabled: address == ""})
 	rows.add(components.ContextMenuItem{ID: hitTabMenuCopyName, Label: messages.CopyConnectionName, Icon: icon(iconCopy), Disabled: name == ""})
+	if hasSession && session.canOpenSSHBrowser() {
+		if session.browser != nil && session.browser.Running() {
+			rows.add(components.ContextMenuItem{ID: hitTabMenuBrowserClose, Label: messages.MenuCloseSSHBrowser, Icon: icon(iconGlobe)})
+		} else {
+			rows.add(components.ContextMenuItem{ID: hitTabMenuBrowserOpen, Label: messages.MenuOpenSSHBrowser, Icon: icon(iconGlobe)})
+		}
+	}
 	rows.separate()
 	// A remote desktop keeps its scaling and keyboard controls in the page's
 	// bar, which a host may have asked to hide: the menu holds them either way.
@@ -228,6 +248,14 @@ func (state *State) clickTabMenu(id gfx.ID) bool {
 		return true
 	}
 	switch id {
+	case hitTabMenuBrowserOpen:
+		if session, ok := state.tabMenuSessionFor(workspace); ok {
+			state.openSSHBrowser(session)
+		}
+	case hitTabMenuBrowserClose:
+		if session, ok := state.tabMenuSessionFor(workspace); ok {
+			session.closeSSHBrowser()
+		}
 	case hitTabMenuNewWindow:
 		if frame, ok := state.windowFrameOnScreen(); ok && state.canTearOffTab() {
 			state.tearOffTab(workspace, gfx.Point{X: frame.X + tearOffCascade, Y: frame.Y + tearOffCascade})
@@ -241,7 +269,7 @@ func (state *State) clickTabMenu(id gfx.ID) bool {
 			state.copyConnectionText(session.host.Label)
 		}
 	case hitTabMenuRename:
-		state.openTabRename(workspace)
+		state.beginTabInline(workspace)
 	case hitTabMenuLock:
 		_ = state.deck.SetLocked(workspace, !state.deck.Locked(workspace))
 		state.rebuildTabOptions()

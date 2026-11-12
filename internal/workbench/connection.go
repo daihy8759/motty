@@ -578,6 +578,7 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	session.resetLatency()
 	avoidShare := session.avoidShare || loopbackTunnel(host)
 	session.avoidShare = false
+	session.closeSSHBrowser()
 	state.redialSessionForwards(session.ID)
 	state.closeSFTP(session)
 	state.stopRemoteStats(session)
@@ -944,6 +945,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 		// After the connected line: a saved or failed save is what the user needs to read.
 		state.rememberSecret(session)
 	case sshconn.PhaseClosed:
+		session.closeSSHBrowser()
 		session.sudoCommands, session.sudoPassword = false, ""
 		state.endDesktop(session)
 		session.pendingSecretName, session.pendingSecretValue = "", ""
@@ -958,6 +960,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 		}
 		state.tell(session, toldEnded, status)
 	case sshconn.PhaseFailed:
+		session.closeSSHBrowser()
 		session.sudoCommands, session.sudoPassword = false, ""
 		state.endDesktop(session)
 		session.pendingSecretName, session.pendingSecretValue = "", ""

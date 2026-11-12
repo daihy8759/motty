@@ -53,6 +53,50 @@ type forwardStartResult struct {
 	err       error
 }
 
+// forwardTableSource reads the forwards page's table cells when the table asks
+// for them, one visible cell at a time.
+type forwardTableSource struct {
+	records *[]forwardRecord
+}
+
+func (source *forwardTableSource) Len() int {
+	if source == nil || source.records == nil {
+		return 0
+	}
+	return len(*source.records)
+}
+
+func (source *forwardTableSource) Cell(row, column int) string {
+	if source == nil || source.records == nil {
+		return ""
+	}
+	records := *source.records
+	if row < 0 || row >= len(records) || column < 0 || column >= len(records[row].cells) {
+		return ""
+	}
+	return records[row].cells[column]
+}
+
+// syncForwardTable makes the table show the forward the application selected.
+func (state *State) syncForwardTable() {
+	row := -1
+	for index := range state.forwards {
+		if state.forwards[index].ID == state.selectedForwardID {
+			row = index
+			break
+		}
+	}
+	state.forwardTable.Select(row)
+}
+
+// takeForwardTableSelection adopts the row a key moved the table to.
+func (state *State) takeForwardTableSelection() {
+	row := state.forwardTable.Selected()
+	if row >= 0 && row < len(state.forwards) {
+		state.selectForward(state.forwards[row].ID)
+	}
+}
+
 func (forward *forwardRecord) listenAddress() string {
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(int(forward.LocalPort)))
 }

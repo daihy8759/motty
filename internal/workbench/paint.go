@@ -179,6 +179,13 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 	if state.activeSection != sectionSettings || state.settingsCategory != settingsTerminal || state.settingsSearching() {
 		state.localShellMenu.open = false
 	}
+	if state.tabInlineActive() {
+		if _, ok := state.workspaceTab(state.tabInline.workspace); !ok {
+			// The workspace left while its name was being typed; the edit has
+			// nothing left to name.
+			state.tabInline = tabInline{}
+		}
+	}
 	state.ai.panel.targetBounds = gfx.Rect{}
 	if !state.aiSettingsVisible() || state.settingsCategory != settingsMCP || state.settingsSearching() {
 		state.ai.cfg.mcpSelectOpen = false
@@ -473,6 +480,7 @@ func (state *State) windowPage() *ui.Page {
 	if chrome.windowPage == nil {
 		chrome.windowPage = ui.NewPage(ui.PageConfig{
 			Tree: &tree, Root: shellPageRoot, Theme: &state.theme, View: state.declareShell,
+			ScrollbarSize: catalogBarGutter,
 		})
 	}
 	return chrome.windowPage
@@ -570,7 +578,7 @@ func (state *State) declareShell(c ui.C) {
 		}
 		ui.Row(c).Grow(1).Shrink(1).MarginSides(0, 0, state.toolbarDockBottomReserve(false), 0).Children(func() {
 			ui.Slot(c).Width(state.toolbarDockSideReserveFor(true, false)).Shrink(0)
-			state.declareNavigation(c, chrome.shellHeight)
+			state.declareNavigation(c)
 			workspace := ui.Slot(c).Grow(1).MarginSides(0, chrome.shellCardRight, sectionCardMargin, 0).
 				Radius(radius.surface).Border(workspaceBorder, pal.windowStroke).Background(pal.workspace)
 			// The hosts page is part of this page like the panes: its header is a
@@ -905,27 +913,38 @@ func (state *State) declareWorkspaceTab(c ui.C, workspace layoutcore.WorkspaceIn
 	label := state.tabLabel(workspace)
 	entry.label = label
 	entry.output = state.workspaceOutputAlert(workspace.ID)
+	editing := !compact && state.tabInlineEditing(workspace.ID)
 	tabOptions := gfx.HitOptions{Role: gfx.RoleTab, Selected: active}
 	// Every tab shows its full name as a tooltip on hover, so a long, elided
 	// label (a deep path or a long host label among many tabs) stays readable.
 	// The shared hover tooltip paints Hit, so naming it here is all it takes.
-	tabOptions.Hint = label
-	if workspace.Locked {
-		tabOptions.Hint = m.TabLockedHint
-	}
-	if directory := state.tabDirectory(workspace); directory != "" {
-		if tabOptions.Hint != "" && workspace.Locked {
-			tabOptions.Hint += "\n" + directory
-		} else {
-			tabOptions.Hint = directory
+	if !editing {
+		// A tooltip must not cover the field the name is being typed in.
+		tabOptions.Hint = label
+		if workspace.Locked {
+			tabOptions.Hint = m.TabLockedHint
+		}
+		if directory := state.tabDirectory(workspace); directory != "" {
+			if tabOptions.Hint != "" && workspace.Locked {
+				tabOptions.Hint += "\n" + directory
+			} else {
+				tabOptions.Hint = directory
+			}
+		}
+		// A desktop keeps its size and protection in the status line under the
+		// picture, which the host may have hidden: the tab says it on hover instead.
+		if session := state.tabSession(workspace); session != nil && session.desk != nil {
+			if hint := state.desktopStripLeft(session.desk, session); hint != "" {
+				tabOptions.Hint = hint
+			}
 		}
 	}
-	// A desktop keeps its size and protection in the status line under the
-	// picture, which the host may have hidden: the tab says it on hover instead.
-	if session := state.tabSession(workspace); session != nil && session.desk != nil {
-		if hint := state.desktopStripLeft(session.desk, session); hint != "" {
-			tabOptions.Hint = hint
-		}
+	if editing {
+		// The tab under the field is not a second focusable control: the field
+		// is what the keyboard belongs to, and a press anywhere else ends the
+		// edit before it lands. It still takes presses, so its menu and its
+		// close button keep working.
+		tabOptions.SkipFocus = true
 	}
 	row := ui.Row(c).Size(width, height).Shrink(0)
 	if vertical {
@@ -946,6 +965,14 @@ func (state *State) declareWorkspaceTab(c ui.C, workspace layoutcore.WorkspaceIn
 		if state.tabNumbers && entry.number != "" {
 			// The number names the name beside it, so it carries less ink.
 			ui.Text(c, entry.number).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(tabNumberColor(foreground)).LineHeight(20).Shrink(0).MarginSides(0, tabNumberGap, 0, 0)
+		}
+		if editing {
+			// The title is the field itself, and the room the lock, the light
+			// and the close button took belongs to the name while it is typed.
+			// The parts painter fills the slot with the framework's field,
+			// which declares the field's own hit after layout.
+			entry.title = ui.Slot(c).Size(0, 20).Grow(1).Basis(0)
+			return
 		}
 		titleColor := foreground
 		if entry.output != outputAlertNone {
@@ -1244,12 +1271,8 @@ type hostToggleBoxes struct {
 
 // declareNavigation declares the sidebar: the name of the application over the
 // pages, and the way to a shell on this computer and to the settings at the bottom.
-func (state *State) declareNavigation(c ui.C, height float32) {
+func (state *State) declareNavigation(c ui.C) {
 	m := state.messages
-	logoGap := float32(20)
-	if height < 640 {
-		logoGap = 0
-	}
 
 	items := [...]struct {
 		id     gfx.ID
@@ -1270,7 +1293,7 @@ func (state *State) declareNavigation(c ui.C, height float32) {
 	}
 	ui.Column(c).Width(navigationWidth).Shrink(0).Children(func() {
 		// The logo with the name beside it, painted into this slot after layout.
-		state.chrome.lockup = ui.Slot(c).Size(lockupWidth, lockupHeight).MarginSides(15, 0, logoGap, 0).Self(ui.Center)
+		state.chrome.lockup = ui.Slot(c).Size(lockupWidth, lockupHeight).MarginSides(15, 0, 20, 0).Self(ui.Center)
 		for _, item := range items {
 			state.navigationItem(c, item.id, item.icon, item.label, item.active, 4)
 		}
@@ -2081,7 +2104,7 @@ func (state *State) sessionStatus(session *Session) (string, gfx.Color) {
 func (state *State) paintHostGridTable(canvas *gfx.Canvas, treeBounds gfx.Rect) {
 	// The cards were declared at this scroll position; the bar is Viva's scroll
 	// area, and it paints nothing at all while the content fits.
-	area, geometry := hostListScrollArea(canvas, state.Theme(), treeBounds, state.hostsContent, state.hostsScroll)
+	area, geometry := hostListScrollArea(canvas, state.Theme(), treeBounds, state.hostsContent, state.hostsScroll, state.hostListBarRevealed())
 	state.hostsGridViewport = geometry.Viewport
 	area.EndContent()
 }
@@ -2115,10 +2138,7 @@ func (state *State) paintHostListTable(canvas *gfx.Canvas, treeBounds gfx.Rect) 
 
 // paintHostListBar paints the bar the list view keeps beside its rows.
 func (state *State) paintHostListBar(canvas *gfx.Canvas, treeBounds gfx.Rect, content float32) {
-	bar := components.BeginScrollArea(canvas, state.Theme(), treeBounds, gfx.Size{Height: content}).
-		Offset(0, state.hostsScroll).
-		ReserveScrollbars().
-		VerticalScrollbar(gfx.ID{}, "", "")
+	bar, _ := hostListScrollArea(canvas, state.Theme(), treeBounds, content, state.hostsScroll, state.hostListBarRevealed())
 	bar.EndContent()
 }
 
@@ -2321,15 +2341,22 @@ func (state *State) hostListHeight(width float32) float32 {
 // hostListScrollArea is how the hosts list scrolls: Viva's scroll area owns the
 // bar, keeping its strip out of the rows and painting the thumb from the list's
 // content height. Nothing is painted while the content fits.
-func hostListScrollArea(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.Rect, content, offset float32) (components.ScrollArea, components.ScrollAreaGeometry) {
+func hostListScrollArea(canvas *gfx.Canvas, theme gfx.Theme, bounds gfx.Rect, content, offset float32, revealed bool) (components.ScrollArea, components.ScrollAreaGeometry) {
 	// Width zero says the list has no horizontal extent of its own: it is laid out
-	// to geometry.Viewport.Width, so no horizontal bar is ever due.
+	// to geometry.Viewport.Width, so no horizontal bar is ever due. The bar is
+	// hover-revealed but keeps its reserved strip, so revealing it never moves a
+	// row.
 	area := components.BeginScrollArea(canvas, theme, bounds, gfx.Size{Height: content}).
 		Offset(0, offset).
+		ScrollbarSize(hostListBarWidth).
 		ReserveScrollbars().
-		VerticalScrollbar(gfx.ID{}, "", "")
+		HoverScrollbars(revealed).
+		VerticalScrollbar(hitHostListBar, "", "")
 	return area, area.Geometry()
 }
+
+// hostListBarWidth is the hosts list scroll bar's strip and thickness.
+const hostListBarWidth = float32(10)
 
 // scrollHosts moves the hosts list with the wheel. The list view's Tree is part
 // of the workbench page, so the page's wheel route has already offered the
