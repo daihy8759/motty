@@ -2489,6 +2489,7 @@ var chineseTools = ToolsMessages{
 	X11HintOther:                    "请确认 X 服务端(Xorg 或 Xwayland)正在运行且 DISPLAY 正确,然后新开一个标签页",
 	AgentForward:                    "转发 ssh-agent",
 	InteractiveOnly:                 "仅交互会话(不发送后台探测命令)",
+	SendLocale:                      "发送 UTF-8 语言环境（部分堡垒机可能断开）",
 	AgentAccess:                     "允许 MCP 代理使用此主机",
 	AgentAccessNote:                 "让 Claude Code 等 AI 代理在 Motty 未打开时使用这台主机。需先在 Motty 里连接过一次，以信任它的主机密钥；代理用密钥或已保存的密码登录。",
 	AdvancedSession:                 "会话",

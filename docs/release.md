@@ -185,6 +185,22 @@ when Viva's `main` is what you want to ship.
 
 ## Building by hand
 
+For a local macOS package test of the current working tree, run from `../viva`:
+
+```sh
+go run ./cmd/viva package -C ../motty --format app,dmg --sign-identity -
+```
+
+This seals the entire bundle with an ad hoc signature, including `Info.plist`
+and its local network usage description. Do not use `--no-sign` for this test:
+the Go linker's signature alone leaves the bundle failing strict code-signature
+verification, and local TCP connections can fail with `no route to host` even
+when Motty's Local Network toggle is enabled. Verify the resulting `.app` with
+`codesign --verify --strict --deep /path/to/Motty.app`.
+Ad hoc signing is for local testing; permission identity can change after a
+rebuild. Use the Developer ID signing and notarization setup below for
+distribution.
+
 ```sh
 tools/release.sh                       # everything this machine can build, in build/release-<version>
 tools/release.sh --platforms linux,windows --out /tmp/out

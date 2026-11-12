@@ -217,6 +217,9 @@ func TestCodesignDependencyKeepsTheReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(output, "TeamIdentifier=not set") {
+		t.Skip("installed app is not signed with a Developer ID")
+	}
 	if _, err := teamFromCodesign(output); err != nil {
 		t.Fatalf("the codesign dependency lost the report: %v", err)
 	}

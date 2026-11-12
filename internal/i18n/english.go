@@ -2489,6 +2489,7 @@ var englishTools = ToolsMessages{
 	X11HintOther:                    "Check that your X server (Xorg or Xwayland) is running and DISPLAY is right, then open a new tab",
 	AgentForward:                    "Forward ssh-agent",
 	InteractiveOnly:                 "Interactive session only (no background probes)",
+	SendLocale:                      "Send UTF-8 locale (some gateways may disconnect)",
 	AgentAccess:                     "Allow MCP agents to use this host",
 	AgentAccessNote:                 "Lets AI agents such as Claude Code use this host while Motty is closed. Connect to it once in Motty first, so its host key is trusted. Agents sign in with a key or a saved password.",
 	AdvancedSession:                 "Session",

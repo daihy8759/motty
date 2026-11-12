@@ -71,7 +71,7 @@ func (conn *Conn) dialThrough(client *ssh.Client, address string) (net.Conn, err
 }
 
 func (conn *Conn) startKeepAlive(client *ssh.Client) *keepAliveWorker {
-	if conn.config.KeepAlive.Interval == 0 {
+	if conn.config.InteractiveOnly || conn.config.KeepAlive.Interval == 0 {
 		return nil
 	}
 	worker := &keepAliveWorker{stop: make(chan struct{}), done: make(chan struct{})}
@@ -171,6 +171,8 @@ func (conn *Conn) closedError(waitErr error) error {
 // because the caller is asking after a known event rather than on a schedule.
 const verifyTimeout = 3 * time.Second
 
+var ErrInteractiveOnly = errors.New("sshconn: connection probes are disabled in interactive-only mode")
+
 // Verify asks the server whether this connection still works, and records a
 // disconnect when it does not.
 //
@@ -191,6 +193,9 @@ func (conn *Conn) Verify(ctx context.Context) error {
 	owner.mu.Unlock()
 	if client == nil || phase != PhaseConnected {
 		return errors.New("sshconn: not connected")
+	}
+	if owner.config.InteractiveOnly {
+		return ErrInteractiveOnly
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -264,6 +269,9 @@ func (conn *Conn) Ping(ctx context.Context) (time.Duration, error) {
 	owner := conn
 	if conn.owner != nil {
 		owner = conn.owner
+	}
+	if owner.config.InteractiveOnly {
+		return 0, ErrInteractiveOnly
 	}
 	if !owner.pingPending.CompareAndSwap(false, true) {
 		return 0, ErrPingPending

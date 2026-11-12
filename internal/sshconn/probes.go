@@ -17,8 +17,8 @@ const (
 	auxiliaryProbeWindow = 3 * time.Second
 )
 
-// auxiliaryProbes tracks the optional command sessions opened beside the user's
-// shell. Some gateways permit only an interactive login and answer any of them
+// auxiliaryProbes tracks optional setup requests and command sessions for the
+// user's shell. Some gateways permit only an interactive login and answer them
 // by ending the whole connection, so this is how such a server is recognized.
 // One transport has one set, however many tabs share it: the server's answer is
 // about the connection, not the tab.
@@ -102,4 +102,16 @@ func (conn *Conn) probeState() *auxiliaryProbes {
 		return conn.owner.probes
 	}
 	return conn.probes
+}
+
+func (conn *Conn) optionalShellRequest(request func() error) error {
+	probes := conn.probeState()
+	probes.begin()
+	err := shellStartError(request())
+	if transportGone(err) {
+		probes.end(err)
+	} else {
+		probes.end(nil)
+	}
+	return err
 }

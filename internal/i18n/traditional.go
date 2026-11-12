@@ -2487,6 +2487,7 @@ var traditionalTools = ToolsMessages{
 	X11HintOther:                    "請確認 X 服務端(Xorg 或 Xwayland)正在執行且 DISPLAY 正確，然後新開一個分頁",
 	AgentForward:                    "轉發 ssh-agent",
 	InteractiveOnly:                 "僅互動工作階段(不傳送背景探測命令)",
+	SendLocale:                      "傳送 UTF-8 語系（部分堡壘機可能斷線）",
 	AgentAccess:                     "允許 MCP 代理使用此主機",
 	AgentAccessNote:                 "讓 Claude Code 等 AI 代理在 Motty 未開啟時使用這台主機。需先在 Motty 裡連線過一次，以信任它的主機金鑰；代理用金鑰或已儲存的密碼登入。",
 	AdvancedSession:                 "工作階段",

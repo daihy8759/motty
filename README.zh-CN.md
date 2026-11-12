@@ -279,9 +279,14 @@ python3 tools/headless_drive.py /tmp/motty-home tools/e2e/host_menu_move_e2e.txt
 
 ```sh
 cd ../viva
-go run ./cmd/viva package -C ../motty --format app,dmg
+go run ./cmd/viva package -C ../motty --format app,dmg --sign-identity -
 go run ./cmd/viva package -C ../motty --target linux --arch amd64 --format tar.gz,deb
 ```
+
+macOS 命令使用完整的 ad hoc 签名供本地测试。请保留这个步骤：Go 链接器生成的签名
+没有封装完整的应用包，即使系统设置中已允许 Motty 访问本地网络，连接仍可能失败。
+ad hoc 签名的应用重新构建后可能需要再次授权本地网络。正式分发请使用 Developer ID
+签名和公证，见 [`docs/release.md`](docs/release.md)。
 
 ### 开发构建
 

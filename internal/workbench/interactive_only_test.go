@@ -27,6 +27,7 @@ func TestInteractiveOnlyIsOffUntilSwitchedOnAndSurvivesARestart(t *testing.T) {
 	state.selectedHostID = find(state).ID
 	state.openEditHost()
 	state.Click(hitDialogInteractiveOnly)
+	state.Click(hitDialogSendLocale)
 	if !state.editor.interactiveOnly {
 		t.Fatal("the switch did not turn on")
 	}
@@ -34,9 +35,15 @@ func TestInteractiveOnlyIsOffUntilSwitchedOnAndSurvivesARestart(t *testing.T) {
 	if !find(state).InteractiveOnly {
 		t.Fatal("the choice was not saved")
 	}
+	if !find(state).SendLocale {
+		t.Fatal("the locale choice was not saved")
+	}
 	again := New(state.options)
 	defer again.Close()
 	if !find(again).InteractiveOnly {
 		t.Fatal("the choice did not survive a restart")
+	}
+	if !find(again).SendLocale {
+		t.Fatal("the locale choice did not survive a restart")
 	}
 }

@@ -80,6 +80,7 @@ type hostEditor struct {
 	// interactiveOnly is the host's "Interactive session only" switch: it keeps
 	// the connection to the pty and shell a gateway permits.
 	interactiveOnly bool
+	sendLocale      bool
 	// agentAccess is the "Allow MCP agents to use this host" switch. It is not
 	// part of the host: it is kept for this computer (see savedState.AgentHosts).
 	agentAccess bool
@@ -272,6 +273,7 @@ func (editor *hostEditor) load(host Host) {
 	editor.forwardX11 = host.ForwardX11
 	editor.agentForward = host.AgentForward
 	editor.interactiveOnly = host.InteractiveOnly
+	editor.sendLocale = host.SendLocale
 	editor.noHistory = host.NoHistory
 	editor.loginExpect = loginexpect.Config{}
 	if host.LoginExpect != nil {
@@ -280,7 +282,7 @@ func (editor *hostEditor) load(host Host) {
 	editor.loginExpectOpen = editor.loginExpect.Enabled || len(editor.loginExpect.Steps) > 0
 	editor.proxy, editor.proxyPassword = cloneOutboundProxy(host.Proxy), ""
 	editor.transfer = host.Transfer
-	editor.advancedOpen = host.isSSH() && (host.Algo != nil || host.ForwardX11 || host.AgentForward || host.InteractiveOnly || host.NoHistory || host.LoginCommand != "")
+	editor.advancedOpen = host.isSSH() && (host.Algo != nil || host.ForwardX11 || host.AgentForward || host.InteractiveOnly || host.SendLocale || host.NoHistory || host.LoginCommand != "")
 	if host.Algo != nil {
 		editor.algorithms.Insert(host.Algo.list)
 	}
@@ -334,6 +336,7 @@ func (editor *hostEditor) host(id uint32) Host {
 		host.ForwardX11 = editor.forwardX11
 		host.AgentForward = editor.agentForward
 		host.InteractiveOnly = editor.interactiveOnly
+		host.SendLocale = editor.sendLocale
 		host.NoHistory = editor.noHistory
 		host.LoginCommand = editor.value(fieldLoginCommand)
 		host.Transfer = editor.transfer

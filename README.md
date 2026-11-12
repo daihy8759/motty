@@ -369,9 +369,16 @@ scripts. Packaging goes through Viva:
 
 ```sh
 cd ../viva
-go run ./cmd/viva package -C ../motty --format app,dmg
+go run ./cmd/viva package -C ../motty --format app,dmg --sign-identity -
 go run ./cmd/viva package -C ../motty --target linux --arch amd64 --format tar.gz,deb
 ```
+
+The macOS command applies a complete ad hoc signature for local testing.
+Keep this step: the Go linker's signature alone does not seal the app bundle,
+and local network access can fail even with Motty enabled in System Settings.
+Rebuilt ad hoc apps may need local network permission again. For distribution,
+use a Developer ID signature and notarization as described in
+[`docs/release.md`](docs/release.md).
 
 ### Development builds
 

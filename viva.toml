@@ -25,6 +25,9 @@ out = "build/dist"
 category = "public.app-category.developer-tools"
 copyright = "Motty"
 
+[mac.info]
+NSLocalNetworkUsageDescription = "Motty uses the local network to connect to SSH hosts and remote desktop servers you choose."
+
 [mac.dmg]
 background = "assets/dmg-background.png"
 

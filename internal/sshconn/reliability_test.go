@@ -68,6 +68,50 @@ func TestKeepAliveDisabledStartsNoWorkerOrRequests(t *testing.T) {
 	}
 }
 
+func TestInteractiveOnlySendsNoConnectionProbes(t *testing.T) {
+	requests := make(chan string, 1)
+	server := startServer(t, func(server *testServer) {
+		server.password = "secret"
+		server.shell = echoShell
+		server.request = func(connection *ssh.ServerConn, request *ssh.Request) {
+			requests <- request.Type
+			_ = connection.Close()
+		}
+	})
+	harness := dial(t, server, func(config *Config) {
+		config.InteractiveOnly = true
+		config.KeepAlive = KeepAliveConfig{Interval: 5 * time.Millisecond, Timeout: 100 * time.Millisecond}
+	})
+	harness.phase(PhaseHostKeyPrompt)
+	harness.conn.TrustHostKey(false)
+	harness.phase(PhasePasswordPrompt)
+	harness.conn.SubmitPassword("secret")
+	harness.phase(PhaseConnected)
+	shell := openShell(t, harness, 80, 24)
+	shell.until("shell greeting", func(output string) bool { return len(output) > 0 })
+	shared, err := harness.conn.Share(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(shared.Close)
+	for _, conn := range []*Conn{harness.conn, shared} {
+		if _, err := conn.Ping(context.Background()); !errors.Is(err, ErrInteractiveOnly) {
+			t.Fatalf("Ping error = %v, want ErrInteractiveOnly", err)
+		}
+		if err := conn.Verify(context.Background()); !errors.Is(err, ErrInteractiveOnly) {
+			t.Fatalf("Verify error = %v, want ErrInteractiveOnly", err)
+		}
+	}
+	select {
+	case request := <-requests:
+		t.Fatalf("interactive-only connection sent %q", request)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if status := harness.conn.Status(); status.Phase != PhaseConnected {
+		t.Fatalf("connection ended: %+v", status)
+	}
+}
+
 func TestKeepAliveSuccessKeepsConnectionHealthy(t *testing.T) {
 	requests := make(chan string, 4)
 	server := startServer(t, func(server *testServer) {

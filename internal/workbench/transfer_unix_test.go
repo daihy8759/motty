@@ -61,7 +61,7 @@ func TestSendingToARealRzThroughALocalShell(t *testing.T) {
 	dest := t.TempDir()
 	state.options.OpenFiles = func(app.OpenFileOptions) ([]string, error) { return []string{file}, nil }
 
-	session.term.send([]byte("cd " + dest + " && " + rzPath + " --binary --quiet --overwrite\n"))
+	session.term.send([]byte("cd " + dest + " && stty raw -echo -ixon && " + rzPath + " --binary --quiet --overwrite; stty sane\n"))
 	waitUntil(t, state, "the offer", func() bool { return state.modal == modalFileTransfer })
 	state.Click(hitTransferChoose)
 	waitUntil(t, state, "the end", func() bool { return state.transfer.phase == transferNone })

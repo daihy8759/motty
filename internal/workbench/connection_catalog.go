@@ -386,6 +386,7 @@ func (catalog *hostCatalog) sshConfigFor(host, proxyHost Host, env connectEnv) (
 		AdditionalIdentityFiles: catalog.identityPaths(),
 		Authentication:          make(map[sshconn.Endpoint]sshconn.Authentication, 1),
 		InteractiveOnly:         host.InteractiveOnly,
+		SendLocale:              host.SendLocale,
 		Notify:                  env.Notify,
 		Proxy:                   proxy,
 	}

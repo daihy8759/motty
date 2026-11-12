@@ -176,8 +176,7 @@ type Status struct {
 	// instead of the one it is: it fills a blank, and never more than that.
 	SystemProvisional bool
 	// ProbeRefused reports that the server ended an established connection on
-	// the client's own optional command probes: the pty and shell it permits
-	// were evidently not the whole of what it accepts. The owner should retry
+	// the client's optional setup requests or command probes. The owner should retry
 	// with Config.InteractiveOnly, which is what such a server requires.
 	ProbeRefused bool
 	// Negotiated is what the last endpoint agreed on, once its handshake is done.
@@ -251,12 +250,14 @@ type Config struct {
 	// KeepAlive optionally detects an unresponsive established connection.
 	KeepAlive KeepAliveConfig
 	// InteractiveOnly keeps the connection to the interactive session alone:
-	// the client asks for the pty and the shell, and for nothing else. A
+	// the client asks for the pty and the shell, and for nothing else by default. A
 	// gateway that permits only an interactive login ends the whole connection
 	// on a command session, a shell integration probe or a locale request, so
-	// none of those may be sent to one. The cost is that the host's system and
+	// none of those may be sent to one by default. The cost is that the host's system and
 	// default shell stay unknown, and that directories cannot be followed.
 	InteractiveOnly bool
+	// SendLocale explicitly asks for a UTF-8 LANG, including in interactive-only mode.
+	SendLocale bool
 	// Algorithms sets what each endpoint negotiates, keyed by "host:port" as
 	// Endpoint formats it. An endpoint without an entry keeps the defaults.
 	Algorithms map[string]Algorithms

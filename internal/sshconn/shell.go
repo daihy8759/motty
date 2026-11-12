@@ -122,12 +122,15 @@ func (conn *Conn) OpenShell(config ShellConfig) (*Shell, error) {
 	}
 	// A gateway with its own menu may end the connection on an env request it
 	// does not implement, before the shell ever starts, so only a standard
-	// implementation is asked, and only when the host has not been confined to
-	// the interactive session. Servers usually accept LANG; without a UTF-8
+	// implementation is asked by default. Servers usually accept LANG; without a UTF-8
 	// locale the shell would mangle multibyte input, which the charset handling
 	// then reports, but staying connected comes first. A refusal is harmless.
-	if !conn.config.InteractiveOnly && standardImplementation(conn.Status().ServerVersion) {
-		_ = session.Setenv("LANG", utf8Locale())
+	if conn.config.SendLocale || !conn.config.InteractiveOnly && standardImplementation(conn.Status().ServerVersion) {
+		err := conn.optionalShellRequest(func() error { return session.Setenv("LANG", utf8Locale()) })
+		if transportGone(err) {
+			session.Close()
+			return nil, fmt.Errorf("set locale: %w", err)
+		}
 	}
 	term := config.Term
 	if term == "" {
@@ -164,6 +167,8 @@ func (conn *Conn) OpenShell(config ShellConfig) (*Shell, error) {
 	var startErr error
 	if command == "" {
 		startErr = session.Shell()
+	} else if config.Command == "" {
+		startErr = conn.optionalShellRequest(func() error { return session.Start(command) })
 	} else {
 		startErr = session.Start(command)
 	}

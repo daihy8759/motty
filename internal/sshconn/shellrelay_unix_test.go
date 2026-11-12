@@ -148,6 +148,36 @@ func TestARelayWithoutAPreludeStartsStraightAway(t *testing.T) {
 	h.phase(PhaseConnected)
 }
 
+func TestARelayThroughAnOpenSSHGatewaySendsOnlyInteractiveRequests(t *testing.T) {
+	needBash(t)
+	gateway := startServer(t, func(server *testServer) {
+		server.password = "secret"
+		server.version = "SSH-2.0-OpenSSH_8.9p1"
+		server.envFatal = true
+		server.execFatal = true
+		server.oneChannel = true
+		server.shell = bashGateway
+	})
+	target := sshServerBehindGateway(t)
+	h := dialThroughRelay(t, gateway, target, Relay{Prelude: switchAccount, Command: bashRelay})
+	authenticateBoth(h)
+	h.phase(PhaseConnected)
+	if h.conn.config.InteractiveOnly {
+		t.Fatal("the gateway restricted the target's connection policy")
+	}
+	watcher := openShell(t, h, 80, 24)
+	watcher.until("the target's greeting", func(output string) bool {
+		return strings.Contains(output, "welcome\r\n$ ")
+	})
+	if opened := gateway.sessionOpens(); opened != 1 {
+		t.Fatalf("gateway sessions = %d, want only the relay shell", opened)
+	}
+	_, _, _, env, _ := fakeShellState(gateway)
+	if locale, ok := env["LANG"]; ok {
+		t.Fatalf("the relay sent LANG=%q", locale)
+	}
+}
+
 // The relay moves SSH's binary stream through a terminal; no byte may be
 // turned into another, or taken as a terminal control.
 func TestARelayCarriesEveryByteValueUnchanged(t *testing.T) {

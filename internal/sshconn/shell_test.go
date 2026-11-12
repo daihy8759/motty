@@ -160,23 +160,87 @@ func TestAGatewayThatRejectsLocaleRequestsStillStartsAShell(t *testing.T) {
 // only sign that the probes were what it refused, and the connection must say
 // so: the host can only be reached again without them.
 func TestAGatewayThatLooksLikeOpenSSHIsRecognizedByItsProbeRefusal(t *testing.T) {
-	server := startServer(t, func(server *testServer) {
-		server.password = "secret"
-		server.version = "SSH-2.0-OpenSSH_8.9p1"
-		server.execFatal = true
-		server.shell = echoShell
-	})
-	h := dial(t, server, nil)
-	h.phase(PhaseHostKeyPrompt)
-	h.conn.TrustHostKey(false)
-	h.phase(PhasePasswordPrompt)
-	h.conn.SubmitPassword("secret")
-	status := h.phase(PhaseClosed)
-	if !status.ProbeRefused {
-		t.Fatalf("the refused probe was not reported: %+v", status)
+	for _, test := range []struct {
+		name      string
+		banner    string
+		integrate bool
+		envFatal  bool
+	}{
+		{name: "shell probe", banner: ubuntuBanner},
+		{name: "shell integration", banner: ubuntuBanner, integrate: true},
+		{name: "locale", banner: ubuntuBanner, integrate: true, envFatal: true},
+		{name: "generic OpenSSH locale", banner: "SSH-2.0-OpenSSH_8.9p1", integrate: true, envFatal: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := startServer(t, func(server *testServer) {
+				server.password = "secret"
+				server.version = test.banner
+				server.execFatal = true
+				server.envFatal = test.envFatal
+				server.shell = echoShell
+			})
+			h := connect(t, server)
+			shell, err := h.conn.OpenShell(ShellConfig{Cols: 80, Rows: 24, IntegrateShell: test.integrate, IntegrationToken: "integration"})
+			if err == nil {
+				shell.Close()
+				t.Fatal("a gateway that ends the transport started a shell")
+			}
+			status := h.phase(PhaseClosed)
+			if !status.ProbeRefused {
+				t.Fatalf("the refused probe was not reported: %+v", status)
+			}
+			if !errors.Is(status.Err, ErrDisconnected) {
+				t.Fatalf("close error = %v, want a disconnect", status.Err)
+			}
+
+			retry := dial(t, server, func(config *Config) { config.InteractiveOnly = status.ProbeRefused })
+			retry.phase(PhaseHostKeyPrompt)
+			retry.conn.TrustHostKey(false)
+			retry.phase(PhasePasswordPrompt)
+			retry.conn.SubmitPassword("secret")
+			retry.phase(PhaseConnected)
+			watcher := openShellWith(t, retry, ShellConfig{Cols: 80, Rows: 24, IntegrateShell: true, IntegrationToken: "integration"})
+			watcher.until("the gateway's greeting after retry", func(output string) bool {
+				return strings.Contains(output, "welcome\r\n$ ")
+			})
+			_, _, _, env, _ := fakeShellState(server)
+			if locale, ok := env["LANG"]; ok {
+				t.Fatalf("the interactive-only retry sent LANG=%q", locale)
+			}
+		})
 	}
-	if !errors.Is(status.Err, ErrDisconnected) {
-		t.Fatalf("close error = %v, want a disconnect", status.Err)
+}
+
+func TestAUserCommandDisconnectDoesNotDisableProbes(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		refuseEnv bool
+	}{
+		{name: "accepted locale"},
+		{name: "refused locale", refuseEnv: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := startServer(t, func(server *testServer) {
+				server.password = "secret"
+				server.version = ubuntuBanner
+				server.execFatal = true
+				server.refuseEnv = test.refuseEnv
+				server.shell = echoShell
+			})
+			h := connect(t, server)
+			shell, err := h.conn.OpenShell(ShellConfig{Cols: 80, Rows: 24, Command: "custom-login", IntegrateShell: true})
+			if err == nil {
+				shell.Close()
+				t.Fatal("a gateway that ends the transport started a command")
+			}
+			status := h.phase(PhaseClosed)
+			if status.ProbeRefused {
+				t.Fatalf("a user command was mistaken for an optional probe: %+v", status)
+			}
+			if !errors.Is(status.Err, ErrDisconnected) {
+				t.Fatalf("close error = %v, want a disconnect", status.Err)
+			}
+		})
 	}
 }
 
@@ -209,6 +273,29 @@ func TestAnInteractiveOnlyHostGetsOnlyPtyAndShell(t *testing.T) {
 		t.Fatal("writing to the shell failed")
 	}
 	w.waitDone()
+}
+
+func TestInteractiveOnlyCanRequestUTF8Locale(t *testing.T) {
+	server := startServer(t, func(server *testServer) {
+		server.password = "secret"
+		server.execFatal = true
+		server.shell = echoShell
+	})
+	harness := dial(t, server, func(config *Config) {
+		config.InteractiveOnly = true
+		config.SendLocale = true
+	})
+	harness.phase(PhaseHostKeyPrompt)
+	harness.conn.TrustHostKey(false)
+	harness.phase(PhasePasswordPrompt)
+	harness.conn.SubmitPassword("secret")
+	harness.phase(PhaseConnected)
+	shell := openShellWith(t, harness, ShellConfig{Cols: 80, Rows: 24, IntegrateShell: true})
+	shell.until("the greeting", func(output string) bool { return strings.Contains(output, "welcome") })
+	_, _, _, env, _ := fakeShellState(server)
+	if !strings.Contains(strings.ToLower(env["LANG"]), "utf") {
+		t.Fatalf("LANG = %q, want UTF-8", env["LANG"])
+	}
 }
 
 func TestShellRunsOnAPtyAndCarriesDataBothWays(t *testing.T) {

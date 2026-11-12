@@ -938,6 +938,7 @@ type ToolsMessages struct {
 	X11HintOther                    string
 	AgentForward                    string
 	InteractiveOnly                 string
+	SendLocale                      string
 	AgentAccess                     string
 	AgentAccessNote                 string
 	AdvancedSession                 string

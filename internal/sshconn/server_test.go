@@ -47,7 +47,8 @@ type testServer struct {
 	blockDirect bool // leaves direct-tcpip requests unanswered
 	// envFatal ends the connection on an env request, the way a gateway with a
 	// menu it starts itself may when the request is not one it implements.
-	envFatal bool
+	envFatal  bool
+	refuseEnv bool
 	// execFatal ends the connection on an exec request, the way a gateway that
 	// permits only an interactive login does.
 	execFatal bool
@@ -594,6 +595,10 @@ func serveSession(server *testServer, conn ssh.Conn, channel ssh.Channel, reques
 			if server.envFatal {
 				conn.Close()
 				return
+			}
+			if server.refuseEnv {
+				request.Reply(false, nil)
+				continue
 			}
 			var payload struct{ Name, Value string }
 			ssh.Unmarshal(request.Payload, &payload)
