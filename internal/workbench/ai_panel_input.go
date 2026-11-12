@@ -362,19 +362,17 @@ func (state *State) paintAIBottom(canvas *gfx.Canvas, body *aiBody) {
 		if approval.escalation {
 			approveLabel, declineLabel = m.EscalationApprove, m.EscalationDecline
 		}
-		approve := components.BeginButton(canvas, theme, hitAIApprove, body.approve.Rect()).Small()
+		approveTheme := theme
+		if !approval.escalation && request.Assessment.Level >= risk.High {
+			approveTheme.Primary = state.pal.danger
+		}
+		approve := components.BeginButton(canvas, approveTheme, hitAIApprove, body.approve.Rect()).Small()
 		decline := components.BeginButton(canvas, theme, hitAIDecline, body.decline.Rect()).Small()
 		decline.Outline(declineLabel)
 		if !allowed {
 			approve = approve.Disabled()
 		}
-		if approval.escalation {
-			approve.Default(approveLabel)
-		} else if request.Assessment.Level >= risk.High {
-			approve.Destructive(approveLabel)
-		} else {
-			approve.Default(approveLabel)
-		}
+		approve.Default(approveLabel)
 	}
 
 	// The message box, with the model chip and Send inside it.
