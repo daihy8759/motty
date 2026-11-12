@@ -642,16 +642,10 @@ func aiMenuWidth(text float32) float32 { return min(max(text+56, 140), 320) }
 // before they became page menus.
 const aiMenuContextWidth = float32(144)
 
-// paintAIPanelContent paints the parts the declaration left for the last pass,
-// once the page has laid the body out: the title buttons and setup card in their
-// slots and the bottom's field and buttons. The lists paint their own rows; their
-// chrome is painted over them (paintAIMessageChrome, paintAIHistoryChrome).
+// paintAIPanelContent prepares the list geometry and selection before the page
+// paints its rows.
 func (state *State) paintAIPanelContent(d *ui.DrawContext) {
-	canvas, panel, ai := d.Canvas, &state.ai.panel, &state.ai
-	s := &panel.pageScratch
-	if s.showSetup {
-		components.BeginButton(canvas, state.Theme(), hitAISetup, panel.body.setup.Rect()).Small().Default(s.setupLabel)
-	}
+	panel, ai := &state.ai.panel, &state.ai
 	// Keep the list slot's rectangle even when it is the empty state, which
 	// declares no List: the wheel and the scrollbar read it between paints.
 	panel.list = panel.body.list.Rect()
@@ -659,14 +653,18 @@ func (state *State) paintAIPanelContent(d *ui.DrawContext) {
 	// A row that is gone takes the selection that pointed into it, whether the
 	// list paints rows at all: the empty state has no Draw to do it later.
 	panel.textSelect.Clamp(len(ai.items)*int(aiTextPartCount), panel.textLength)
-	state.paintAIBottom(canvas, &panel.body)
 }
 
-// paintAIPanelChrome paints what must come over the body's controls: the
-// composer's resize grip, and, for the drawer, the panel's resize edge and the
-// file-drop hint, which belong on the drawer's layer rather than the page's.
+// paintAIPanelChrome paints the setup and approval controls over their cards,
+// the composer's resize grip, and, for the drawer, the panel's resize edge and
+// file-drop hint on the drawer's layer.
 func (state *State) paintAIPanelChrome(d *ui.DrawContext) {
 	canvas, panel := d.Canvas, &state.ai.panel
+	s := &panel.pageScratch
+	if s.showSetup {
+		components.BeginButton(canvas, state.Theme(), hitAISetup, panel.body.setup.Rect()).Small().Default(s.setupLabel)
+	}
+	state.paintAIBottom(canvas, &panel.body)
 	if box := panel.composer; box.Width > 0 {
 		// The box's top edge is what is dragged to make it taller.
 		canvas.HitWithOptions(hitAIComposerGrip, gfx.Rect{X: box.X + 8, Y: box.Y - 3, Width: max(box.Width-16, 0), Height: 7}, state.messages.AIPanel.ResizeComposer,
