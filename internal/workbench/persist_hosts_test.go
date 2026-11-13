@@ -47,6 +47,7 @@ func hostEntryWithOrd(t testing.TB, id, label string, ord int64) configstore.Ent
 func cloneSavedHost(host savedHost) savedHost {
 	clone := host
 	clone.Tags = slices.Clone(host.Tags)
+	clone.SSHOptions = host.SSHOptions.Clone()
 	if host.Proxy != nil {
 		proxy := *host.Proxy
 		clone.Proxy = &proxy
@@ -124,7 +125,7 @@ func TestSameSavedHostNoticesEveryField(t *testing.T) {
 			case reflect.TypeOf(&savedLoginExpect{}):
 				last.Set(reflect.ValueOf(&savedLoginExpect{Enabled: true}))
 			default:
-				t.Fatalf("%s: unsupported pointer type %s", leaf.name, last.Type())
+				last.Set(reflect.New(last.Type().Elem()))
 			}
 		default:
 			t.Fatalf("%s: unsupported field kind %s", leaf.name, last.Kind())

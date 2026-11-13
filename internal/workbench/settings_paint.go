@@ -25,21 +25,22 @@ const (
 type settingsControlKind uint8
 
 const (
-	controlSwitch           settingsControlKind = iota // a two-state switch
-	controlButtons                                     // buttons against the right edge of the slot
-	controlButton                                      // one small button filling the slot
-	controlHit                                         // the slot is a pointer target
-	controlSearch                                      // the search box
-	controlModelInput                                  // the assistant's model-name field
-	controlWordSeparators                              // the terminal's word-selection separators
-	controlSwatches                                    // a strip of round color dots
-	controlLabel                                       // the words of a row, which label the control beside them
-	controlMCPSelect                                   // client configuration select
-	controlLogo                                        // the product wordmark in a slot
-	controlAgentSelect                                 // independent stdio client configuration
-	controlLocalShellSelect                            // detected Windows shells
-	controlEditorSelect                                // installed editors
-	controlStartupHosts                                // the hosts a launch connects
+	controlSwitch     settingsControlKind = iota // a two-state switch
+	controlButtons                               // buttons against the right edge of the slot
+	controlButton                                // one small button filling the slot
+	controlHit                                   // the slot is a pointer target
+	controlSearch                                // the search box
+	controlModelInput                            // the assistant's model-name field
+	controlFindPreference
+	controlWordSeparators   // the terminal's word-selection separators
+	controlSwatches         // a strip of round color dots
+	controlLabel            // the words of a row, which label the control beside them
+	controlMCPSelect        // client configuration select
+	controlLogo             // the product wordmark in a slot
+	controlAgentSelect      // independent stdio client configuration
+	controlLocalShellSelect // detected Windows shells
+	controlEditorSelect     // installed editors
+	controlStartupHosts     // the hosts a launch connects
 )
 
 // settingsControl is one control of the page, recorded while the page is
@@ -244,6 +245,8 @@ func (state *State) paintSettingsControls(canvas *gfx.Canvas) {
 			state.paintSettingsSearchBox(canvas, rect)
 		case controlModelInput:
 			state.paintAIModelInput(canvas, rect)
+		case controlFindPreference:
+			state.paintFindSetting(canvas, control.id, rect)
 		case controlWordSeparators:
 			state.paintWordSeparatorsInput(canvas, rect)
 		case controlSwatches:
@@ -326,8 +329,10 @@ func (state *State) paintGeneralSettings(page *settingsPage) {
 				})
 			settingsChoiceRow(page, messages.SettingsAppearance, "", &state.appearanceMode, settingsAppearanceChoices[:], state.settingsAppearanceLabel,
 				func() { state.chooseAppearanceMode(state.appearanceMode); state.save() }, nil)
-			settingsChoiceRow(page, messages.SettingsTextSize, messages.SettingsTextSizeDescription, &state.textScale, settingsTextSizeChoices[:], state.settingsTextSizeLabel,
-				func() { state.applyTextScale(); state.save() }, nil)
+			page.actionRow(messages.SettingsTextSize, messages.SettingsTextSizeDescription, false,
+				components.ButtonAction{ID: hitSettingsTextSizeDown, Label: "−", Variant: components.ButtonOutline},
+				components.ButtonAction{ID: hitSettingsTextSizeReset, Label: state.interfaceTextSizeLabel(), Variant: components.ButtonGhost},
+				components.ButtonAction{ID: hitSettingsTextSizeUp, Label: "+", Variant: components.ButtonOutline})
 			settingsChoiceRow(page, messages.SettingsToolbarPosition, messages.SettingsToolbarPositionDescription, &state.terminalToolbarPosition, settingsToolbarPositionChoices[:], state.settingsToolbarPositionLabel,
 				func() { state.applyTerminalToolbarPosition(); state.save() }, nil)
 			settingsChoiceRow(page, messages.SettingsTabOrientation, messages.SettingsTabOrientationDescription, &state.tabOrientation, settingsTabOrientationChoices[:], state.settingsTabOrientationLabel,
@@ -372,6 +377,7 @@ func (state *State) paintTerminalSettings(page *settingsPage) {
 			completion := state.completionMode()
 			settingsChoiceRow(page, messages.History.SuggestRow, messages.History.SuggestDescription, &completion, settingsCompletionChoices[:], state.settingsCompletionLabel,
 				func() { state.setCompletionMode(completion); state.save() }, nil)
+			page.toggleRow(messages.Completion.AcceptHintRow, messages.Completion.AcceptHintDescription, !state.history.acceptHintOff, hitSettingsCompletionHint)
 			page.toggleRow(messages.History.SettingsRow, messages.History.SettingsDescription, state.history.on, hitSettingsHistoryToggle)
 			page.actionRow(messages.History.ClearRow, messages.History.ClearDescription, false,
 				components.ButtonAction{ID: hitSettingsHistoryClear, Label: messages.History.Clear, Variant: components.ButtonOutline})
@@ -428,6 +434,7 @@ func (state *State) paintTerminalSettings(page *settingsPage) {
 		state.paintHighlightSettings(page)
 		state.paintAutofillSettings(page)
 		state.paintBackgroundSettings(page)
+		state.paintTerminalFindSettingsGroup(page)
 	})
 }
 

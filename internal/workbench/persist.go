@@ -35,34 +35,36 @@ type savedState struct {
 	RecentConnectSort bool                 `json:"recent_connect_sort,omitempty"`
 	RecentConnections map[string]time.Time `json:"recent_connections,omitempty"`
 
-	MonitorPanels              []monitoring.Panel `json:"monitor_panels,omitempty"`
-	MonitorActive              string             `json:"monitor_active,omitempty"`
-	Version                    int                `json:"version"`
-	Language                   string             `json:"language,omitempty"`
-	Theme                      string             `json:"theme,omitempty"`
-	BackgroundOutputAlerts     bool               `json:"background_output_alerts,omitempty"`
-	TabOrientation             string             `json:"tab_orientation,omitempty"`
-	TabNumbers                 bool               `json:"tab_numbers,omitempty"`
-	VerticalTabsAutoHide       bool               `json:"vertical_tabs_auto_hide,omitempty"`
-	VerticalTabsGrouping       bool               `json:"vertical_tabs_grouping,omitempty"`
-	NetworkProxy               string             `json:"network_proxy,omitempty"`
-	TerminalOption             string             `json:"terminalOption,omitempty"`
-	LocalShell                 string             `json:"local_shell,omitempty"`
-	HiddenShells               []string           `json:"hidden_shells,omitempty"`
-	LocalStart                 string             `json:"local_start,omitempty"`
-	LastLocalDirectory         string             `json:"last_local_directory,omitempty"`
-	SSHAgent                   string             `json:"ssh_agent,omitempty"`
-	SSHAgentPath               string             `json:"ssh_agent_path,omitempty"`
-	TerminalFontSize           int                `json:"terminal_font_size,omitempty"`
-	TextScale                  string             `json:"text_scale,omitempty"`
-	InterfaceFont              string             `json:"interface_font,omitempty"`
-	TerminalFontFace           string             `json:"terminal_font_face,omitempty"`
-	TerminalFontFamily         string             `json:"terminal_font_family,omitempty"`
-	TerminalFontFallbacks      []string           `json:"terminal_font_fallbacks,omitempty"`
-	TerminalScrollback         int                `json:"terminal_scrollback,omitempty"`
-	TerminalCursor             string             `json:"terminal_cursor,omitempty"`
-	ConnectionTimeoutSeconds   int                `json:"connection_timeout_seconds,omitempty"`
-	ConnectionKeepAliveSeconds int                `json:"connection_keepalive_seconds,omitempty"`
+	MonitorPanels              []monitoring.Panel      `json:"monitor_panels,omitempty"`
+	MonitorActive              string                  `json:"monitor_active,omitempty"`
+	Version                    int                     `json:"version"`
+	Language                   string                  `json:"language,omitempty"`
+	Theme                      string                  `json:"theme,omitempty"`
+	BackgroundOutputAlerts     bool                    `json:"background_output_alerts,omitempty"`
+	TabOrientation             string                  `json:"tab_orientation,omitempty"`
+	TabNumbers                 bool                    `json:"tab_numbers,omitempty"`
+	VerticalTabsAutoHide       bool                    `json:"vertical_tabs_auto_hide,omitempty"`
+	VerticalTabsGrouping       bool                    `json:"vertical_tabs_grouping,omitempty"`
+	NetworkProxy               string                  `json:"network_proxy,omitempty"`
+	TerminalOption             string                  `json:"terminalOption,omitempty"`
+	LocalShell                 string                  `json:"local_shell,omitempty"`
+	HiddenShells               []string                `json:"hidden_shells,omitempty"`
+	LocalStart                 string                  `json:"local_start,omitempty"`
+	LastLocalDirectory         string                  `json:"last_local_directory,omitempty"`
+	SSHAgent                   string                  `json:"ssh_agent,omitempty"`
+	SSHAgentPath               string                  `json:"ssh_agent_path,omitempty"`
+	TerminalFontSize           int                     `json:"terminal_font_size,omitempty"`
+	TextScale                  string                  `json:"text_scale,omitempty"` // read only: before the size was kept in pixels
+	InterfaceTextSize          int                     `json:"interface_text_size,omitempty"`
+	InterfaceFont              string                  `json:"interface_font,omitempty"`
+	TerminalFontFace           string                  `json:"terminal_font_face,omitempty"`
+	TerminalFontFamily         string                  `json:"terminal_font_family,omitempty"`
+	TerminalFontFallbacks      []string                `json:"terminal_font_fallbacks,omitempty"`
+	TerminalFind               terminalFindPreferences `json:"terminal_find,omitzero"`
+	TerminalScrollback         int                     `json:"terminal_scrollback,omitempty"`
+	TerminalCursor             string                  `json:"terminal_cursor,omitempty"`
+	ConnectionTimeoutSeconds   int                     `json:"connection_timeout_seconds,omitempty"`
+	ConnectionKeepAliveSeconds int                     `json:"connection_keepalive_seconds,omitempty"`
 	// ConnectionKeepAliveOff records the user's "off" choice. The interval
 	// above cannot: zero is dropped from the file, so it would be
 	// indistinguishable from never having chosen, and a state file that says
@@ -146,10 +148,15 @@ type savedState struct {
 	Credentials             []savedCredential   `json:"credentials,omitempty"`
 	CommandHistory          bool                `json:"command_history,omitempty"`
 	CommandSuggestOff       bool                `json:"command_suggest_off,omitempty"`
-	NoteSidebars            *savedNoteSidebars  `json:"note_sidebars,omitempty"`
-	NoteView                savedNoteView       `json:"notes_view,omitempty"`
-	Notes                   []savedNote         `json:"notes,omitempty"`
-	NoteFolders             []savedNoteFolder   `json:"note_folders,omitempty"`
+	CommandAcceptHintOff    bool                `json:"command_accept_hint_off,omitempty"`
+	// CommandCompletionMode is the completion mode as one value: "off", "list"
+	// (automatic) or "inline". It is absent in a file written before the modes
+	// were named; the two booleans are then read instead.
+	CommandCompletionMode string             `json:"command_completion_mode,omitempty"`
+	NoteSidebars          *savedNoteSidebars `json:"note_sidebars,omitempty"`
+	NoteView              savedNoteView      `json:"notes_view,omitempty"`
+	Notes                 []savedNote        `json:"notes,omitempty"`
+	NoteFolders           []savedNoteFolder  `json:"note_folders,omitempty"`
 	// SessionLogsOff stops the local session journal. Unset means capture is on;
 	// it belongs to this computer and is never synced.
 	SessionLogsOff          bool                  `json:"session_logs_off,omitempty"`
@@ -193,6 +200,13 @@ type savedState struct {
 	// Provider collections are nil while the assistant's database is unread.
 	AIProviders    *[]savedAIProvider `json:"ai_providers,omitempty"`
 	AICLIProviders *[]savedAIProvider `json:"ai_cli_providers,omitempty"`
+
+	// The bottom command bar's own layout: whether it is hidden, the snippet
+	// groups it filters out (keyed by lowercased name; "" means ungrouped), and
+	// the order of its chips. A fresh state shows every group in list order.
+	CommandsShown        bool     `json:"commands_shown,omitempty"`
+	CommandsHiddenGroups []string `json:"commands_hidden_groups,omitempty"`
+	CommandsSort         string   `json:"commands_sort,omitempty"`
 }
 
 type savedOutboundProxy struct {
@@ -282,6 +296,11 @@ type savedForward struct {
 	// again. It is off unless chosen, so a forward saved before it existed
 	// stops on a lost connection as it always did.
 	Resume bool `json:"resume,omitempty"`
+	// ViaShell and Relay carry each connection through a relay program run in a
+	// shell on the host, for a server that refuses forwarded channels. Both are
+	// absent unless chosen.
+	ViaShell bool   `json:"via_shell,omitempty"`
+	Relay    string `json:"relay_command,omitempty"`
 }
 
 type savedProxy struct {
@@ -505,11 +524,12 @@ func (state *State) snapshot() savedState {
 		SSHAgent:                   savedAgent,
 		SSHAgentPath:               savedAgentPath,
 		TerminalFontSize:           int(state.terminalFontSize),
-		TextScale:                  state.textScale.String(),
+		InterfaceTextSize:          int(state.interfaceTextSize),
 		InterfaceFont:              state.uiFont.family,
 		TerminalFontFace:           terminalFontFaceString(state.fonts.classic),
 		TerminalFontFamily:         state.fonts.family,
 		TerminalFontFallbacks:      slices.Clone(state.fonts.fallbacks),
+		TerminalFind:               state.terminalFindPrefs,
 		TerminalScrollback:         state.terminalScrollback,
 		TerminalCursor:             state.terminalCursorStyle.String(),
 		ConnectionTimeoutSeconds:   int(state.connectionTimeout / time.Second),
@@ -551,6 +571,8 @@ func (state *State) snapshot() savedState {
 		TerminalCloseConfirm:       notifyString(state.closeConfirmOff),
 		CommandHistory:             state.history.on,
 		CommandSuggestOff:          state.history.suggestOff,
+		CommandCompletionMode:      state.completionMode().persistName(),
+		CommandAcceptHintOff:       state.history.acceptHintOff,
 		SessionLogsOff:             state.sessionLogsOff,
 		SessionLogsView:            state.snapshotSessionLogsView(),
 		CommandInlineSuggestOff:    state.history.inlineOff,
@@ -619,6 +641,11 @@ func (state *State) snapshot() savedState {
 			})
 		}
 	}
+	saved.CommandsShown = state.commands.shown
+	saved.CommandsSort = state.commands.sort.String()
+	for key := range state.commands.hiddenGroups {
+		saved.CommandsHiddenGroups = append(saved.CommandsHiddenGroups, key)
+	}
 	if state.proxy.kind != sshconn.ProxyNone || state.proxy.bypass != "" {
 		saved.OutboundProxy = &savedOutboundProxy{
 			Kind: proxyKindString(state.proxy.kind), Address: state.proxy.address, User: state.proxy.user, Bypass: state.proxy.bypass,
@@ -668,7 +695,7 @@ func (state *State) snapshot() savedState {
 			HostLabel: forward.HostLabel, HostAddress: forward.HostAddress,
 			HostUser: forward.HostUser, HostPort: forward.HostPort, LocalPort: forward.LocalPort,
 			DestinationHost: forward.DestinationHost, DestinationPort: forward.DestinationPort,
-			Resume: forward.Resume,
+			Resume: forward.Resume, ViaShell: forward.ViaShell, Relay: forward.Relay,
 		})
 	}
 	for _, route := range state.proxies {
@@ -983,6 +1010,7 @@ func (state *State) restoreLocal(saved savedState) {
 	state.setVerticalTabsGrouping(saved.VerticalTabsGrouping)
 	state.restoreSFTPLocalFavorites(saved.SFTPLocalBookmarks)
 	state.toolbars.restore(saved.Toolbars)
+	state.terminalFindPrefs = saved.TerminalFind.normalized()
 	state.terminalToolbarPosition = terminalToolbarPositionFromString(saved.TerminalToolbarPosition)
 	state.terminalToolbarSize = terminalToolbarSizeFromString(saved.TerminalToolbarSize)
 	state.localShell = saved.LocalShell
@@ -1019,9 +1047,16 @@ func (state *State) restoreLocal(saved savedState) {
 	state.networkProxy = networkProxyModeFromString(saved.NetworkProxy)
 	state.syncNativeAppearance()
 	// The theme setAppearance builds copies the metrics by value, so the saved
-	// text scale must be in effect before it runs.
-	state.textScale = textScaleFromString(saved.TextScale)
-	applyTextMetrics(state.textScale.factor())
+	// text size must be in effect before it runs.
+	state.interfaceTextSize = normalizeInterfaceTextSize(saved.InterfaceTextSize)
+	if saved.InterfaceTextSize == 0 {
+		// A state from before the size was kept in pixels names one of three
+		// steps only: it becomes the body size that step drew.
+		if legacy, ok := interfaceTextSizeFromLegacy(saved.TextScale); ok {
+			state.interfaceTextSize = legacy
+		}
+	}
+	applyTextMetrics(state.interfaceTextSize.factor())
 	state.setAppearance(state.resolveAppearance())
 	state.setTerminalFontSize(float32(saved.TerminalFontSize))
 	// Only the choice: what is in effect is decided once the window starts, when
@@ -1128,8 +1163,21 @@ func (state *State) restoreShared(saved savedState) {
 	state.passwordHintOff = saved.TerminalPasswordHint == "off"
 	state.closeConfirmOff = saved.TerminalCloseConfirm == "off"
 	state.history.on = saved.CommandHistory
-	state.history.suggestOff = saved.CommandSuggestOff
-	state.history.inlineOff = saved.CommandInlineSuggestOff
+	state.history.acceptHintOff = saved.CommandAcceptHintOff
+	switch saved.CommandCompletionMode {
+	case "off":
+		state.history.suggestOff, state.history.inlineOff = true, true
+	case "list":
+		state.history.suggestOff, state.history.inlineOff = false, true
+	case "inline":
+		state.history.suggestOff, state.history.inlineOff = false, false
+	default:
+		// A file from before the three modes had names: Off and the
+		// shortcut-only list keep their meaning, and the old third mode (list
+		// plus inline text) becomes the automatic list, its closest successor.
+		state.history.suggestOff = saved.CommandSuggestOff
+		state.history.inlineOff = true
+	}
 	state.restoreSFTPSettings(saved)
 	state.proxy = decodeOutboundProxy(saved.OutboundProxy)
 	state.restoreTerminalTools(saved)

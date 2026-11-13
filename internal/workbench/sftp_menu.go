@@ -26,6 +26,8 @@ var (
 	hitSFTPMenuCompress     = tree.ID(sftpMenuHits, "sftp-menu-compress")
 	hitSFTPMenuDelete       = tree.ID(sftpMenuHits, "sftp-menu-delete")
 	hitSFTPMenuSudo         = tree.ID(sftpMenuHits, "sftp-menu-sudo")
+	hitSFTPMenuCopyFiles    = tree.ID(sftpMenuHits, "sftp-menu-copy-files")
+	hitSFTPMenuPasteFiles   = tree.ID(sftpMenuHits, "sftp-menu-paste-files")
 )
 
 // sftpMenuAction is the button of the bar that a menu row stands for.
@@ -57,8 +59,12 @@ func sftpMenuAction(id gfx.ID) (gfx.ID, bool) {
 		return hitSFTPDelete, true
 	case hitSFTPMenuSudo:
 		return hitSFTPMenuSudo, true
+	case hitSFTPMenuCopyFiles:
+		return hitSFTPCopyFiles, true
+	case hitSFTPMenuPasteFiles:
+		return hitSFTPPasteFiles, true
 	case hitSFTPNewDirectory, hitSFTPUpload, hitSFTPUploadDirectory, hitSFTPNewLink,
-		hitSFTPCopyPath, hitSFTPProperties:
+		hitSFTPCopyPath, hitSFTPProperties, hitSFTPCopyFiles, hitSFTPPasteFiles:
 		return id, true
 	}
 	return gfx.ID{}, false
@@ -169,23 +175,23 @@ func (state *State) sftpMenuRows(session *Session, view *sftpView) menuRows {
 	messages := state.messages
 	count, selected := selectedSFTP(view)
 	one, local := count == 1, view.local
-	busy := view.busy && !local
+	busy := view.busy && !local || local && view.localBusy
 	icon := func(kind uint8) gfx.Icon { return lucideIcons[kind] }
 	var rows menuRows
 	if one {
 		rows.add(components.ContextMenuItem{ID: hitSFTPMenuOpen, Label: messages.SFTPOpen, Icon: icon(iconFolderOpen), Disabled: busy})
 		if local && selected.Mode.IsRegular() {
-			rows.add(components.ContextMenuItem{ID: hitSFTPMenuEdit, Label: messages.Tools.ExtEditButton, Icon: icon(iconExternal)})
+			rows.add(components.ContextMenuItem{ID: hitSFTPMenuEdit, Label: messages.Tools.ExtEditButton, Icon: icon(iconExternal), Disabled: busy})
 		}
 		rows.separate()
 	}
 	if count > 0 {
 		switch {
 		case view.localOnly:
-			rows.add(components.ContextMenuItem{ID: hitSFTPMenuInsertPath, Label: messages.SFTPInsertPath, Icon: icon(iconTerminal), Disabled: session.term == nil || session.term.shell == nil})
+			rows.add(components.ContextMenuItem{ID: hitSFTPMenuInsertPath, Label: messages.SFTPInsertPath, Icon: icon(iconTerminal), Disabled: session.term == nil || session.term.shell == nil || busy})
 		case local:
 			rows.add(components.ContextMenuItem{ID: hitSFTPMenuSend, Label: messages.Tools.SendToServer,
-				Description: view.path, Value: view.path, Hint: view.path, Icon: icon(iconUpload), Disabled: view.path == ""})
+				Description: view.path, Value: view.path, Hint: view.path, Icon: icon(iconUpload), Disabled: view.path == "" || busy})
 		default:
 			rows.add(components.ContextMenuItem{ID: hitSFTPMenuDownload, Label: messages.SFTPDownload, Icon: icon(iconDownload), Disabled: busy})
 			if view.lfolder.path != "" {
@@ -213,7 +219,7 @@ func (state *State) sftpMenuRows(session *Session, view *sftpView) menuRows {
 		}
 		rows.separate()
 	}
-	if count > 0 && !local {
+	if count > 0 {
 		rows.add(components.ContextMenuItem{ID: hitSFTPMenuDelete, Label: messages.SFTPDelete, Icon: icon(iconTrash), Variant: components.ContextMenuItemDestructive, Disabled: busy})
 	}
 	rows.separate()
@@ -223,6 +229,17 @@ func (state *State) sftpMenuRows(session *Session, view *sftpView) menuRows {
 		rows.add(components.ContextMenuItem{ID: hitSFTPUploadDirectory, Label: messages.SFTPUploadDirectory, Icon: icon(iconFolderUp), Disabled: busy})
 		rows.add(components.ContextMenuItem{ID: hitSFTPNewLink, Label: messages.Tools.TipNewLink, Icon: icon(iconLink), Disabled: busy})
 	}
+	if count > 0 {
+		rows.add(components.ContextMenuItem{ID: hitSFTPMenuCopyFiles, Label: messages.SFTPWindow.CopyFiles, Icon: icon(iconCopy), Disabled: busy || view.active().searching()})
+	}
+	// A local side pastes the server files this panel copied; the server side
+	// pastes the files the system clipboard holds, which is only known once the
+	// paste runs.
+	paste := view.worker != nil
+	if local {
+		paste = len(view.clipboard.entries) > 0
+	}
+	rows.add(components.ContextMenuItem{ID: hitSFTPMenuPasteFiles, Label: messages.SFTPWindow.PasteFiles, Icon: icon(iconPaste), Disabled: busy || view.busy || view.worker == nil || !paste || view.active().searching()})
 	if count > 0 {
 		rows.add(components.ContextMenuItem{ID: hitSFTPCopyPath, Label: messages.SFTPWindow.CopyPath, Icon: icon(iconCopy)})
 	}

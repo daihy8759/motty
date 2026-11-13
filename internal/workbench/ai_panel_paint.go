@@ -220,6 +220,10 @@ func aiExcerpt(result string) string {
 // aiToolTitle is the localized name of a tool.
 func aiToolTitle(m i18n.AIPanelMessages, name string) string {
 	switch name {
+	case tools.NameNoteQuery:
+		return m.ToolNotesQuery
+	case tools.NameNoteEdit:
+		return m.ToolNotesEdit
 	case tools.NameListSessions:
 		return m.ToolListSessions
 	case tools.NameTerminalRead:
@@ -441,6 +445,7 @@ func (state *State) aiPanelBeginPaint() {
 	panel.rect, panel.list, panel.listing = gfx.Rect{}, gfx.Rect{}, false
 	panel.scrollbar.geometry = components.MessageScrollerGeometry{}
 	panel.messageScroll, panel.historyScroll = nil, nil
+	panel.approvalLay.bounds, panel.approvalLay.scroll = gfx.Rect{}, nil
 	panel.paintedRows = panel.paintedRows[:0]
 	panel.paintedHistory = panel.paintedHistory[:0]
 	panel.copySlots = panel.copySlots[:0]
@@ -448,7 +453,6 @@ func (state *State) aiPanelBeginPaint() {
 	panel.statusPainted = false
 	if !state.aiPanelVisible() {
 		panel.scrollbar.dragging = false
-		panel.drawerOpen = false
 	}
 	panel.declared = false
 	panel.menusShown = false
@@ -486,9 +490,8 @@ func (state *State) declareAIPanel(c ui.C) {
 	}
 	panel.declared = true
 	size := gfx.Size{Width: c.Bounds().Width, Height: c.Bounds().Height}
-	if panel.contentDraw == nil {
-		panel.contentDraw = state.paintAIPanelContent
-		panel.overDraw = state.paintAIPanelChrome
+	if panel.overDraw == nil {
+		panel.overDraw = state.paintAIPanelOver
 	}
 	c.Part(aiPanelPart)
 	ui.Stack(c).Absolute().Inset(0).Children(func() {
@@ -545,10 +548,7 @@ func (state *State) declareAIDockedPanel(c ui.C, size gfx.Size) {
 	})
 }
 
-// declareAIDrawer declares the panel as a drawer over the window, as Viva's page
-// Drawer: it paints its scrim and surface on a layer above the page's content
-// and declares the body inside that layer, so a section painted after the page
-// does not cover it.
+// Use the workspace viewport so the drawer never covers the native title bar.
 func (state *State) declareAIDrawer(c ui.C, size gfx.Size) {
 	panel := &state.ai.panel
 	viewport := state.visibleWorkspacePixelBounds(size)
@@ -558,16 +558,21 @@ func (state *State) declareAIDrawer(c ui.C, size gfx.Size) {
 	bounds := gfx.Rect{X: viewport.X + viewport.Width - contentWidth, Y: viewport.Y, Width: contentWidth, Height: viewport.Height}
 	panel.rect = bounds
 	panel.resize = aiPanelResize{window: viewport, ratio: (bounds.X - viewport.X) / max(viewport.Width-1, 1), handle: 8}
-	panel.drawerOpen = true
-	dismissed := ui.Drawer(c, &panel.drawerOpen, "", ui.DrawerSpec{
-		Side: ui.DrawerRight, Size: drawerExtent, NonModal: true,
-	}, func() {
-		state.declareAIPanelBody(c)
-	}, nil)
-	if dismissed || !panel.drawerOpen {
-		panel.drawerOpen = true // closing now; the next open starts open
+	dismiss := ui.ID(c)
+	if canvas := c.Canvas(); canvas != nil && canvas.Clicked(dismiss) {
 		c.After(state.closeAIPanel)
 	}
+	drawer := components.BeginDrawer(c.Canvas(), state.Theme(), viewport, components.DrawerOptions{
+		Layer: drawerLayer, DismissID: dismiss,
+		Side: components.DrawerRight, ContentExtent: contentWidth,
+	})
+	ui.Stack(c).Absolute().Left(viewport.X).Top(viewport.Y).Size(viewport.Width, viewport.Height).
+		Draw(func(*ui.DrawContext) { drawer.Begin("", "") }).Children(func() {
+		ui.Column(c).Absolute().Left(bounds.X-viewport.X).Top(0).Size(bounds.Width, bounds.Height).Children(func() {
+			state.declareAIPanelBody(c)
+		})
+		ui.Slot(c).Absolute().Size(0, 0).Draw(func(*ui.DrawContext) { drawer.End() })
+	})
 }
 
 // paintAIPanel paints what the declared panel needs outside the page: its resize
@@ -585,21 +590,40 @@ func (state *State) paintAIPanel(canvas *gfx.Canvas, size gfx.Size) {
 		// composer explicitly so typing reaches the assistant. The runtime applies
 		// one request once, so later frames leave the focus the user chose alone.
 		canvas.RequestFocus(hitAIInput)
+	case aiPanelDocked:
+		state.paintAIDockEdge(canvas)
+		state.paintAIResize(canvas)
+		state.paintAIDrop(canvas)
 	default:
 		state.paintAIResize(canvas)
 		state.paintAIDrop(canvas)
 	}
 }
 
-// paintAIResize paints the panel's resize edge: only hover, press and focus show
-// it, since the cards already carry their own border.
+// paintAIDockEdge draws the docked column's boundary beside the window frame's
+// side rail. The frame takes the panel's workspace surface, so without the line
+// the panel and the empty rail below its tools read as one column. The pane
+// divider draws the same line on the panel's other side, and a panel that ends
+// at the window's own edge keeps the window's edge.
+func (state *State) paintAIDockEdge(canvas *gfx.Canvas) {
+	if state.toolbarDockSideReserveFor(false, true) > 0 {
+		state.paintPanelSideEdge(canvas, state.ai.panel.rect, false)
+	}
+}
+
+// paintAIResize paints the panel's resize edge. Its resting 1px line is the
+// boundary between the docked column and the panes, as the files panel's
+// divider is; the section card keeps its own border instead, so only the handle
+// that shows hover, press and focus is painted there.
 func (state *State) paintAIResize(canvas *gfx.Canvas) {
 	panel := &state.ai.panel
 	if panel.resize.window.Width <= 0 {
 		return
 	}
 	theme := state.Theme()
-	theme.Border = gfx.Color{}
+	if panel.mode != aiPanelDocked {
+		theme.Border = gfx.Color{}
+	}
 	components.BeginResizable(canvas, theme, hitAIDivider, panel.resize.window, panel.resize.ratio).
 		Limits(0, 1).HandleSize(panel.resize.handle).Paint(state.messages.AIPanel.ResizePanel)
 }
@@ -655,6 +679,16 @@ func (state *State) paintAIPanelContent(d *ui.DrawContext) {
 	panel.textSelect.Clamp(len(ai.items)*int(aiTextPartCount), panel.textLength)
 }
 
+// paintAIPanelOver paints the hand-painted controls and then the chrome that
+// must sit over them. Both belong on the page's DrawOver, after its children:
+// the pinned question is declared inside a card whose own background is a
+// child, so a control painted from Draw is under that background — only its
+// label survives, and the button reads as bare text on the card.
+func (state *State) paintAIPanelOver(d *ui.DrawContext) {
+	state.paintAIPanelContent(d)
+	state.paintAIPanelChrome(d)
+}
+
 // paintAIPanelChrome paints the setup and approval controls over their cards,
 // the composer's resize grip, and, for the drawer, the panel's resize edge and
 // file-drop hint on the drawer's layer.
@@ -708,7 +742,7 @@ func (state *State) declareAIPanelBody(c ui.C) {
 	}
 
 	panel.body = aiBody{}
-	ui.Column(c).Fill().Draw(panel.contentDraw).DrawOver(panel.overDraw).Children(func() {
+	ui.Column(c).Fill().DrawOver(panel.overDraw).Children(func() {
 		// The title row: the name, a new conversation, the history, and the way out.
 		ui.Row(c).Height(aiTitleRow).PadX(aiPad).Gap(4).Items(ui.Center).Children(func() {
 			ui.Icon(c, lucideIcons[iconBot]).Color(pal.accent).MarginSides(0, 4, 0, 0)
@@ -738,6 +772,9 @@ func (state *State) declareAIPanelBody(c ui.C) {
 			})
 		} else {
 			panel.body.list = state.declareAIEmpty(c)
+			if len(ai.approvals) > 0 {
+				panel.body.list.Shrink(1)
+			}
 		}
 		state.declareAIBottom(c, &panel.body, s.boxHeight)
 	})
@@ -760,17 +797,17 @@ func (state *State) declareAIPanelBody(c ui.C) {
 // aiModelText is the line naming the model that answers, and whether there is one.
 func (state *State) aiModelText() (string, bool) {
 	ai, panel := &state.ai, &state.ai.panel
-	if ai.settings.defaultModel == "" {
+	if ai.modelName == "" {
 		return "", false
 	}
 	for index := range ai.providers {
 		provider := &ai.providers[index]
-		if provider.ID != ai.settings.defaultProvider || !provider.Enabled {
+		if provider.ID != ai.modelProvider || !provider.Enabled {
 			continue
 		}
-		if panel.modelName != provider.Name || panel.modelID != ai.settings.defaultModel {
-			panel.modelName, panel.modelID = provider.Name, ai.settings.defaultModel
-			panel.modelText = provider.Name + " · " + ai.settings.defaultModel
+		if panel.modelName != provider.Name || panel.modelID != ai.modelName {
+			panel.modelName, panel.modelID = provider.Name, ai.modelName
+			panel.modelText = provider.Name + " · " + ai.modelName
 		}
 		return panel.modelText, true
 	}

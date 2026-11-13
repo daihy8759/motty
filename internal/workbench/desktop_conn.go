@@ -90,6 +90,7 @@ func openDesktopSession(ctx context.Context, request desktopRequest) (desktop.Se
 	if host.Protocol == protocolRDP {
 		options.Username, options.Domain = rdpAccount(host.User)
 		options.Console = host.Console
+		options.StandardSecurity = host.StandardSecurity
 		options.Width, options.Height, options.Scale = request.Width, request.Height, request.Scale
 		if request.Verify != nil {
 			typedAddress := net.JoinHostPort(host.Address, strconv.Itoa(int(host.Port)))
@@ -591,6 +592,10 @@ func (conn *desktopConn) OpenShell(sshconn.ShellConfig) (Shell, error) { return 
 func (conn *desktopConn) OpenSFTP() (sftpclient.Remote, error)         { return nil, errNoServer }
 
 func (conn *desktopConn) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, errNoServer
+}
+
+func (conn *desktopConn) DialShellContext(context.Context, string, string) (net.Conn, error) {
 	return nil, errNoServer
 }
 

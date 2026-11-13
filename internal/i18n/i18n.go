@@ -269,9 +269,6 @@ type Messages struct {
 	SettingsAppearanceLight                string
 	SettingsTextSize                       string
 	SettingsTextSizeDescription            string
-	SettingsTextSizeSmall                  string
-	SettingsTextSizeRegular                string
-	SettingsTextSizeLarge                  string
 	SettingsInterfaceFont                  string
 	SettingsInterfaceFontDefault           string
 	SettingsInterfaceFontUnsupportedFmt    string
@@ -426,6 +423,7 @@ type Messages struct {
 	ShortcutsCaptureDescription          string
 	ShortcutsConflictFmt                 string
 	ShortcutsInvalid                     string
+	ShortcutsAcceptInvalid               string
 	ShortcutsTabNumberInvalid            string
 	ShortcutCommandPalette               string
 	ShortcutFind                         string
@@ -513,6 +511,12 @@ type Messages struct {
 	HostOTPShared               string
 	FieldGroup                  string
 	FieldGroupPlaceholder       string
+	// Encoding is the remote charset of a connection's shell; see the searchable
+	// picker in the New/Edit Host dialog.
+	FieldEncoding               string
+	FieldEncodingPlaceholder    string
+	HostEncodingsEmpty          string
+	EncodingUTF8Default         string
 	FieldPort                   string
 	FieldTags                   string
 	FieldTagsPlaceholder        string
@@ -522,6 +526,8 @@ type Messages struct {
 	ErrHostGroupInvalid         string
 	HostTagsCreatePrefix        string
 	FieldIcon                   string
+	FieldIconPlaceholder        string
+	IconsEmpty                  string
 	FieldColor                  string
 	FieldColorCustom            string
 	ColorPickerChoose           string
@@ -922,6 +928,13 @@ type Messages struct {
 	ForwardFieldDestinationPort   string
 	ForwardFieldResume            string
 	ForwardResumeHelp             string
+	ForwardFieldViaShell          string
+	ForwardViaShellHelp           string
+	ForwardFieldRelay             string
+	ForwardRelayPlaceholder       string
+	ForwardRefusedHint            string
+	ForwardRelayRefused           string
+	ErrForwardRelayFmt            string
 	ForwardDestinationPlaceholder string
 	ForwardLocalDestinationHint   string
 	ForwardRemoteListenerFmt      string
@@ -1133,6 +1146,7 @@ type Messages struct {
 	TerminalFindClose        string
 	TerminalFindNoMatches    string
 	TerminalFindCountFmt     string
+	FindSettings             TerminalFindSettingsMessages
 	TerminalFindTruncatedFmt string
 
 	// The connection page shown until a shell speaks: one row per stage, each

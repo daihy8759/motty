@@ -295,15 +295,18 @@ func sameSavedHost(left, right savedHost) bool {
 		left.Address == right.Address && left.User == right.User && left.Port == right.Port &&
 		left.System == right.System &&
 		sameSavedLoginExpect(left.LoginExpect, right.LoginExpect) &&
-		left.Protocol == right.Protocol && left.Line == right.Line && left.Flow == right.Flow &&
+		left.Protocol == right.Protocol && left.Encoding == right.Encoding &&
+		left.Terminal == right.Terminal &&
+		left.Line == right.Line && left.Flow == right.Flow &&
 		sameSavedProxy(left.Proxy, right.Proxy) &&
 		left.Algorithms == right.Algorithms && left.AlgorithmList == right.AlgorithmList &&
 		left.Authentication == right.Authentication && left.Identity == right.Identity && left.Credential == right.Credential &&
+		left.SSHOptions.Equal(right.SSHOptions) &&
 		left.ForwardX11 == right.ForwardX11 && left.AgentForward == right.AgentForward &&
 		left.InteractiveOnly == right.InteractiveOnly && left.SendLocale == right.SendLocale &&
 		left.NoHistory == right.NoHistory && left.LoginCommand == right.LoginCommand && left.Transfer == right.Transfer &&
 		left.ViaSSH == right.ViaSSH && left.Clipboard == right.Clipboard && left.Console == right.Console &&
-		left.Chromeless == right.Chromeless
+		left.StandardSecurity == right.StandardSecurity && left.Chromeless == right.Chromeless
 }
 
 func sameSavedProxy(left, right *savedOutboundProxy) bool {

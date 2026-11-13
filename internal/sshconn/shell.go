@@ -53,6 +53,10 @@ type ShellConfig struct {
 	// reach the local ssh-agent. Forwarding that cannot be set up never stops
 	// the shell; see Shell.AgentForwardNote.
 	AgentForward bool
+	// SkipUTF8Locale keeps the client from asking the server for a UTF-8 LANG.
+	// A host whose remote charset is configured (e.g. GB18030) wants the server
+	// to keep its own locale; the client decodes that stream instead.
+	SkipUTF8Locale bool
 }
 
 // Shell is a remote shell on a pty. Reading is done by Drain from one thread;
@@ -125,7 +129,8 @@ func (conn *Conn) OpenShell(config ShellConfig) (*Shell, error) {
 	// implementation is asked by default. Servers usually accept LANG; without a UTF-8
 	// locale the shell would mangle multibyte input, which the charset handling
 	// then reports, but staying connected comes first. A refusal is harmless.
-	if conn.config.SendLocale || !conn.config.InteractiveOnly && standardImplementation(conn.Status().ServerVersion) {
+	if !config.SkipUTF8Locale &&
+		(conn.config.SendLocale || !conn.config.InteractiveOnly && standardImplementation(conn.Status().ServerVersion)) {
 		err := conn.optionalShellRequest(func() error { return session.Setenv("LANG", utf8Locale()) })
 		if transportGone(err) {
 			session.Close()
