@@ -512,6 +512,7 @@ const (
 	modalVaultUnlock
 	modalVaultForget
 	modalHighlightRule
+	modalRuleManager
 	modalSnippet
 	modalSnippetDelete
 	modalSnippetVariables
@@ -617,9 +618,16 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	session.endpoint = sshconn.Endpoint{Host: host.Address, Port: host.Port, User: state.login(host)}
 	session.role = sshconn.EndpointTarget
 	session.jumpPath = ""
+	session.desktopTunnel = false
 	if host.ID == localHostID {
 		// A shell on this machine: nothing to dial, so it is connected at once.
 		conn := newLocalConn(state.resolveLocalShell(host), state.networkProxy)
+		if _, wsl := localshell.WSLDistro(conn.shell); wsl {
+			// A distribution is the Linux system the shell runs in, not the
+			// Windows that hosts it. The monitor and the tooling that reads the
+			// session's system follow the distribution.
+			session.host.System = sshconn.SystemLinux
+		}
 		conn.dir = localStartupDirectory(session.localDirectory, conn.shell)
 		session.conn = conn
 		state.finishStartingConnection(session, automatic)
@@ -828,6 +836,7 @@ func (state *State) Wake() {
 		state.pump(session)
 		state.pumpCompletionPath(session)
 		state.runLoginCommand(session)
+		state.runIdleKeepAlive(session, findNow)
 		// A session-local charset notice changes the available character grid.
 		// Resize after parsing output, never reentrantly from an OSC callback.
 		state.fitTerminal(session)
@@ -1043,6 +1052,7 @@ func (state *State) closeDisconnectedShell(session *Session) {
 	terminal.recording.finishSecrets(state.now())
 	releaseShell(terminal.shell)
 	terminal.shell = nil
+	terminal.stopIdleKeepAlive()
 	terminal.login = loginCommand{}
 	terminal.recording.stop()
 	terminal.recording.resetSecrets()
@@ -1319,6 +1329,10 @@ func (state *State) showNextPrompt() {
 }
 
 func (state *State) closeModal() {
+	returnToRules := state.ruleManager.returning && (state.modal == modalHighlightRule || state.modal == modalAutofillRule || state.modal == modalDeleteRule)
+	if state.modal == modalRuleManager {
+		state.ruleManager = ruleManagerUI{}
+	}
 	if state.modal == modalSnippetVariables {
 		state.snippetPrompt = snippetPromptState{}
 	}
@@ -1368,6 +1382,11 @@ func (state *State) closeModal() {
 		state.localProxyUI = localProxyUI{}
 	}
 	state.modal = modalNone
+	if returnToRules {
+		state.modal = modalRuleManager
+		state.ruleManager.returning = false
+		state.ruleManager.list = nil
+	}
 	state.modalSession = 0
 	state.reveal.reset()
 	state.passwordFields = nil

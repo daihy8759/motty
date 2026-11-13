@@ -373,6 +373,7 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 	state.requestReconnectFrames(canvas)
 	state.requestAutofillFrames(canvas)
 	state.requestLoginCommandFrames(canvas)
+	state.requestIdleKeepAliveFrames(canvas)
 	state.paintLocalProxyFocus(canvas)
 	state.paintTransferProgressCard(canvas)
 	// Last, so a tooltip is never covered by what it describes.
@@ -859,7 +860,7 @@ func (state *State) declareWindowBar(c ui.C, bar *windowBar, probe, picture bool
 						label := state.sftpFileTabTitle(fileTab)
 						ui.Row(c).Size(geometry.tabWidth, barTabHeight).Shrink(0).MarginSides(0, barGap, 0, first).
 							HitOutset(barTabReach, 0, barTabReach, 0).PadSides(0, 3, 0, 4).Items(ui.Center).Radius(radius.item).Border(1, edge).Background(fill).
-							HitWith(id, label, gfx.HitOptions{Role: gfx.RoleTab, Selected: active}).Children(func() {
+							HitWith(id, label, gfx.HitOptions{Role: gfx.RoleTab, Selected: active, Hint: label}).Children(func() {
 							entry.badge = ui.Slot(c).Size(20, 20).MarginSides(0, 7, 0, 0)
 							if state.tabNumbers && entry.number != "" {
 								// File tabs follow the session tabs in the number row,
@@ -2492,6 +2493,10 @@ func (state *State) fitHostTags(canvas *gfx.Canvas, host Host, width float32, sh
 }
 
 func (state *State) paintHostCatalogIcon(canvas *gfx.Canvas, host Host, bounds gfx.Rect, background gfx.Color) {
+	if host.ID == localHostID {
+		state.paintLocalShellIcon(canvas, host, bounds, background)
+		return
+	}
 	if host.Icon == hostIconAuto {
 		if host.isDesktop() && host.System == sshconn.SystemUnknown {
 			canvas.Rounded(bounds, bounds.Width*0.24, state.hostBadgeFill(background))
@@ -2794,6 +2799,8 @@ func (state *State) declareDialogs(c ui.C) {
 		state.declareToolbarSettings(c)
 	case modalHighlightRule:
 		state.declareHighlightDialog(c)
+	case modalRuleManager:
+		state.declareRuleManager(c)
 	case modalNewForward:
 		state.declareForwardDialog(c)
 	case modalNewProxy:
@@ -2914,6 +2921,7 @@ func (state *State) declareHostFormBody(c ui.C, title string) {
 	form := &editor.form
 	b := &editor.form.body
 	ssh := editor.protocol == protocolSSH
+	terminalHost := idleKeepAliveProtocol(editor.protocol)
 	networkHost := editor.protocol != protocolSerial
 	vncHost := editor.protocol == protocolVNC || editor.protocol == protocolRDP
 	rowHeight := float32(hostFormRowHeight)
@@ -2972,21 +2980,29 @@ func (state *State) declareHostFormBody(c ui.C, title string) {
 				// icon value and the proxy summary on VNC, RDP and Telnet.
 				b.proxy = state.declareHostProxyRow(c)
 			}
-			if ssh {
+			if ssh || vncHost {
 				b.jump = state.declareHostJumpRow(c)
+			}
+			if terminalHost {
 				b.advanced = ui.Slot(c).Height(state.advancedSectionHeight())
 				advanced := b.advanced
 				advanced.Children(func() {
 					b.advancedHeader, b.advancedHeaderIcon = state.declareHostAdvancedHeader(c)
 					if editor.advancedOpen {
-						// The rows and the choice are declared as the same overlay:
-						// the choice keeps its press for after the rows laid out.
-						ui.Column(c).Absolute().Left(0).Right(0).Top(advancedHeaderHeight).Children(func() {
-							state.declareHostAlgoRows(c)
-						})
-						ui.Column(c).Absolute().Left(0).Right(0).Top(advancedHeaderHeight).Height(rowHeight).Children(func() {
-							b.algo = state.declareHostAlgoChoice(c)
-						})
+						if ssh {
+							// The rows and the choice are declared as the same overlay:
+							// the choice keeps its press for after the rows laid out.
+							ui.Column(c).Absolute().Left(0).Right(0).Top(advancedHeaderHeight).Children(func() {
+								state.declareHostAlgoRows(c)
+							})
+							ui.Column(c).Absolute().Left(0).Right(0).Top(advancedHeaderHeight).Height(rowHeight).Children(func() {
+								b.algo = state.declareHostAlgoChoice(c)
+							})
+						} else {
+							ui.Column(c).Absolute().Left(0).Right(0).Top(advancedHeaderHeight).Children(func() {
+								state.declareHostIdleKeepAliveRows(c)
+							})
+						}
 					}
 				})
 			}
@@ -3103,11 +3119,13 @@ func (state *State) paintHostFormFields(canvas *gfx.Canvas) {
 	if networkHost {
 		state.paintHostProxyRow(canvas)
 	}
+	if ssh || vncHost {
+		state.paintHostJumpRow(canvas)
+	}
 	if vncHost {
 		state.paintVNCRows(canvas)
 	}
-	if ssh {
-		state.paintHostJumpRow(canvas)
+	if idleKeepAliveProtocol(protocol) {
 		state.paintAdvancedSection(canvas)
 	}
 	// The choices are the page's controls: keep the option the tab ring reaches
@@ -3303,7 +3321,7 @@ var hostSystemChoices = [...]struct {
 	{sshconn.SystemVoid, "Void Linux"}, {sshconn.SystemSlackware, "Slackware"},
 	{sshconn.SystemAnolis, "Anolis OS"}, {sshconn.SystemTencentOS, "TencentOS"},
 	{sshconn.SystemAmazonLinux, "Amazon Linux"}, {sshconn.SystemAzureLinux, "Azure Linux"},
-	{sshconn.SystemOracleLinux, "Oracle Linux"}, {sshconn.SystemESXi, "VMware ESXi"},
+	{sshconn.SystemOracleLinux, "Oracle Linux"}, {sshconn.SystemESXi, "VMware ESXi"}, {sshconn.SystemAIX, "AIX"},
 	{sshconn.SystemFreeBSD, "FreeBSD"}, {sshconn.SystemLinux, "Linux"},
 	{sshconn.SystemWindows, "Windows"}, {sshconn.SystemDarwin, "macOS"},
 }

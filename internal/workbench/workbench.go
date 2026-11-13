@@ -606,6 +606,7 @@ type State struct {
 	hostDialogMode    hostDialogMode
 	hostDialogID      uint32
 	ruleDelete        ruleDelete
+	ruleManager       ruleManagerUI
 	hostTest          hostTest
 	hostDialogText    string
 	identityCountText string
@@ -747,40 +748,50 @@ type State struct {
 	closeAction    closeAction
 	relaunchAction relaunchAction
 	// The file panel's settings and the folders kept for each host.
-	sftpParallel           int
-	sftpKeepTimesOff       bool
-	sftpFollowOff          bool
-	sftpTerminalFollow     bool
-	sftpPathInput          bool
-	sftpPanelAutoOpen      bool
-	sftpDirectoryTree      bool
-	sftpWindowOrder        sftpWindowOrder
-	sftpOpenMode           sftpOpenMode
-	sftpColumns            sftpColumnPreferences
-	sftpFilesSettings      sftpFilesSettingsCache
-	sftpDownloadDirectory  string
-	defaultEditor          ExternalEditor // hands remote folders to this computer's editor
-	customEditorPath       string
-	monitorRect            gfx.Rect
-	monitorMenu            bool
-	monitorMenuRect        gfx.Rect
-	monitorResizing        bool
-	monitorResizeGrab      float32
-	monitorResizeWorkspace layoutcore.WorkspaceID
-	monitorResizeSession   uint32
-	monitorMenuSession     uint32
-	monitorWidth           float32
-	sftpPanelSide          layoutcore.ContextSide
-	sftpPanelWidth         float32
-	sftpBookmarks          []sftpBookmark
-	sftpLocalBookmarks     []string
-	secrets                secretsUI
-	shareConnections       shareConnectionsPolicy
-	tooltip                components.HoverTooltip
-	selectTypeahead        selectTypeahead
-	restorePending         bool // restored tabs have not yet been connected (see connectRestoredSessions)
-	terminalClipboard      terminalClipboardPolicy
-	terminalIntense        terminalIntense
+	sftpParallel       int
+	sftpKeepTimesOff   bool
+	sftpFollowOff      bool
+	sftpTerminalFollow bool
+	sftpPathInput      bool
+	sftpPanelAutoOpen  bool
+	sftpDirectoryTree  bool
+	sftpWindowOrder    sftpWindowOrder
+	sftpOpenMode       sftpOpenMode
+	sftpColumns        sftpColumnPreferences
+	// sftpTypeIcons is the system icon of each file extension, shared by every
+	// row and every listing. A nil map means none has been asked for yet.
+	sftpTypeIcons map[string]*fileIconSlot
+	// sftpColumnSizeWidth and sftpColumnModifiedWidth are the widths the user
+	// dragged the file lists' columns to; zero until a width was chosen, when
+	// the lists keep their width-based defaults. sftpColumnWidthsChosen says a
+	// drag or a double click has replaced those defaults.
+	sftpColumnSizeWidth     float32
+	sftpColumnModifiedWidth float32
+	sftpColumnWidthsChosen  bool
+	sftpFilesSettings       sftpFilesSettingsCache
+	sftpDownloadDirectory   string
+	defaultEditor           ExternalEditor // hands remote folders to this computer's editor
+	customEditorPath        string
+	monitorRect             gfx.Rect
+	monitorMenu             bool
+	monitorMenuRect         gfx.Rect
+	monitorResizing         bool
+	monitorResizeGrab       float32
+	monitorResizeWorkspace  layoutcore.WorkspaceID
+	monitorResizeSession    uint32
+	monitorMenuSession      uint32
+	monitorWidth            float32
+	sftpPanelSide           layoutcore.ContextSide
+	sftpPanelWidth          float32
+	sftpBookmarks           []sftpBookmark
+	sftpLocalBookmarks      []string
+	secrets                 secretsUI
+	shareConnections        shareConnectionsPolicy
+	tooltip                 components.HoverTooltip
+	selectTypeahead         selectTypeahead
+	restorePending          bool // restored tabs have not yet been connected (see connectRestoredSessions)
+	terminalClipboard       terminalClipboardPolicy
+	terminalIntense         terminalIntense
 
 	terminalDirectoryDirty bool
 	// terminalCursorSteady keeps the terminal cursor from blinking.
@@ -1077,6 +1088,7 @@ func (state *State) Close() {
 			releaseShell(session.term.shell)
 		}
 		session.term.abandonShell()
+		session.term.stopIdleKeepAlive()
 		if session.conn != nil {
 			session.conn.Cancel()
 		}
@@ -1700,6 +1712,9 @@ func (state *State) click(id gfx.ID, feedback bool) {
 	case modalHighlightRule:
 		state.clickHighlightDialog(id)
 		return
+	case modalRuleManager:
+		state.clickRuleManager(id)
+		return
 	case modalAutofillRule:
 		state.clickAutofillDialog(id)
 		return
@@ -2095,6 +2110,7 @@ func (state *State) closeSession(id uint32) {
 		releaseShell(session.term.shell)
 	}
 	session.term.abandonShell()
+	session.term.stopIdleKeepAlive()
 	state.dropExternalEdits(session.ID)
 	state.closeSFTPTabForSource(session.ID)
 	state.closeCompletionPath(session)
@@ -2501,6 +2517,9 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 	if result := state.toolbarSettingsPointer(event); result.Handled {
 		return result
 	}
+	if result := state.ruleManagerPointer(event); result.Handled {
+		return result
+	}
 	if result := state.sftpColumnSettingsPointer(event); result.Handled {
 		return result
 	}
@@ -2771,6 +2790,9 @@ func (state *State) pointer(event gfx.PointerEvent) gfx.EventResult {
 	if result, handled := state.sftpMenuPointer(event); handled {
 		return result
 	}
+	if result, handled := state.sftpColumnPointer(event); handled {
+		return result
+	}
 	if result, handled := state.sftpRowPointer(event); handled {
 		return result
 	}
@@ -2797,7 +2819,8 @@ func isHostTagsTarget(id gfx.ID) bool {
 // isDialogField reports whether a hit is one of the New Host dialog's text fields.
 func isDialogField(id gfx.ID) bool {
 	switch id {
-	case hitDialogLabel, hitDialogAddress, hitDialogUser, hitDialogPassword, hitDialogPassphrase, hitDialogGroup, hitDialogPort, hitDialogTags:
+	case hitDialogLabel, hitDialogAddress, hitDialogUser, hitDialogPassword, hitDialogPassphrase, hitDialogGroup, hitDialogPort, hitDialogTags,
+		hitDialogIdleInterval, hitDialogIdleCustomInput:
 		return true
 	}
 	return false
@@ -2820,6 +2843,10 @@ func fieldForDialogHit(id gfx.ID) hostField {
 		return fieldGroup
 	case hitDialogTags:
 		return fieldTags
+	case hitDialogIdleInterval:
+		return fieldIdleInterval
+	case hitDialogIdleCustomInput:
+		return fieldIdleInputCustom
 	default:
 		return fieldPort
 	}

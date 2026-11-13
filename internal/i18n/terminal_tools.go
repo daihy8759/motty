@@ -298,12 +298,13 @@ type ToolsMessages struct {
 	HostProxyPasswordNotCarried string
 	// The host form's jump route row: whether the host is reached through
 	// another, and the way to add or edit that route.
-	HostJumpRow                    string
-	HostJumpDescriptionDirect      string
-	HostJumpDescriptionFmt         string // the jump host's label
-	HostJumpDescriptionUnsaved     string
-	HostJumpDescriptionUnavailable string
-	HostJumpDescriptionMissing     string
+	HostJumpRow                           string
+	HostJumpDescriptionDirect             string
+	HostJumpDescriptionFmt                string // the jump host's label
+	HostJumpDescriptionUnsaved            string
+	HostJumpDescriptionUnavailable        string
+	HostJumpDescriptionUnavailableDesktop string
+	HostJumpDescriptionMissing            string
 
 	// A proxy command: a local program that carries a host's first connection.
 	ProxyCommand                   string
@@ -1008,6 +1009,24 @@ type ToolsMessages struct {
 	LoginCommandField               string
 	LoginCommandPlaceholder         string
 	ErrLoginCommand                 string
+	IdleKeepAliveHeading            string
+	IdleKeepAliveField              string
+	IdleKeepAliveOff                string
+	IdleKeepAliveOneMinute          string
+	IdleKeepAliveFiveMinutes        string
+	IdleKeepAliveTenMinutes         string
+	IdleKeepAliveCustom             string
+	IdleKeepAliveCustomInterval     string
+	IdleKeepAliveUnitSeconds        string
+	IdleKeepAliveUnitMinutes        string
+	IdleKeepAliveInputField         string
+	IdleKeepAliveInputCR            string
+	IdleKeepAliveInputNUL           string
+	IdleKeepAliveInputCustom        string
+	IdleKeepAliveCustomInput        string
+	IdleKeepAliveCustomPlaceholder  string
+	ErrIdleKeepAliveInterval        string
+	ErrIdleKeepAliveInput           string
 	ErrAlgoUnknownFmt               string
 	AlgoWeakFmt                     string
 	AlgoNegotiatedFmt               string
@@ -1028,6 +1047,7 @@ type ToolsMessages struct {
 	FilesColumnsReset                    string
 	FilesColumnsClose                    string
 	FilesDownloadDirectory               string
+	FilesResizeColumn                    string
 	FilesDownloadAskDescription          string
 	FilesDownloadCurrentFmt              string
 	FilesDownloadChoose                  string

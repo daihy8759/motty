@@ -89,6 +89,11 @@ func (host Host) isDesktop() bool {
 	return host.Protocol == protocolVNC || host.Protocol == protocolRDP
 }
 
+// isRouteTarget reports whether a jump route can reach the host as its target:
+// an SSH host, whose connection the route extends, or a remote desktop, whose
+// port the route's jump host forwards. A jump itself is always an SSH host.
+func (host Host) isRouteTarget() bool { return host.isSSH() || host.isDesktop() }
+
 // tunneled reports whether the host is reached through an SSH connection of its
 // own: a remote desktop whose server is only listening on the SSH server's own
 // loopback.
@@ -150,6 +155,12 @@ type savedTransport struct {
 	NoHistory bool `json:"no_history,omitempty"`
 	// LoginCommand is the line an SSH host types into its shell after login.
 	LoginCommand string `json:"login_command,omitempty"`
+	// IdleKeepAliveSeconds is how often an idle terminal is sent input; zero is
+	// off. IdleInput is "cr", "nul" or "custom" (empty follows the protocol),
+	// and IdleInputCustom is the escaped text for "custom".
+	IdleKeepAliveSeconds int    `json:"idle_keepalive_seconds,omitempty"`
+	IdleInput            string `json:"idle_keepalive_input,omitempty"`
+	IdleInputCustom      string `json:"idle_keepalive_custom,omitempty"`
 	// Transfer is "sftp" or "scp" for an SSH host whose file panel does not
 	// choose by itself.
 	Transfer string `json:"transfer,omitempty"`
@@ -175,6 +186,15 @@ func (host Host) transport() savedTransport {
 	// old record byte-for-byte.
 	if host.Encoding != "" && host.Encoding != charset.UTF8 {
 		transport.Encoding = host.Encoding
+	}
+	// Every terminal protocol keeps this setting, so it is written before the
+	// switch that gives the rest of the transport its protocol-specific shape.
+	if validIdleKeepAliveInterval(host.IdleKeepAlive) {
+		transport.IdleKeepAliveSeconds = int(host.IdleKeepAlive / time.Second)
+	}
+	transport.IdleInput = host.savedIdleInput()
+	if host.IdleInput == idleInputCustom {
+		transport.IdleInputCustom = host.IdleInputCustom
 	}
 	switch host.Protocol {
 	case protocolTelnet:
@@ -229,6 +249,7 @@ func (host *Host) applyTransport(transport savedTransport) bool {
 	}
 	host.Encoding = encoding
 	host.Terminal = terminalSSH
+	host.applyIdleKeepAlive(transport)
 	switch transport.Protocol {
 	case "", "ssh":
 		host.Protocol = protocolSSH
@@ -605,7 +626,7 @@ func (state *State) sayStreamOpened(session *Session) {
 	case protocolTelnet:
 		session.term.say(sgrWarn, m.TelnetPlaintext)
 	case protocolVNC:
-		protected := session.host.tunneled()
+		protected := session.host.tunneled() || session.desktopTunnel
 		if source, ok := session.conn.(desktopSource); ok && source.Desktop() != nil {
 			protected = protected || source.Desktop().Info().Encrypted
 		}
