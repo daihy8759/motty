@@ -334,6 +334,7 @@ type ToolsMessages struct {
 	ImportGuide                  string // the link to the docs on exporting from each client
 	ImportGuideURL               string
 	ImportPickerFmt              string // the client's name
+	ImportFolderPickerFmt        string // the client's name; it keeps sessions in a folder
 	ImportCanceled               string
 	ImportFailedFmt              string
 	ImportSummaryFmt             string // hosts, client, duplicates
@@ -718,6 +719,7 @@ type ToolsMessages struct {
 	SyncFailedFmt                   string
 	SyncErrUnauthorized             string
 	SyncErrNotFound                 string
+	SyncErrChanged                  string
 	SyncErrInsecure                 string
 	SyncAllowInsecureHTTP           string
 	SyncInsecureHTTPDescription     string
@@ -728,6 +730,33 @@ type ToolsMessages struct {
 	SyncConfigureGist               string
 	SyncConfigureGitee              string
 	SyncErrTooLarge                 string
+	SyncScopeGroup                  string
+	SyncScopeDescription            string
+	SyncErrNothingSelected          string
+	SyncScopeHosts                  string
+	SyncScopeHostsDescription       string
+	SyncScopeSettings               string
+	SyncScopeSettingsDescription    string
+	SyncScopeNotes                  string
+	SyncScopeNotesDescription       string
+	SyncScopeSnippets               string
+	SyncScopeSnippetsDescription    string
+	SyncScopeRoutes                 string
+	SyncScopeRoutesDescription      string
+	SyncScopeForwards               string
+	SyncScopeForwardsDescription    string
+	SyncScopeWorkspaces             string
+	SyncScopeWorkspacesDescription  string
+	SyncScopeCredentials            string
+	SyncScopeCredentialsDescription string
+	SyncScopeKeys                   string
+	SyncScopeKeysDescription        string
+	SyncScopeAI                     string
+	SyncScopeAIDescription          string
+	SyncScopeRules                  string
+	SyncScopeRulesDescription       string
+	SyncScopeKnownHosts             string
+	SyncScopeKnownHostsDescription  string
 	S3DialogTitle                   string
 	S3DialogDescription             string
 	S3Endpoint                      string
@@ -737,6 +766,7 @@ type ToolsMessages struct {
 	S3PathStyle                     string
 	S3LoginTitle                    string
 	S3LoginDescription              string
+	S3Next, S3Back, S3Stop          string
 	S3AccessKey                     string
 	S3Secret                        string
 	S3ErrFields                     string

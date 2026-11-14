@@ -66,6 +66,7 @@ func ChineseVariant(tag string) Language {
 // Messages is the complete set of user-visible workbench strings. Adding a
 // language means adding one field initialization, not touching call sites.
 type Messages struct {
+	RemoteLogs     RemoteLogMessages
 	ActionFeedback ActionFeedbackMessages
 	Monitor        MonitorMessages
 	Dashboard      DashboardMessages
@@ -287,6 +288,10 @@ type Messages struct {
 	SettingsTabsAutoHideDescription        string
 	SettingsTabsGrouping                   string
 	SettingsTabsGroupingDescription        string
+	SettingsSidebar                        string
+	SettingsSidebarHint                    string
+	SettingsSidebarShownFmt                string
+	SettingsSidebarShowAll                 string
 	VerticalTabGroupCountFmt               string
 	VerticalTabsPin                        string
 	VerticalTabsAutoHide                   string
@@ -359,6 +364,7 @@ type Messages struct {
 	VaultSavedFmt                          string
 	VaultSaveFailedFmt                     string
 	VaultKeyLost                           string
+	VaultTooLarge                          string
 	VaultUnavailable                       string
 	VaultCorruptFmt                        string
 	VaultCleared                           string
@@ -545,6 +551,8 @@ type Messages struct {
 	ColorRed                    string
 	ColorBlue                   string
 	ColorPurple                 string
+	ColorPink                   string
+	ColorTeal                   string
 	ErrHostColorInvalid         string
 	IconAuto                    string
 	IconServer                  string
@@ -1046,6 +1054,8 @@ type Messages struct {
 	SFTPUploadTitle             string
 	SFTPUploadCanceled          string
 	SFTPUploadedFmt             string
+	SFTPCopiedFmt               string
+	SFTPCopiedCountFmt          string
 	SFTPUploadDirectoryTitle    string
 	SFTPDownloadDirectoryTitle  string
 	SFTPTransferQueue           string
@@ -1114,6 +1124,14 @@ type Messages struct {
 	SFTPErrModeInvalid          string
 	SFTPChangingPermissionsFmt  string
 	SFTPPermissionsChangedFmt   string
+	SFTPOwnership               string
+	SFTPOwnershipTitle          string
+	SFTPOwnershipDescription    string
+	SFTPOwnershipNoMatches      string
+	SFTPErrOwnershipRequired    string
+	SFTPErrOwnershipInvalid     string
+	SFTPChangingOwnershipFmt    string
+	SFTPOwnershipChangedFmt     string
 	SFTPEditOpeningFmt          string
 	SFTPEditBack                string
 	SFTPEditSave                string

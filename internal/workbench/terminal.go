@@ -72,6 +72,12 @@ type terminal struct {
 	screen *term.Terminal
 	shell  Shell
 	rx     []byte // scratch for draining output
+	// shellCols and shellRows are the size the shell was last told, wantCols
+	// and wantRows the size a prompt's redraw is waiting for; see resizeShell.
+	shellCols, shellRows int
+	wantCols, wantRows   int
+	shellWaiting         bool
+	shellWaitAt          time.Time
 	// encoding is the remote charset of this shell; empty is UTF-8. decoder
 	// streams its bytes to UTF-8, keeping a partial multibyte character until
 	// the next read completes it. It is nil for a UTF-8 shell.
@@ -182,6 +188,9 @@ type terminal struct {
 	// prompt reporting, which will announce when it is ready.
 	login      loginCommand
 	integrated bool
+	// injection installs the shell integration into a login shell after it
+	// starts; see terminal_injection.go.
+	injection terminalInjection
 	// prediction draws typed text before the server echoes it; see terminalPrediction.
 	prediction terminalPrediction
 	// lastInputID is the transport's id for the newest input written to the
@@ -418,8 +427,12 @@ func (state *State) configureTerminal(session *Session) {
 		if current, ok := state.sessionByIDPointer(sessionID); ok && current.term != nil {
 			t := current.term
 			t.promptReady = t.promptStarted && !t.promptDirty && t.commandReporting && t.submittedLines == 0
-			t.inputGuard.active = t.promptReady
+			// Readline redraws PS1 (including B) on resize without starting a
+			// new prompt. A dirty line is not idle for directory sync, but it
+			// keeps its existing shell ownership for typing and completion.
+			// A/C markers and submitted input revoke that ownership themselves.
 			if t.promptReady {
+				t.inputGuard.active = true
 				t.releasePromptWait()
 			}
 			t.inputLine = true
@@ -452,6 +465,7 @@ func (state *State) configureTerminal(session *Session) {
 
 func (t *terminal) resetFolderSync() {
 	t.login = loginCommand{}
+	t.injection = terminalInjection{}
 	t.inputGuard = terminalInputGuard{}
 	t.suggestionPending = nil
 	t.folderToken = rand.Text()
@@ -591,6 +605,13 @@ func (t *terminal) reconcileSelection(generation uint64) {
 // control sequences are ASCII and survive unchanged; a UTF-8 shell is a plain
 // write. zmodem and other binary protocols call shell.Write directly instead.
 func (t *terminal) writeShellInput(p []byte) bool {
+	if t.injection.holding() {
+		// The shell is being handed its integration; anything typed now would
+		// land in the middle of that line. Keep it in order and write it when
+		// the window closes (terminal_injection.go).
+		t.injection.queue(p)
+		return true
+	}
 	if t.encoding == "" || t.encoding == charset.UTF8 {
 		return t.shell.Write(p)
 	}
@@ -819,12 +840,13 @@ func (state *State) openShell(session *Session) {
 	cols, rows := t.screen.Size()
 	config := sshconn.ShellConfig{Cols: cols, Rows: rows, Notify: state.notifyFor(session), Command: session.containerCommand}
 	// Local directory restoration needs reports even with file-panel following
-	// off. SSH enables integration for either file-panel following or path tabs,
-	// except on a host confined to the interactive session, whose gateway would
-	// end the connection on the command this starts.
+	// off. SSH also needs reports for automatic completion, independently of
+	// file-panel following and path tabs. A host confined to the interactive
+	// session still opts out: its gateway could end the connection on startup.
 	config.IntegrateShell = session.isLocal() || (session.host.isSSH() && !session.host.mosh() && !session.host.InteractiveOnly &&
 		session.host.System != sshconn.SystemWindows &&
-		session.containerCommand == "" && (!state.sftpFollowOff || state.sftpTerminalFollow || state.tabTitleMode == tabTitleDirectory))
+		session.containerCommand == "" && (!state.sftpFollowOff || state.sftpTerminalFollow || state.tabTitleMode == tabTitleDirectory ||
+		!state.history.suggestOff && !session.host.NoHistory))
 	config.IntegrationToken = t.folderToken
 	if !session.isLocal() {
 		config.StartDirectory = session.startDirectory
@@ -954,6 +976,8 @@ func (state *State) shellOpened(session *Session, shell Shell, err error) {
 		t.decoder.Reset()
 	}
 	t.shell = shell
+	t.shellCols, t.shellRows = t.screen.Size()
+	t.shellWaiting = false
 	t.shellOpened = state.now()
 	t.idleLastInput = t.shellOpened
 	t.configureIdleKeepAlive(session.host, session.isLocal())
@@ -1001,6 +1025,7 @@ func (state *State) shellOpened(session *Session, shell Shell, err error) {
 	})
 	state.startLoginExpect(session)
 	t.armInitialization(session)
+	state.startInjection(session, shell)
 	state.describe(session)
 }
 
@@ -1119,6 +1144,16 @@ func (state *State) pumpFor(session *Session, budget time.Duration) {
 // the screen and whatever watches the output.
 func (state *State) applyOutput(session *Session, data []byte, wasExec bool) {
 	t := session.term
+	if !wasExec && t.injection.phase == injectionSuppressing {
+		rest, applied := state.applyInjection(session, data)
+		if !applied {
+			return
+		}
+		data = rest
+		if len(data) == 0 {
+			return
+		}
+	}
 	if wasExec && len(data) > 0 {
 		data = append(data[:0], t.feedExec(data)...)
 	}
@@ -1148,6 +1183,9 @@ func (state *State) applyOutput(session *Session, data []byte, wasExec bool) {
 	}
 	state.notePasswordPrompt(session)
 	t.login.output(state.now())
+	if t.injection.phase == injectionWaiting {
+		t.injection.lastOutput, t.injection.outputSeen = state.now(), true
+	}
 	state.goLive(session)
 }
 
@@ -1175,6 +1213,7 @@ func (state *State) shellEnded(session *Session) {
 	t.shell = nil
 	t.stopIdleKeepAlive()
 	t.login = loginCommand{}
+	t.injection = terminalInjection{}
 	t.finishExec(endShell)
 	t.recording.finishSecrets(state.now())
 	t.releasePromptWait()
@@ -1435,8 +1474,75 @@ func (state *State) fitTerminal(session *Session) {
 	t.selection.clear()
 	t.find.refreshIfChanged(t.screen, state.messages, 0)
 	if t.shell != nil {
-		t.shell.Resize(geometry.cols, geometry.rows)
+		state.resizeShell(session, geometry.cols, geometry.rows)
 	}
+}
+
+// shellResizeDelay is how long a size holds before a shell at its prompt is
+// told about it. That shell redraws the prompt itself after a resize, and a
+// drag changes the columns faster than a remote shell can: every redraw then
+// answers a width the screen has already left and lands beside the prompt it
+// was going to replace. The screen follows each step; while the pointer is held
+// the shells wait for its release, and a size changed by something else waits
+// until it holds.
+const shellResizeDelay = 100 * time.Millisecond
+
+// resizeShell gives a shell the size its pane now affords. A shell at a prompt,
+// and any shell whose size changes with the pointer down, is told through
+// settleShellResize or flushShellSizes; a program that draws its own screen is
+// told at once.
+func (state *State) resizeShell(session *Session, cols, rows int) {
+	t := session.term
+	t.shellWaiting = false
+	if t.shell == nil {
+		return
+	}
+	if !state.pointerHeld && !t.screen.AtPrompt() {
+		state.tellShellSize(t, cols, rows)
+		return
+	}
+	if t.shellCols == cols && t.shellRows == rows {
+		return
+	}
+	t.wantCols, t.wantRows, t.shellWaiting, t.shellWaitAt = cols, rows, true, state.options.WallNow()
+}
+
+// settleShellResize tells a waiting shell its size once the size has held for
+// shellResizeDelay, and asks for the frame that does it. A held pointer keeps
+// the shells waiting for its release instead.
+func (state *State) settleShellResize(canvas *gfx.Canvas, session *Session) {
+	t := session.term
+	if t == nil || !t.shellWaiting || t.shell == nil || state.pointerHeld {
+		return
+	}
+	if wait := shellResizeDelay - state.options.WallNow().Sub(t.shellWaitAt); wait > 0 {
+		canvas.RequestFrameIn(wait)
+		return
+	}
+	t.shellWaiting = false
+	if t.shellCols != t.wantCols || t.shellRows != t.wantRows {
+		state.tellShellSize(t, t.wantCols, t.wantRows)
+	}
+}
+
+// flushShellSizes tells every waiting shell the size its pane settled on when
+// the pointer is released.
+func (state *State) flushShellSizes() {
+	for index := range state.sessions {
+		t := state.sessions[index].term
+		if t == nil || !t.shellWaiting || t.shell == nil {
+			continue
+		}
+		t.shellWaiting = false
+		if t.shellCols != t.wantCols || t.shellRows != t.wantRows {
+			state.tellShellSize(t, t.wantCols, t.wantRows)
+		}
+	}
+}
+
+func (state *State) tellShellSize(t *terminal, cols, rows int) {
+	t.shellCols, t.shellRows = cols, rows
+	t.shell.Resize(cols, rows)
 }
 
 // Resize is the window-size callback: the terminals follow the window.
@@ -1909,6 +2015,9 @@ func (state *State) Scroll(event gfx.ScrollEvent) gfx.EventResult {
 	}
 	if state.modal == modalToolbarSettings {
 		return state.toolbarSettingsScroll(event)
+	}
+	if state.modal == modalSidebarSettings {
+		return state.sidebarSettingsScroll(event)
 	}
 	if state.modal == modalNewHost && state.editor.tagPicker.control.Open {
 		p := &state.editor.tagPicker

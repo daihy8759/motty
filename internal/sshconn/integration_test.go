@@ -1,6 +1,8 @@
 package sshconn
 
 import (
+	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -14,14 +16,15 @@ import (
 
 const ubuntuBanner = "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13"
 
-func TestIntegrationExecCancellationWhileAcknowledgmentIsWithheld(t *testing.T) {
+func TestIntegrationProbeCancellationWhileExecAcknowledgmentIsWithheld(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	server := startServer(t, func(server *testServer) {
-		server.version = ubuntuBanner
 		server.password, server.shell = "secret", echoShell
-		server.beforeExecReply = func(string) {
-			close(started)
-			<-release
+		server.beforeExecReply = func(command string) {
+			if command == shellIntegrationProbe {
+				close(started)
+				<-release
+			}
 		}
 		server.command = func(_ string, channel ssh.Channel) {
 			defer channel.Close()
@@ -30,84 +33,68 @@ func TestIntegrationExecCancellationWhileAcknowledgmentIsWithheld(t *testing.T) 
 	})
 	defer close(release)
 	h := connect(t, server)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		_, err := h.conn.OpenShell(ShellConfig{Cols: 80, Rows: 24, IntegrateShell: true})
+		_, err := h.conn.RunCommand(ctx, shellIntegrationProbe, 4096)
 		result <- err
 	}()
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the integration wrapper never reached the exec request")
+		t.Fatal("probe never reached exec request")
 	}
-	h.conn.Cancel()
+	cancel()
 	select {
 	case err := <-result:
-		if err == nil {
-			t.Fatal("canceling while the exec acknowledgment was withheld still opened a shell")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled establishment returned %v", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cancellation is waiting for the withheld exec acknowledgment")
 	}
+	w := openShell(t, h, 80, 24)
+	w.until("normal shell fallback", func(output string) bool { return strings.Contains(output, "welcome") })
 }
 
-func TestIntegrationSSHStartupAndFallback(t *testing.T) {
-	for _, mode := range []string{"integrated", "unknown-banner", "exec-refused", "custom-command"} {
+// A shell is started with a shell request, not as a command wrapped in a
+// startup script: OpenSSH prints the connection's login message only to a
+// session that is not a command, and only on the first session (ADR 0025).
+func TestOpenShellSendsTheShellRequestFirst(t *testing.T) {
+	for _, mode := range []string{"shell", "custom-command"} {
 		t.Run(mode, func(t *testing.T) {
+			var mu sync.Mutex
+			var requests []string
 			server := startServer(t, func(server *testServer) {
 				server.password, server.shell = "secret", echoShell
-				if mode != "unknown-banner" {
-					server.version = ubuntuBanner
-				}
+				server.version = "SSH-2.0-OpenSSH_9.6"
 				server.command = func(command string, channel ssh.Channel) {
 					defer channel.Close()
-					text := "integrated-startup"
-					if mode == "custom-command" {
-						if command != "custom shell" {
-							t.Errorf("custom command replaced by %q", command)
-						}
-						text = "custom-startup"
-					} else if !strings.Contains(command, "motty-shell") {
-						t.Errorf("integration wrapper missing from %q", command)
-					}
-					io.WriteString(channel, text)
-					channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
-				}
-				server.refuseCommand = func(command string) bool {
-					return mode == "exec-refused" && strings.Contains(command, "motty-shell")
+					mu.Lock()
+					requests = append(requests, command)
+					mu.Unlock()
+					io.WriteString(channel, "custom-startup")
+					_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 				}
 			})
 			h := connect(t, server)
-			config := ShellConfig{Cols: 80, Rows: 24, IntegrateShell: true}
-			want := "integrated-startup"
-			switch mode {
-			case "custom-command":
+			config := ShellConfig{Cols: 80, Rows: 24}
+			want := "welcome"
+			if mode == "custom-command" {
 				config.Command, want = "custom shell", "custom-startup"
-			case "unknown-banner", "exec-refused":
-				want = "welcome"
 			}
 			w := openShellWith(t, h, config)
 			w.until(want, func(output string) bool { return strings.Contains(output, want) })
+			mu.Lock()
+			defer mu.Unlock()
+			if mode == "shell" && len(requests) != 0 {
+				t.Fatalf("a shell request was preceded by commands %q", requests)
+			}
+			if mode == "custom-command" && (len(requests) != 1 || requests[0] != "custom shell") {
+				t.Fatalf("commands = %q, want the custom command once", requests)
+			}
 		})
-	}
-}
-
-// TestIntegrationWrapperIsOneChannel proves the discovery that used to be a
-// second session is now baked into the shell command itself, so an unsupported
-// shell still starts plainly without Motty opening anything extra.
-func TestIntegrationWrapperIsOneChannel(t *testing.T) {
-	if got := integrationWrapperCommand("pty-token"); got == "" {
-		t.Fatal("a valid token should build the wrapper")
-	} else if !strings.Contains(got, "bash") || !strings.Contains(got, "zsh") {
-		t.Fatalf("wrapper does not select both shells: %q", got)
-	}
-	for _, token := range []string{"bad token", "bad;rm", strings.Repeat("x", 129)} {
-		if got := integrationWrapperCommand(token); got != "" {
-			t.Errorf("invalid token %q enabled integration", token)
-		}
-	}
-	if integrationWrapperCommand() == "" {
-		t.Fatal("the wrapper should still work without a token")
 	}
 }
 
@@ -135,26 +122,26 @@ func TestShellProbeSafetyIsAPositiveAllowList(t *testing.T) {
 }
 
 // Tailscale SSH names itself "Tailscale" rather than after an OpenSSH build,
-// yet it is a full server that answers a second command channel. The shell it
-// starts must still be given directory reporting, or the file panel never
-// follows the working directory (issue #198). The wrapper travels with the
-// shell command itself, so the server never sees a separate probe session.
-func TestTailscaleSSHStartsTheShellIntegrated(t *testing.T) {
+// yet it is a full server that answers the shell request and a later command
+// channel. Folder reporting is installed into that shell by the caller
+// (ADR 0025); this checks the transport gives it a shell and answers ProbeShell.
+func TestTailscaleSSHStartsAPlainShell(t *testing.T) {
 	server := startServer(t, func(server *testServer) {
 		server.password, server.shell = "secret", echoShell
 		server.version = "SSH-2.0-Tailscale"
 		server.command = func(command string, channel ssh.Channel) {
 			defer channel.Close()
-			if !strings.Contains(command, "motty-shell") {
-				t.Errorf("integration wrapper missing from %q", command)
-			}
-			io.WriteString(channel, "integrated-startup")
+			io.WriteString(channel, "\x1emotty-shell:/bin/zsh\x1f\nmotty-shell:\n")
 			_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 		}
 	})
 	h := connect(t, server)
-	w := openShellWith(t, h, ShellConfig{Cols: 80, Rows: 24, IntegrateShell: true})
-	w.until("the integrated startup", func(output string) bool { return strings.Contains(output, "integrated-startup") })
+	w := openShellWith(t, h, ShellConfig{Cols: 80, Rows: 24})
+	w.until("the login shell", func(output string) bool { return strings.Contains(output, "welcome") })
+	path, _ := h.conn.ProbeShell(context.Background())
+	if path != "/bin/zsh" {
+		t.Fatalf("ProbeShell path = %q, want /bin/zsh", path)
+	}
 }
 
 func TestWSLIntegrationScriptRefusesWhatCouldBeInjected(t *testing.T) {
@@ -172,76 +159,38 @@ func TestWSLIntegrationScriptRefusesWhatCouldBeInjected(t *testing.T) {
 	}
 }
 
-// The shell family decides how the assistant may type a command, so it is
-// learned from the server's own default shell, once per connection, and only
-// from a server that is known to take a command channel beside a shell.
-func TestShellKindComesFromTheServersDefaultShell(t *testing.T) {
+// The shell family decides how the assistant may type a command. It is asked
+// after the interactive shell is open, over a command channel that therefore
+// cannot consume the connection's login message (ADR 0025).
+func TestProbeShellAnswersFromTheLoginShell(t *testing.T) {
 	answers := map[string]struct {
 		output string
+		path   string
 		want   shellkind.Kind
 	}{
-		"posix":      {"motty-shell:\n", shellkind.POSIX},
-		"powershell": {"motty-shell:System.Management.Automation.PSVersionHashtable\r\n", shellkind.PowerShell},
-		"cmd":        {"\"motty-shell:$PSVersionTable$FISH_VERSION\"\r\n", shellkind.Cmd},
-		"garbage":    {"unexpected", shellkind.Unknown},
+		"posix":      {"\x1emotty-shell:/bin/bash\x1f\nmotty-shell:\n", "/bin/bash", shellkind.POSIX},
+		"powershell": {"motty-shell:System.Management.Automation.PSVersionHashtable\r\n", "", shellkind.PowerShell},
+		"cmd":        {"\"motty-shell:$PSVersionTable$FISH_VERSION\"\r\n", "", shellkind.Cmd},
+		"garbage":    {"unexpected", "", shellkind.Unknown},
 	}
 	for name, answer := range answers {
 		t.Run(name, func(t *testing.T) {
-			var probes int
-			var mu sync.Mutex
 			server := startServer(t, func(server *testServer) {
 				server.password, server.shell = "secret", echoShell
-				server.version = "SSH-2.0-OpenSSH_for_Windows_9.5"
+				server.version = ubuntuBanner
 				server.command = func(command string, channel ssh.Channel) {
 					defer channel.Close()
-					if command == shellkind.Probe {
-						mu.Lock()
-						probes++
-						mu.Unlock()
-						io.WriteString(channel, answer.output)
+					if command != shellProbe {
+						t.Errorf("unexpected command %q", command)
 					}
+					io.WriteString(channel, answer.output)
 					_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 				}
 			})
 			h := connect(t, server)
-			first := openShellWith(t, h, ShellConfig{Cols: 80, Rows: 24})
-			second := openShellWith(t, h, ShellConfig{Cols: 80, Rows: 24})
-			if first.shell.Kind() != answer.want || second.shell.Kind() != answer.want {
-				t.Fatalf("kinds = %v, %v; want %v", first.shell.Kind(), second.shell.Kind(), answer.want)
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			if probes != 1 {
-				t.Fatalf("the server was asked %d times, want once per connection", probes)
-			}
-		})
-	}
-}
-
-func TestShellKindIsNotProbedOnAnUnknownImplementationOrForACustomCommand(t *testing.T) {
-	for _, mode := range []string{"gateway", "custom-command"} {
-		t.Run(mode, func(t *testing.T) {
-			server := startServer(t, func(server *testServer) {
-				server.password, server.shell = "secret", echoShell
-				server.version = "SSH-2.0-OpenSSH_9.6"
-				if mode == "gateway" {
-					server.version = "SSH-2.0-SomeGateway"
-				}
-				server.command = func(command string, channel ssh.Channel) {
-					defer channel.Close()
-					if command == shellkind.Probe {
-						t.Errorf("%s: the shell family was probed", mode)
-					}
-					_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
-				}
-			})
-			h := connect(t, server)
-			config := ShellConfig{Cols: 80, Rows: 24}
-			if mode == "custom-command" {
-				config.Command = "custom shell"
-			}
-			if kind := openShellWith(t, h, config).shell.Kind(); kind != shellkind.Unknown {
-				t.Fatalf("kind = %v, want Unknown", kind)
+			path, kind := h.conn.ProbeShell(context.Background())
+			if path != answer.path || kind != answer.want {
+				t.Fatalf("ProbeShell = %q, %v; want %q, %v", path, kind, answer.path, answer.want)
 			}
 		})
 	}

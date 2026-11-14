@@ -362,6 +362,7 @@ func (state *State) paintGeneralSettings(page *settingsPage) {
 					func() { state.save() }, nil)
 			}
 			state.paintToolbarSettingsRows(page)
+			state.paintSidebarSettingsRow(page)
 		})
 		state.paintDiagnosticsSetting(page)
 	})
@@ -524,6 +525,14 @@ func (page *settingsPage) rowOf(height float32) ui.Box {
 func (page *settingsPage) growRow() ui.Box {
 	page.separator()
 	return ui.Row(page.c).MinHeight(page.rowHeight).Items(ui.Center).PadY(6)
+}
+
+// hintRow is words that explain the rows around them, with no control of their
+// own. It grows with the text rather than clipping it.
+func (page *settingsPage) hintRow(description string) {
+	page.growRow().PadX(18).Children(func() {
+		ui.Paragraph(page.c, description, 0).FontSize(metrics.FontSizeS).Color(page.state.pal.muted).LineHeight(15)
+	})
 }
 
 // line is one row of a group: the name and explanation on the left, wrapping to

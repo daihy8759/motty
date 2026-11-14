@@ -261,6 +261,8 @@ func (w *sftpWindow) paint(canvas *gfx.Canvas, size gfx.Size) {
 	}
 	if w.drag.active {
 		w.paintDrag(canvas)
+	} else if w.foreign.active {
+		w.paintForeignDrag(canvas)
 	}
 	w.notices.paint(canvas, theme, gfx.Rect{Width: size.Width, Height: size.Height})
 	if !w.ui.profileHoverOpen {
@@ -738,13 +740,24 @@ func (w *sftpWindow) declareListRow(row ui.ListRow, side int, paneWidth, rowWidt
 	box.Children(func() {
 		declareSFTPRowIcon(c, entry, tint)
 		name := ui.Text(c, entry.entry.Name).Color(color).Ellipsis().Grow(1)
-		if resizable {
-			// The row spends its padding, the icon and the gaps before the name
-			// text; a name wider than what is left is the one the tooltip is for.
-			available := rowWidth - 16 - sftpColumnIconWidth - 3*sftpColumnNameGap - sizeWidth - modifiedWidth
-			if available > 0 && c.Canvas().TextWidth(entry.entry.Name, metrics.FontSizeM) > available {
-				name = name.HitWith(row.ID, entry.entry.Name, gfx.HitOptions{Hint: entry.entry.Name, SkipFocus: true})
+		// The row spends its padding, the icon and the gaps before the name text;
+		// a name wider than what is left is the one the tooltip is for.
+		available := rowWidth - 16 - sftpColumnIconWidth - 3*sftpColumnNameGap - sizeWidth - modifiedWidth
+		if !resizable {
+			available = rowWidth - 16 - sftpColumnIconWidth - sftpColumnNameGap
+			for _, column := range w.owner.sftpColumns.entries[1:] {
+				if column.Enabled {
+					available -= sftpColumnNameGap
+					if column.Key == sftpColumnSize {
+						available -= sizeWidth
+					} else if column.Key == sftpColumnModified {
+						available -= modifiedWidth
+					}
+				}
 			}
+		}
+		if available > 0 && c.Canvas().TextWidth(entry.entry.Name, metrics.FontSizeM) > available {
+			name = name.HitWith(row.ID, entry.entry.Name, gfx.HitOptions{Hint: entry.entry.Name, SkipFocus: true})
 		}
 		for _, column := range w.owner.sftpColumns.entries[1:] {
 			if !column.Enabled {
@@ -884,4 +897,27 @@ func (w *sftpWindow) paintDrag(canvas *gfx.Canvas) {
 		label, glyph = w.owner.messages.SFTPWindow.DropUploadHint, iconUpload
 	}
 	w.owner.paintSFTPTransferDrop(canvas, bounds, label, target, glyph)
+}
+
+// paintForeignDrag paints the pane another window's file drag would land in.
+func (w *sftpWindow) paintForeignDrag(canvas *gfx.Canvas) {
+	side := sideIndex(w.foreign.local)
+	if w.ui.list[side].Width <= 0 {
+		return
+	}
+	bounds := w.ui.list[side]
+	if w.foreign.row >= 0 {
+		bounds.Y += float32(w.foreign.row)*sftpRowHeight - w.ui.offset[side]
+		bounds.Height = sftpRowHeight
+	}
+	label, glyph := w.owner.messages.SFTPWindow.DropUploadHint, uint8(iconUpload)
+	switch {
+	case !w.foreign.fromLocal && w.foreign.local:
+		label, glyph = w.owner.messages.SFTPWindow.DropDownloadHint, iconDownload
+	case !w.foreign.fromLocal && !w.foreign.local:
+		label, glyph = w.owner.messages.SFTPWindow.DropCopyHint, iconCopy
+	}
+	canvas.Clip(w.ui.list[side])
+	defer canvas.Unclip()
+	w.owner.paintSFTPTransferDrop(canvas, bounds, label, w.foreign.target, glyph)
 }

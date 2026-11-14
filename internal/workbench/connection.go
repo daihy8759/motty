@@ -537,6 +537,7 @@ const (
 	modalDashboard
 	modalDashboardAdd
 	modalToolbarSettings
+	modalSidebarSettings
 	modalSFTPColumns
 	modalSudoSFTP
 	modalTerminalInput
@@ -585,6 +586,7 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	avoidShare := session.avoidShare || loopbackTunnel(host)
 	session.avoidShare = false
 	session.closeSSHBrowser()
+	session.stopRemoteLogs()
 	state.redialSessionForwards(session.ID)
 	state.closeCompletionPath(session)
 	state.closeSFTP(session)
@@ -666,6 +668,10 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	}
 	config, valid := state.sshConfigFor(session, host)
 	session.sshOptions = host.SSHOptions.Clone()
+	// This connection is for a terminal: its first session must be the shell,
+	// so the probes wait for it and the server's login message reaches the
+	// terminal (ADR 0025).
+	config.PrimaryShell = true
 	if valid && state.shareConnections == shareConnectionsOn && !avoidShare {
 		if shared, _ := state.shareFrom(session, host); shared != nil {
 			session.conn, session.shared = shared, true
@@ -835,6 +841,7 @@ func (state *State) Wake() {
 		state.pumpDesktop(session)
 		state.pump(session)
 		state.pumpCompletionPath(session)
+		state.advanceInjection(session, findNow)
 		state.runLoginCommand(session)
 		state.runIdleKeepAlive(session, findNow)
 		// A session-local charset notice changes the available character grid.
@@ -972,6 +979,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 		state.rememberSecret(session)
 	case sshconn.PhaseClosed:
 		session.closeSSHBrowser()
+		session.stopRemoteLogs()
 		session.sudoCommands, session.sudoPassword = false, ""
 		state.endDesktop(session)
 		session.pendingSecretName, session.pendingSecretValue = "", ""
@@ -988,6 +996,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 		state.tell(session, toldEnded, status)
 	case sshconn.PhaseFailed:
 		session.closeSSHBrowser()
+		session.stopRemoteLogs()
 		session.sudoCommands, session.sudoPassword = false, ""
 		state.endDesktop(session)
 		session.pendingSecretName, session.pendingSecretValue = "", ""
@@ -1347,6 +1356,9 @@ func (state *State) closeModal() {
 	}
 	if state.modal == modalToolbarSettings {
 		state.toolbarEditor.list.Cancel()
+	}
+	if state.modal == modalSidebarSettings {
+		state.sidebarEditor = sidebarSettingsUI{}
 	}
 	if state.modal == modalSFTPColumns {
 		state.sftpColumnEditor.list.Cancel()

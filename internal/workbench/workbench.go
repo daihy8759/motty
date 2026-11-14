@@ -316,7 +316,11 @@ var (
 	hitSFTPMove            = tree.ID(sftpHits, "sftp-move")
 	hitSFTPDelete          = tree.ID(sftpHits, "sftp-delete")
 	hitSFTPChmod           = tree.ID(sftpHits, "sftp-chmod")
-	hitSFTPChmodBits       = tree.Sub(sftpHits, tree.Name("sftp-chmod-bit")) // + the bit index
+	hitSFTPChown           = tree.ID(sftpHits, "sftp-chown")
+	hitSFTPChownDismiss    = tree.ID(sftpHits, "sftp-chown-dismiss")
+	hitSFTPChownUserItem   = tree.Sub(sftpHits, tree.Name("sftp-chown-user"))  // + the match index
+	hitSFTPChownGroupItem  = tree.Sub(sftpHits, tree.Name("sftp-chown-group")) // + the match index
+	hitSFTPChmodBits       = tree.Sub(sftpHits, tree.Name("sftp-chmod-bit"))   // + the bit index
 	hitSFTPDialogClose     = tree.ID(sftpHits, "sftp-dialog-close")
 	hitSFTPDialogCancel    = tree.ID(sftpHits, "sftp-dialog-cancel")
 	hitSFTPDialogSubmit    = tree.ID(sftpHits, "sftp-dialog-submit")
@@ -506,26 +510,30 @@ type State struct {
 	windowBarScroll        windowBarScroll
 	tabOrientation         tabOrientation
 	tabNumbers             bool // each tab shows its place number next to the name
-	verticalTabs           verticalTabs
-	tabMenu                tabMenu
-	hostMenu               hostMenu
-	hostPrivacy            hostPrivacyState
-	localShellPicker       localShellPicker
-	snippetMenu            snippetMenu
-	sftpMenu               sftpMenu
-	sftpHeaderMenu         sftpHeaderMenuRequest
-	fileProperties         sftpFileProperties
-	popups                 popupMenus
-	selectedHostID         uint32
-	hostRevealID           uint32
-	activeSessionID        uint32
-	nextSessionID          uint32
-	nextHostID             uint32
-	nextIdentityID         uint32
-	nextForwardID          uint32
-	nextForwardStartID     uint64
-	nextProxyID            uint32
-	forwards               []forwardRecord
+	// hiddenNav is the set of page rows the sidebar leaves out. Hiding is the
+	// entry only: the page keeps its section, shortcuts and command entry.
+	hiddenNav          navHidden
+	sidebarEditor      sidebarSettingsUI
+	verticalTabs       verticalTabs
+	tabMenu            tabMenu
+	hostMenu           hostMenu
+	hostPrivacy        hostPrivacyState
+	localShellPicker   localShellPicker
+	snippetMenu        snippetMenu
+	sftpMenu           sftpMenu
+	sftpHeaderMenu     sftpHeaderMenuRequest
+	fileProperties     sftpFileProperties
+	popups             popupMenus
+	selectedHostID     uint32
+	hostRevealID       uint32
+	activeSessionID    uint32
+	nextSessionID      uint32
+	nextHostID         uint32
+	nextIdentityID     uint32
+	nextForwardID      uint32
+	nextForwardStartID uint64
+	nextProxyID        uint32
+	forwards           []forwardRecord
 	// forwardTunnels are the SSH transports forwards use when no open tab
 	// carries one. They have no terminal and are never saved.
 	forwardTunnels     []*forwardTunnel
@@ -736,7 +744,13 @@ type State struct {
 	// transfers is the file-panel transfer center. A terminal transfer lives on
 	// its session, so several tabs can move files at once.
 	transfers transferCenter
-	xy        xySetup
+	// sftpClip is the copied server files when this window has no Group; with a
+	// Group, the clipboard is shared by every window of the process.
+	sftpClip sftpClipboard
+	// foreignFileTab is the file tab another window's drag would land in, or
+	// zero. It highlights the tab while the drag is over it.
+	foreignFileTab uint32
+	xy             xySetup
 	// Requests from outside to connect (see launch.go), the link being asked
 	// about, and the update check.
 	launchBacklog  [][]string
@@ -825,6 +839,10 @@ type State struct {
 	// terminalInputClickOff stops a click on the line being typed from moving
 	// the shell's cursor (see moveInputCursor).
 	terminalInputClickOff bool
+	// pointerHeld is true while a drag captures the pointer. The panes can change
+	// size on every motion then, and the shells are told once it is released;
+	// see resizeShell.
+	pointerHeld bool
 
 	// settingsScroll is how far the settings page is scrolled, in pixels, and
 	// settingsContent how tall it was when last painted.
@@ -907,9 +925,12 @@ type State struct {
 	closeAsked    bool
 	trayHintShown bool
 	sync          syncState
-	sshSync       sshSyncState
-	remote        remoteToolsView
-	edits         externalEdits
+	// syncScope is what this computer lets cloud sync exchange. It belongs to
+	// this device, so two computers may sync different sets of content.
+	syncScope syncScope
+	sshSync   sshSyncState
+	remote    remoteToolsView
+	edits     externalEdits
 	// fontSizeText is the font size as the settings page shows it, for fontSizeShown.
 	fontSizeText         string
 	fontSizeShown        float32
@@ -1080,6 +1101,7 @@ func (state *State) Close() {
 	for index := range state.sessions {
 		session := &state.sessions[index]
 		session.closeSSHBrowser()
+		session.stopRemoteLogs()
 		state.cancelReconnect(session)
 		state.closeCompletionPath(session)
 		state.closeSFTP(session)
@@ -1184,6 +1206,11 @@ func New(options Options) *State {
 			}
 			return string(stamp), err
 		})
+	}
+	if config != nil {
+		// A deletion is remembered for a sync window; start is the right moment to
+		// let the ones past it go, since sync prunes only when it runs.
+		_ = state.pruneTombstones()
 	}
 	if state.options.Blank {
 		// Settings and hosts, but none of the tabs the last session left.
@@ -1613,6 +1640,9 @@ func (state *State) click(id gfx.ID, feedback bool) {
 	if state.clickDashboard(id) {
 		return
 	}
+	if state.clickRemoteLogs(id) {
+		return
+	}
 	if state.clickSessionLogs(id) {
 		return
 	}
@@ -1753,6 +1783,9 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		return
 	case modalToolbarSettings:
 		state.clickToolbarSettings(id)
+		return
+	case modalSidebarSettings:
+		state.clickSidebarSettings(id)
 		return
 	case modalSFTPColumns:
 		state.clickSFTPColumnSettings(id)
@@ -2096,6 +2129,7 @@ func (state *State) closeSession(id uint32) {
 	session := &state.sessions[index]
 	state.stopLoginExpect(session)
 	session.closeSSHBrowser()
+	session.stopRemoteLogs()
 	state.leaveLocalProxy(session)
 	if session.transferBusy() {
 		state.abandonTransfer(session)
@@ -2448,6 +2482,19 @@ func (state *State) hostForRow(id gfx.ID) (Host, bool) {
 // Pointer handles the pointer events the runtime does not turn into clicks. A
 // double click on a host row connects to it.
 func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
+	// A drag owns the pointer from the press it captures to its release: the
+	// panes may change size on every motion, and the shells wait for the end.
+	switch event.Kind {
+	case gfx.PointerDown, gfx.PointerMove:
+		if event.Captured {
+			state.pointerHeld = true
+		}
+	case gfx.PointerUp, gfx.PointerExit:
+		if state.pointerHeld {
+			state.pointerHeld = false
+			state.flushShellSizes()
+		}
+	}
 	if state.noteExit != nil {
 		if isNoteExitHit(event.Target) {
 			return gfx.EventResult{}
@@ -2468,6 +2515,9 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 		if !state.commitTabInline() {
 			return gfx.EventResult{Handled: true, Focus: hitTabInline, Repaint: true}
 		}
+	}
+	if result := state.remoteLogResize(event); result.Handled {
+		return result
 	}
 	if result := state.notesPointer(event); result.Handled {
 		return result
@@ -2515,6 +2565,9 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 		return result
 	}
 	if result := state.toolbarSettingsPointer(event); result.Handled {
+		return result
+	}
+	if result := state.sidebarSettingsPointer(event); result.Handled {
 		return result
 	}
 	if result := state.ruleManagerPointer(event); result.Handled {
@@ -2737,6 +2790,11 @@ func (state *State) pointer(event gfx.PointerEvent) gfx.EventResult {
 			return result
 		}
 	}
+	if state.modal == modalNewHost && state.editor.iconPicker.control.Open {
+		if result := state.editor.iconPicker.control.Pointer(event); result.Handled {
+			return result
+		}
+	}
 	if state.modal == modalNewHost && state.editor.encodingPicker.control.Open {
 		if event.Kind == gfx.PointerDown && event.Button == gfx.PointerButtonPrimary && !isHostEncodingPickerTarget(event.Target) {
 			state.editor.encodingPicker.control.Open = false
@@ -2858,6 +2916,13 @@ func (state *State) Key(event gfx.KeyEvent) (outcome gfx.EventResult) {
 		return state.noteExitKey(event)
 	}
 	defer state.afterEvent(&outcome)
+	if state.modal == modalNone && state.terminalPage() {
+		if view := state.workspaceRemoteLogs(state.deck.ActiveWorkspace()); view != nil && view.formMode == remoteLogFormNone {
+			if result := view.pathSplit.Key(event); result.Handled {
+				return result
+			}
+		}
+	}
 	if result := state.toolbarDockKey(event); result.Handled {
 		return result
 	}
@@ -2931,6 +2996,9 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		return result
 	}
 	if result, handled := state.workspaceArrangementKey(event); handled {
+		return result
+	}
+	if result, handled := state.tabMenuColorKey(event); handled {
 		return result
 	}
 	if result, handled := state.terminalInputKey(event); handled {
@@ -3015,6 +3083,9 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		return result
 	}
 	if result := state.toolbarSettingsKey(event); result.Handled {
+		return result
+	}
+	if result := state.sidebarSettingsKey(event); result.Handled {
 		return result
 	}
 	if result := state.sftpColumnSettingsKey(event); result.Handled {

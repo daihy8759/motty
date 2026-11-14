@@ -43,6 +43,7 @@ type savedState struct {
 	BackgroundOutputAlerts     bool                    `json:"background_output_alerts,omitempty"`
 	TabOrientation             string                  `json:"tab_orientation,omitempty"`
 	TabNumbers                 bool                    `json:"tab_numbers,omitempty"`
+	HiddenNav                  []string                `json:"hidden_nav,omitempty"`
 	VerticalTabsAutoHide       bool                    `json:"vertical_tabs_auto_hide,omitempty"`
 	VerticalTabsGrouping       bool                    `json:"vertical_tabs_grouping,omitempty"`
 	NetworkProxy               string                  `json:"network_proxy,omitempty"`
@@ -187,16 +188,20 @@ type savedState struct {
 	Deck       *layoutcore.DeckDTO `json:"deck,omitempty"`
 	// An empty array distinguishes a new snapshot with no managed workspaces
 	// from an older snapshot that never recorded workspace identity.
-	WorkspaceLayouts       []savedWorkspaceLayout `json:"workspace_layouts,omitzero"`
-	Sync                   *savedSync             `json:"sync,omitempty"`
-	HostView               string                 `json:"host_view,omitempty"`
-	HostOrder              string                 `json:"host_order,omitempty"`
-	HiddenHostTags         []string               `json:"hidden_host_tags,omitempty"`
-	HostPrivacy            bool                   `json:"host_privacy,omitempty"`
-	HostPrivacyShowName    bool                   `json:"host_privacy_show_name,omitempty"`
-	HostPrivacyShowAddress bool                   `json:"host_privacy_show_address,omitempty"`
-	HostPrivacyShowUser    bool                   `json:"host_privacy_show_user,omitempty"`
-	Background             *savedBackground       `json:"background,omitempty"`
+	WorkspaceLayouts []savedWorkspaceLayout `json:"workspace_layouts,omitzero"`
+	Sync             *savedSync             `json:"sync,omitempty"`
+	// SyncExcluded is this computer's selection of what cloud sync exchanges,
+	// stored as the closed categories. It is device-local: it never becomes a
+	// shared record, and a computer without it syncs everything.
+	SyncExcluded           []syncCategory   `json:"sync_excluded,omitempty"`
+	HostView               string           `json:"host_view,omitempty"`
+	HostOrder              string           `json:"host_order,omitempty"`
+	HiddenHostTags         []string         `json:"hidden_host_tags,omitempty"`
+	HostPrivacy            bool             `json:"host_privacy,omitempty"`
+	HostPrivacyShowName    bool             `json:"host_privacy_show_name,omitempty"`
+	HostPrivacyShowAddress bool             `json:"host_privacy_show_address,omitempty"`
+	HostPrivacyShowUser    bool             `json:"host_privacy_show_user,omitempty"`
+	Background             *savedBackground `json:"background,omitempty"`
 	// Provider collections are nil while the assistant's database is unread.
 	AIProviders    *[]savedAIProvider `json:"ai_providers,omitempty"`
 	AICLIProviders *[]savedAIProvider `json:"ai_cli_providers,omitempty"`
@@ -511,6 +516,7 @@ func (state *State) snapshot() savedState {
 		BackgroundOutputAlerts:     state.backgroundOutputAlerts,
 		TabOrientation:             state.tabOrientation.String(),
 		TabNumbers:                 state.tabNumbers,
+		HiddenNav:                  state.hiddenNav.savedKeys(),
 		VerticalTabsAutoHide:       state.verticalTabs.autoHide,
 		VerticalTabsGrouping:       state.verticalTabs.grouping,
 		NetworkProxy:               state.networkProxy.String(),
@@ -737,6 +743,7 @@ func (state *State) snapshot() savedState {
 	saved.AIProviders = state.savedAIProviders()
 	saved.AICLIProviders = state.savedAICLIProviders()
 	saved.Sync = state.savedSyncValue()
+	saved.SyncExcluded = state.syncScope.excludedCopy()
 	saved.HostView = state.hostView.saved()
 	saved.HostOrder = state.hostOrder.saved()
 	saved.HiddenHostTags = state.hiddenHostTags
@@ -1012,6 +1019,7 @@ func (state *State) restoreLocal(saved savedState) {
 	state.backgroundOutputAlerts = saved.BackgroundOutputAlerts
 	state.setTabOrientation(tabOrientationFromString(saved.TabOrientation))
 	state.setTabNumbers(saved.TabNumbers)
+	state.hiddenNav = hiddenNavPages(saved.HiddenNav)
 	state.setVerticalTabsAutoHide(saved.VerticalTabsAutoHide)
 	state.setVerticalTabsGrouping(saved.VerticalTabsGrouping)
 	state.restoreSFTPLocalFavorites(saved.SFTPLocalBookmarks)
@@ -1101,6 +1109,7 @@ func (state *State) restoreLocal(saved savedState) {
 	state.restoreIdentities(saved.IdentityFiles)
 	state.agentHosts = agentHostSet(saved.AgentHosts)
 	state.restoreSync(saved.Sync)
+	state.syncScope = newSyncScope(saved.SyncExcluded)
 	state.hostView = hostViewFromString(saved.HostView)
 	state.hostPrivacy.enabled = saved.HostPrivacy
 	state.hostPrivacy.maskName = !saved.HostPrivacyShowName

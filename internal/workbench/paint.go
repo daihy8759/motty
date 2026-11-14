@@ -373,6 +373,7 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 	state.requestReconnectFrames(canvas)
 	state.requestAutofillFrames(canvas)
 	state.requestLoginCommandFrames(canvas)
+	state.requestInjectionFrames(canvas)
 	state.requestIdleKeepAliveFrames(canvas)
 	state.paintLocalProxyFocus(canvas)
 	state.paintTransferProgressCard(canvas)
@@ -453,6 +454,7 @@ type windowBar struct {
 
 type barTab struct {
 	badge, light ui.Box
+	box          ui.Box // the tab's place, for a file drag looking for a target
 	pathLabel    string
 	foreground   gfx.Color
 	title        ui.Box
@@ -463,7 +465,12 @@ type barTab struct {
 	fileSession  uint32
 	id, closeID  gfx.ID
 	background   gfx.Color
-	compact      bool
+	// base is the fill before tint colours it; the alert title is backed by it
+	// so its ink keeps the contrast it has on an uncoloured tab. tint is the
+	// tab colour, empty when the tab has none.
+	base    gfx.Color
+	tint    string
+	compact bool
 }
 
 // barGeometry is what a first pass over the window bar says about its tabs: the
@@ -621,6 +628,7 @@ func (state *State) declareShell(c ui.C) {
 	if chrome.shellFullPage {
 		if state.terminalPage() {
 			state.declareWorkspacePanes(c)
+			state.declareRemoteLogs(c)
 			state.declareContextPanel(c)
 		} else {
 			// The file-manager tab is part of the page like the panes.
@@ -832,6 +840,7 @@ func (state *State) declareWindowBar(c ui.C, bar *windowBar, probe, picture bool
 						}
 						active := state.activeSection == sectionSFTP && state.activeSFTPTab == fileTab.session.ID
 						hovered := c.Canvas().Hovered() == id || c.Canvas().Hovered() == closeID
+						dropped := state.foreignFileTab == fileTab.session.ID
 						foreground := pal.muted
 						fill, edge := pal.tab, pal.line
 						switch {
@@ -840,14 +849,17 @@ func (state *State) declareWindowBar(c ui.C, bar *windowBar, probe, picture bool
 						case hovered:
 							fill, foreground = pal.tabHover, pal.text
 						}
-						amount := float32(.08)
-						if active {
-							amount = .18
-						} else if hovered {
-							amount = .12
+						color := fileTab.session.host.Color
+						entry.tint = color
+						entry.base = fill
+						fill = tabFill(pal, fill, color, active, hovered)
+						edge = tintHostSurface(edge, color, tabColorBorderTint)
+						foreground = tabInk(pal, color, foreground)
+						if dropped {
+							// A file drag from another window would land in this
+							// tab's server folder.
+							fill, edge, foreground = pal.tabActive, pal.accent, pal.text
 						}
-						fill = tintHostSurface(fill, fileTab.session.host.Color, amount)
-						edge = tintHostSurface(edge, fileTab.session.host.Color, .35)
 						entry.background = fill
 						first := float32(0)
 						if state.tabOrientation == tabsVertical {
@@ -858,14 +870,14 @@ func (state *State) declareWindowBar(c ui.C, bar *windowBar, probe, picture bool
 							first = -scroll
 						}
 						label := state.sftpFileTabTitle(fileTab)
-						ui.Row(c).Size(geometry.tabWidth, barTabHeight).Shrink(0).MarginSides(0, barGap, 0, first).
+						entry.box = ui.Row(c).Size(geometry.tabWidth, barTabHeight).Shrink(0).MarginSides(0, barGap, 0, first).
 							HitOutset(barTabReach, 0, barTabReach, 0).PadSides(0, 3, 0, 4).Items(ui.Center).Radius(radius.item).Border(1, edge).Background(fill).
 							HitWith(id, label, gfx.HitOptions{Role: gfx.RoleTab, Selected: active, Hint: label}).Children(func() {
 							entry.badge = ui.Slot(c).Size(20, 20).MarginSides(0, 7, 0, 0)
 							if state.tabNumbers && entry.number != "" {
 								// File tabs follow the session tabs in the number row,
 								// as they do for the number shortcuts.
-								ui.Text(c, entry.number).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(tabNumberColor(foreground)).LineHeight(20).Shrink(0).MarginSides(0, tabNumberGap, 0, 0)
+								ui.Text(c, entry.number).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(tabNumberInk(foreground, fileTab.session.host.Color)).LineHeight(20).Shrink(0).MarginSides(0, tabNumberGap, 0, 0)
 							}
 							ui.Text(c, label).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(foreground).LineHeight(20).Ellipsis()
 							entry.light = ui.Slot(c).Size(9, 20).MarginSides(0, 0, 0, 7)
@@ -920,16 +932,12 @@ func (state *State) declareWorkspaceTab(c ui.C, workspace layoutcore.WorkspaceIn
 	case hovered:
 		fill, foreground = pal.tabHover, pal.text
 	}
-	if session := state.tabSession(workspace); session != nil {
-		amount := float32(.08)
-		if active {
-			amount = .18
-		} else if hovered {
-			amount = .12
-		}
-		fill = tintHostSurface(fill, session.host.Color, amount)
-		edge = tintHostSurface(edge, session.host.Color, .35)
-	}
+	color := state.tabColor(workspace)
+	entry.tint = color
+	entry.base = fill
+	fill = tabFill(pal, fill, color, active, hovered)
+	edge = tintHostSurface(edge, color, tabColorBorderTint)
+	foreground = tabInk(pal, color, foreground)
 	entry.background = fill
 	entry.foreground = foreground
 	label := state.tabLabel(workspace)
@@ -986,7 +994,7 @@ func (state *State) declareWorkspaceTab(c ui.C, workspace layoutcore.WorkspaceIn
 		entry.badge = ui.Slot(c).Size(20, 20).MarginSides(0, 7, 0, 0)
 		if state.tabNumbers && entry.number != "" {
 			// The number names the name beside it, so it carries less ink.
-			ui.Text(c, entry.number).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(tabNumberColor(foreground)).LineHeight(20).Shrink(0).MarginSides(0, tabNumberGap, 0, 0)
+			ui.Text(c, entry.number).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(tabNumberInk(foreground, color)).LineHeight(20).Shrink(0).MarginSides(0, tabNumberGap, 0, 0)
 		}
 		if editing {
 			// The title is the field itself, and the room the lock, the light
@@ -1293,31 +1301,17 @@ type hostToggleBoxes struct {
 
 // declareNavigation declares the sidebar: the name of the application over the
 // pages, and the way to a shell on this computer and to the settings at the bottom.
+// A page the user hid from Settings keeps everything but its row here.
 func (state *State) declareNavigation(c ui.C) {
 	m := state.messages
-
-	items := [...]struct {
-		id     gfx.ID
-		icon   uint8
-		label  string
-		active bool
-	}{
-		{hitHosts, iconHosts, m.NavHosts, state.activeSection == sectionHosts},
-		{hitWorkspaces, iconColumns2, m.NavWorkspaces, state.activeSection == sectionWorkspaces},
-		{hitDashboard, iconActivity, m.Dashboard.Title, state.activeSection == sectionDashboard},
-		{hitSessionLogs, iconFileClock, m.SessionLogs.Title, state.activeSection == sectionSessionLogs},
-		{hitKeychain, iconKey, m.NavKeychain, state.activeSection == sectionKeys},
-		{hitProxies, iconGlobe, m.NavProxies, state.activeSection == sectionProxies},
-		{hitPortForwarding, iconForward, m.NavPortForwarding, state.activeSection == sectionForwards},
-		{hitKnownHosts, iconKnown, m.NavKnownHosts, state.activeSection == sectionKnownHosts},
-		{hitSnippets, iconNote, m.NavSnippets, state.activeSection == sectionSnippets},
-		{hitNotes, iconNotebook, state.noteText("Notes", "笔记"), state.activeSection == sectionNotes},
-	}
 	ui.Column(c).Width(navigationWidth).Shrink(0).Children(func() {
 		// The logo with the name beside it, painted into this slot after layout.
 		state.chrome.lockup = ui.Slot(c).Size(lockupWidth, lockupHeight).MarginSides(15, 0, 20, 0).Self(ui.Center)
-		for _, item := range items {
-			state.navigationItem(c, item.id, item.icon, item.label, item.active, 4)
+		for _, item := range sidebarPages {
+			if state.hiddenNav.has(item.page) {
+				continue
+			}
+			state.navigationItem(c, item.id, item.icon, state.navPageLabel(item.page), state.activeSection == item.section, 4)
 		}
 		if state.tabOrientation == tabsVertical && len(state.workspaceTabs) > 0 {
 			state.declareVerticalTabsNav(c)
@@ -2797,6 +2791,8 @@ func (state *State) declareDialogs(c ui.C) {
 		state.declareAutofillConfirm(c)
 	case modalToolbarSettings:
 		state.declareToolbarSettings(c)
+	case modalSidebarSettings:
+		state.paintSidebarSettings(c.Canvas(), c.Bounds())
 	case modalHighlightRule:
 		state.declareHighlightDialog(c)
 	case modalRuleManager:
