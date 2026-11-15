@@ -41,8 +41,9 @@ func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 		"sftp_local_bookmarks":   true,
 		"sftp_columns":           true, "sftp_download_directory": true, "default_editor": true,
 		"sftp_window_order": true, "sftp_open_mode": true, "sftp_directory_tree": true, "custom_editor_path": true,
-		"toolbars":    true,
-		"local_shell": true, "local_start": true, "last_local_directory": true, "ssh_agent": true, "ssh_agent_path": true, "local_proxy_port": true, "terminal_cursor": true,
+		"sftp_transfer_filter": true,
+		"toolbars":             true,
+		"local_shell":          true, "local_start": true, "last_local_directory": true, "ssh_agent": true, "ssh_agent_path": true, "local_proxy_port": true, "terminal_cursor": true,
 		// Whether the command bar shows, which groups it filters and how it
 		// orders them are this computer's own layout, not a preference to sync.
 		"commands_shown": true, "commands_sort": true, "commands_hidden_groups": true,
@@ -56,6 +57,10 @@ func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 		// The session journal switch belongs to this computer: another device
 		// keeps its own choice, and an older build must not silently drop it.
 		"session_logs_off": true, "session_logs_view": true,
+		// Which navigation entries and cloud-sync categories this computer
+		// hides or excludes: restoreLocal applies both, and the sync scope test
+		// holds that one computer's selection never reaches another.
+		"hidden_nav": true, "sync_excluded": true,
 	}
 	entity := map[string]bool{}
 	for _, field := range entityFields {
@@ -81,7 +86,7 @@ func richState() savedState {
 		Version: stateFileVersion, HostCatalogVersion: hostCatalogSchemaVersion, ShortcutVersion: shortcutSchemaVersion,
 		Language: "zh-CN", Theme: "dark", NetworkProxy: "system", TabOrientation: "vertical", VerticalTabsAutoHide: true, LocalShell: "/opt/local-shell/bin/shell", TerminalFontSize: 15, TerminalScrollback: 5000, TerminalPadding: "roomy", TerminalWordSeparators: "-/", HiddenHostTags: []string{"dev", "prod"},
 		RecentConnectSort: true, RecentConnections: map[string]time.Time{"host_b": time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)},
-		SFTPParallel: 2, SFTPTerminalFollow: true, CommandHistory: true,
+		SFTPParallel: 2, SFTPTerminalFollow: true, SFTPTransferFilter: 1, CommandHistory: true,
 		Hosts: []savedHost{
 			{ID: "host_b", Label: "Beta", Address: "b.example.com", User: "me", Port: 22, Group: "prod"},
 			{ID: "host_a", Label: "Alpha", Address: "a.example.com", User: "me", Port: 2222, Group: "dev"},

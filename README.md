@@ -237,7 +237,11 @@ passwords encrypted, so its import carries connections only.
 OpenSSH config import and sync retain per-host `ServerAliveInterval`,
 `ServerAliveCountMax`, `IdentitiesOnly` and configured identity files. An explicit
 zero interval disables keepalive for that host; restricted identities still use
-matching keys from the SSH agent, without offering unrelated agent keys.
+matching keys from the SSH agent, without offering unrelated agent keys. A host
+that uses automatic authentication can set the same restriction in the host
+editor's Advanced section: the agent then offers only the keys matching the
+configured identities, so a large agent key set cannot spend the server's
+authentication budget before the local keys are tried.
 
 ### Files
 
@@ -328,7 +332,9 @@ An optional MCP server exposes the same tools to external agents. It is off by
 default, loopback-only, bearer-token protected, and supports observe and ask
 modes. `motty mcp-serve` is the same idea without the window: an agent starts it
 over stdio and it works on the hosts you opened to agents, with no port and no
-token.
+token. Both MCP servers offer background jobs: `terminal_start` returns a job id
+at once, `terminal_poll` reads what it printed by offset, and `terminal_stop`
+ends the command, so a long command does not hold up the conversation.
 `list_hosts` lists saved SSH hosts explicitly opened to agents, without connecting,
 and returns stable host IDs, names and addresses. Both HTTP and stdio MCP omit
 unauthorized hosts. In windowed HTTP MCP, `list_sessions` lists only open terminals

@@ -228,6 +228,8 @@ func (state *State) failureLine(session *Session) string {
 		return m.ConnRejected
 	case errors.Is(err, sshconn.ErrCanceled):
 		return m.ConnCanceled
+	case errors.Is(err, sshconn.ErrTooManyAuthAttempts):
+		return m.ConnTooManyAuthAttempts
 	case errors.Is(err, sshconn.ErrAuthFailed):
 		return m.ConnAuthFailed
 	}
@@ -236,9 +238,11 @@ func (state *State) failureLine(session *Session) string {
 	return err.Error()
 }
 
-// Card metrics, in logical pixels.
+// Card metrics, in logical pixels. The width sizes the card for its widest
+// footer: a reconnect's localized countdown beside its four actions, whole in
+// every supported language.
 const (
-	cardWidth  = float32(508)
+	cardWidth  = float32(560)
 	cardPad    = float32(28)
 	cardHeader = float32(106)
 	cardFooter = float32(64)
@@ -567,7 +571,7 @@ func (state *State) declareConnectionBody(c ui.C, session *Session, frame gfx.Re
 				ui.Stack(c).Height(footerHeight).Shrink(0).MarginSides(footerTop, 0, 0, 0).Children(func() {
 					ui.Column(c).Height(1).Background(pal.line)
 					ui.Row(c).Fill().Items(ui.Center).Gap(state.theme.Metrics.GapItem).Children(func() {
-						ui.Text(c, footerText).FontSize(metrics.FontSizeS).Color(pal.muted).Grow(1)
+						ui.Text(c, footerText).FontSize(metrics.FontSizeS).Color(pal.muted).Ellipsis().Grow(1)
 						addButton(hitConnLog, m.ConnShowLog, components.ButtonGhost)
 						if session.reconnectPending {
 							addButton(hitConnExport, m.ConnExportLog, components.ButtonGhost)

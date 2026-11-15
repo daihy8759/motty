@@ -34,6 +34,9 @@ const shortcutSchemaVersion = 1
 type savedState struct {
 	RecentConnectSort bool                 `json:"recent_connect_sort,omitempty"`
 	RecentConnections map[string]time.Time `json:"recent_connections,omitempty"`
+	// LocalShellsExpanded keeps the new-tab picker listing the shells under the
+	// Local Terminal row once the user has opened it there.
+	LocalShellsExpanded bool `json:"local_shells_expanded,omitempty"`
 
 	MonitorPanels              []monitoring.Panel      `json:"monitor_panels,omitempty"`
 	MonitorActive              string                  `json:"monitor_active,omitempty"`
@@ -130,6 +133,7 @@ type savedState struct {
 	SFTPOpenMode            string              `json:"sftp_open_mode,omitempty"`
 	SFTPColumns             string              `json:"sftp_columns,omitempty"`
 	SFTPDownloadDirectory   string              `json:"sftp_download_directory,omitempty"`
+	SFTPTransferFilter      int                 `json:"sftp_transfer_filter,omitempty"`
 	DefaultEditor           string              `json:"default_editor,omitempty"` // this computer's editor for remote folders
 	CustomEditorPath        string              `json:"custom_editor_path,omitempty"`
 	Toolbars                *savedToolbars      `json:"toolbars,omitempty"`
@@ -526,6 +530,7 @@ func (state *State) snapshot() savedState {
 		LocalStart:                 state.localStart.String(),
 		LastLocalDirectory:         state.lastLocalDirectory,
 		RecentConnectSort:          state.recentConnectSort,
+		LocalShellsExpanded:        state.localShellsExpanded,
 		RecentConnections:          maps.Clone(state.recentConnections),
 		SSHAgent:                   savedAgent,
 		SSHAgentPath:               savedAgentPath,
@@ -595,6 +600,7 @@ func (state *State) snapshot() savedState {
 		SFTPOpenMode:               state.sftpOpenMode.String(),
 		SFTPColumns:                state.sftpColumns.String(),
 		SFTPDownloadDirectory:      savedSFTPDownloadDirectory(state.sftpDownloadDirectory),
+		SFTPTransferFilter:         state.transfers.filter,
 		DefaultEditor:              string(state.defaultEditor),
 		CustomEditorPath:           state.customEditorPath,
 		Toolbars:                   state.toolbars.snapshot(),
@@ -1030,6 +1036,7 @@ func (state *State) restoreLocal(saved savedState) {
 	state.localShell = saved.LocalShell
 	state.hiddenShells = cleanShellPaths(saved.HiddenShells)
 	state.recentConnectSort = saved.RecentConnectSort
+	state.localShellsExpanded = saved.LocalShellsExpanded
 	state.recentConnections = maps.Clone(saved.RecentConnections)
 	state.sessionLogsOff = saved.SessionLogsOff
 	state.restoreSessionLogsView(saved.SessionLogsView)

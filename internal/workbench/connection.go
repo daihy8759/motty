@@ -197,6 +197,13 @@ type Options struct {
 	// Invalidate asks the window to repaint. Connection goroutines call it
 	// when their status changes; the window then calls Wake.
 	Invalidate func()
+	// Post runs work on the window thread, from any goroutine. Nil keeps the
+	// window's own inbox, which Wake drains; a window opened by the application
+	// passes Viva's app.Application.Post.
+	Post func(func())
+	// SetMenuBar installs the application's own menus; nil leaves the menu bar
+	// to the host platform. Non-macOS hosts report app.ErrUnsupported.
+	SetMenuBar func([]app.Menu) error
 	// Invalidator is the same window's invalidator, for a page that declares a
 	// ui.Effect: the effect wakes the window itself when its work finishes. Nil
 	// leaves such a page's results waiting for the next paint.
@@ -501,6 +508,9 @@ const (
 	modalMobaEncoding
 	modalNewForward
 	modalNewProxy
+	modalProxyBatchAssociate
+	modalProxyDeleteConfirm
+	modalProxyBatchDeleteConfirm
 	modalHostKey
 	modalKeyPassphrase
 	modalPassword
@@ -803,6 +813,8 @@ func (state *State) finishStartingConnection(session *Session, automatic bool) {
 // nothing for sessions whose status is unchanged and whose shell is quiet.
 func (state *State) Wake() {
 	defer state.syncDesktopFullscreen()
+	defer state.syncMenuBar()
+	defer state.syncDesktopSleep()
 	defer state.flushTerminalDirectories()
 	defer state.syncLocalProxySessions()
 	state.adoptHistoryClear()
@@ -1196,6 +1208,8 @@ func (state *State) tellFailure(session *Session, status sshconn.Status) {
 		t.say(sgrFail, m.ConnRejected)
 	case errors.Is(status.Err, sshconn.ErrCanceled):
 		t.say(sgrFail, m.ConnCanceled)
+	case errors.Is(status.Err, sshconn.ErrTooManyAuthAttempts):
+		t.say(sgrFail, m.ConnTooManyAuthAttempts)
 	case errors.Is(status.Err, sshconn.ErrAuthFailed):
 		t.say(sgrFail, m.ConnAuthFailed)
 	default:

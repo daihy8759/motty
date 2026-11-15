@@ -17,7 +17,7 @@ permissions:
 # reverse) without any change on the Motty side. Move the pin in the same commit
 # that needs a newer Viva API; do not check out the default branch here.
 env:
-  VIVA_REF: ba876bc6c1fc288b71bd490976234d764b8f6d12
+  VIVA_REF: 167de96c059bd3c8b4f06f600ac10b6c7d75bf16
 
 # A superseded pull-request run is cancelled: the newer push contains everything
 # the older one would have tested, and leaving the older run in place makes the
@@ -153,7 +153,48 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y mosh
       - name: Test release build
         working-directory: motty
-        run: go test ./... -count=1
+        run: |
+          # The workbench package is sharded below: run every other package
+          # here, one parallel build of the whole set.
+          go test $(go list ./... | grep -v '/internal/workbench$') -count=1 -timeout 20m
+
+  # The workbench package is one package that runs one test at a time, and the
+  # suite outgrew the ten-minute per-binary default (and then twenty). It is
+  # sharded by test name with the same toolslice split the Windows and race jobs
+  # use, so each job is bounded and a new test lands in exactly one shard.
+  workbench-linux:
+    name: Workbench (Linux, ${{ matrix.shard }}/4)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: motty
+      - uses: actions/checkout@v7
+        with:
+          repository: vivaui/viva
+          ref: ${{ env.VIVA_REF }}
+          path: viva
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: motty/go.mod
+          cache-dependency-path: motty/go.sum
+      - name: Test the workbench
+        working-directory: motty
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: 4
+        run: |
+          go run ./tools/testslice -n "$SHARDS" -i "$SHARD" -max-pattern 120000 ./internal/workbench |
+            while IFS= read -r pattern; do
+              go test ./internal/workbench -count=1 -timeout 20m -run "$pattern" || exit 1
+            done
 
   # The dev-tagged suite is a job of its own rather than a second step of the
   # job above: run in sequence the two suites made one job the longest one in

@@ -70,6 +70,18 @@ func (state *State) sshHostCount() int {
 	return count
 }
 
+// routeTargetCount is how many hosts a jump route can reach: SSH hosts and
+// remote desktops.
+func (state *State) routeTargetCount() int {
+	count := 0
+	for _, host := range state.hosts {
+		if host.isRouteTarget() {
+			count++
+		}
+	}
+	return count
+}
+
 // defaultPort is the port a host of its protocol uses when it names none.
 func (host Host) defaultPort() uint16 {
 	switch host.Protocol {
@@ -138,6 +150,9 @@ type savedTransport struct {
 	Authentication string                       `json:"authentication,omitempty"`
 	Identity       string                       `json:"identity,omitempty"`
 	SSHOptions     *sshconfig.ConnectionOptions `json:"ssh_options,omitempty"`
+	// IdentitiesOnly is set for an automatic SSH host that offers the
+	// ssh-agent only the keys matching its configured identities.
+	IdentitiesOnly bool `json:"identities_only,omitempty"`
 	// Credential is the id of the saved password an SSH, VNC or RDP host takes
 	// its password from (see credentials.go).
 	Credential string `json:"credential,omitempty"`
@@ -226,6 +241,7 @@ func (host Host) transport() savedTransport {
 	transport.Algorithms, transport.AlgorithmList = mode, list
 	transport.Authentication, transport.Identity = host.Auth.saved(), host.Identity
 	transport.SSHOptions = host.SSHOptions.Clone()
+	transport.IdentitiesOnly = host.IdentitiesOnly
 	transport.ForwardX11, transport.AgentForward, transport.NoHistory, transport.Transfer = host.ForwardX11, host.AgentForward, host.NoHistory, host.savedTransfer()
 	transport.InteractiveOnly = host.InteractiveOnly
 	transport.SendLocale = host.SendLocale
@@ -267,6 +283,7 @@ func (host *Host) applyTransport(transport savedTransport) bool {
 		if host.Auth != authPrivateKey {
 			host.Identity = ""
 		}
+		host.IdentitiesOnly = transport.IdentitiesOnly
 		host.ForwardX11 = transport.ForwardX11
 		host.AgentForward = transport.AgentForward
 		host.InteractiveOnly = transport.InteractiveOnly

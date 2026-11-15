@@ -1016,6 +1016,8 @@ type ToolsMessages struct {
 	SendLocale                      string
 	AgentAccess                     string
 	AgentAccessNote                 string
+	IdentitiesOnly                  string
+	IdentitiesOnlyNote              string
 	AdvancedSession                 string
 	AdvancedAgents                  string
 	AgentForwardUnavailableFmt      string

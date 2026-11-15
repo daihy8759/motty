@@ -257,30 +257,64 @@ var (
 
 // Jump-host routing: its page and dialog.
 var (
-	hitProxyAdd               = tree.ID(proxiesHits, "proxy-add")
-	hitProxyEdit              = tree.ID(proxiesHits, "proxy-edit")
-	hitProxyStartStop         = tree.ID(proxiesHits, "proxy-start-stop")
-	hitProxyRemove            = tree.ID(proxiesHits, "proxy-remove")
-	hitProxyDialogClose       = tree.ID(proxiesHits, "proxy-dialog-close")
-	hitProxyDialogCancel      = tree.ID(proxiesHits, "proxy-dialog-cancel")
-	hitProxyDialogSubmit      = tree.ID(proxiesHits, "proxy-dialog-submit")
-	hitProxyDialogTarget      = tree.ID(proxiesHits, "proxy-dialog-target")
-	hitProxyDialogJump        = tree.ID(proxiesHits, "proxy-dialog-jump")
-	hitProxyDialogViaShell    = tree.ID(proxiesHits, "proxy-dialog-via-shell")
-	hitProxyDialogViaHelp     = tree.ID(proxiesHits, "proxy-dialog-via-shell-help")
-	hitProxyDialogRelay       = tree.ID(proxiesHits, "proxy-dialog-relay")
-	hitProxyTargetDismiss     = tree.ID(proxiesHits, "proxy-target-dismiss")
-	hitProxyJumpDismiss       = tree.ID(proxiesHits, "proxy-jump-dismiss")
-	hitProxyTargetTrigger     = tree.ID(proxiesHits, "proxy-target-trigger")
-	hitProxyJumpTrigger       = tree.ID(proxiesHits, "proxy-jump-trigger")
-	hitProxyTargetScroll      = tree.ID(proxiesHits, "proxy-target-scroll")
-	hitProxyJumpScroll        = tree.ID(proxiesHits, "proxy-jump-scroll")
-	hitProxyTargetPickerScope = tree.ID(proxiesHits, "proxy-target-picker-scope")
-	hitProxyJumpPickerScope   = tree.ID(proxiesHits, "proxy-jump-picker-scope")
-	hitProxyScrollThumb       = tree.ID(proxiesHits, "proxy-scroll-thumb")
-	hitProxyRowList           = tree.Sub(proxiesHits, tree.Name("proxy-row"))
-	hitProxyTargetItemList    = tree.Sub(proxiesHits, tree.Name("proxy-target-item"))
-	hitProxyJumpItemList      = tree.Sub(proxiesHits, tree.Name("proxy-jump-item"))
+	hitProxyAdd                      = tree.ID(proxiesHits, "proxy-add")
+	hitProxyEdit                     = tree.ID(proxiesHits, "proxy-edit")
+	hitProxyStartStop                = tree.ID(proxiesHits, "proxy-start-stop")
+	hitProxyRemove                   = tree.ID(proxiesHits, "proxy-remove")
+	hitProxyDialogClose              = tree.ID(proxiesHits, "proxy-dialog-close")
+	hitProxyDialogCancel             = tree.ID(proxiesHits, "proxy-dialog-cancel")
+	hitProxyDialogSubmit             = tree.ID(proxiesHits, "proxy-dialog-submit")
+	hitProxyDialogTarget             = tree.ID(proxiesHits, "proxy-dialog-target")
+	hitProxyDialogJump               = tree.ID(proxiesHits, "proxy-dialog-jump")
+	hitProxyDialogViaShell           = tree.ID(proxiesHits, "proxy-dialog-via-shell")
+	hitProxyDialogViaHelp            = tree.ID(proxiesHits, "proxy-dialog-via-shell-help")
+	hitProxyDialogRelay              = tree.ID(proxiesHits, "proxy-dialog-relay")
+	hitProxyTargetDismiss            = tree.ID(proxiesHits, "proxy-target-dismiss")
+	hitProxyJumpDismiss              = tree.ID(proxiesHits, "proxy-jump-dismiss")
+	hitProxyTargetTrigger            = tree.ID(proxiesHits, "proxy-target-trigger")
+	hitProxyJumpTrigger              = tree.ID(proxiesHits, "proxy-jump-trigger")
+	hitProxyTargetScroll             = tree.ID(proxiesHits, "proxy-target-scroll")
+	hitProxyJumpScroll               = tree.ID(proxiesHits, "proxy-jump-scroll")
+	hitProxyTargetPickerScope        = tree.ID(proxiesHits, "proxy-target-picker-scope")
+	hitProxyJumpPickerScope          = tree.ID(proxiesHits, "proxy-jump-picker-scope")
+	hitProxyScrollThumb              = tree.ID(proxiesHits, "proxy-scroll-thumb")
+	hitProxyRowList                  = tree.Sub(proxiesHits, tree.Name("proxy-row"))
+	hitProxyTargetItemList           = tree.Sub(proxiesHits, tree.Name("proxy-target-item"))
+	hitProxyJumpItemList             = tree.Sub(proxiesHits, tree.Name("proxy-jump-item"))
+	hitProxyBatchAdd                 = tree.ID(proxiesHits, "proxy-batch-add")
+	hitProxyBatchRemove              = tree.ID(proxiesHits, "proxy-batch-remove")
+	hitProxyBatchToggleAll           = tree.ID(proxiesHits, "proxy-batch-toggle-all")
+	hitProxyHubTabList               = tree.Sub(proxiesHits, tree.Name("proxy-hub-tab"))
+	hitProxyBatchClose               = tree.ID(proxiesHits, "proxy-batch-close")
+	hitProxyBatchCancel              = tree.ID(proxiesHits, "proxy-batch-cancel")
+	hitProxyBatchSubmit              = tree.ID(proxiesHits, "proxy-batch-submit")
+	hitProxyBatchSearch              = tree.ID(proxiesHits, "proxy-batch-search")
+	hitProxyBatchCheckAll            = tree.ID(proxiesHits, "proxy-batch-check-all")
+	hitProxyBatchClearAll            = tree.ID(proxiesHits, "proxy-batch-clear-all")
+	hitProxyBatchOverwrite           = tree.ID(proxiesHits, "proxy-batch-overwrite")
+	hitProxyBatchCheckList           = tree.Sub(proxiesHits, tree.Name("proxy-batch-check"))
+	hitProxyTargetCheckList          = tree.Sub(proxiesHits, tree.Name("proxy-target-check"))
+	hitProxyBatchJumpInput           = tree.ID(proxiesHits, "proxy-batch-jump-input")
+	hitProxyBatchJumpTrigger         = tree.ID(proxiesHits, "proxy-batch-jump-trigger")
+	hitProxyBatchJumpDismiss         = tree.ID(proxiesHits, "proxy-batch-jump-dismiss")
+	hitProxyBatchJumpScroll          = tree.ID(proxiesHits, "proxy-batch-jump-scroll")
+	hitProxyBatchJumpScope           = tree.ID(proxiesHits, "proxy-batch-jump-scope")
+	hitProxyBatchJumpItemList        = tree.Sub(proxiesHits, tree.Name("proxy-batch-jump-item"))
+	hitProxyCheckAll                 = tree.ID(proxiesHits, "proxy-check-all")
+	hitProxyRowCheckList             = tree.Sub(proxiesHits, tree.Name("proxy-row-check"))
+	hitProxyRowSwitchList            = tree.Sub(proxiesHits, tree.Name("proxy-row-switch"))
+	hitProxyRowEditList              = tree.Sub(proxiesHits, tree.Name("proxy-row-edit"))
+	hitProxyRowDeleteList            = tree.Sub(proxiesHits, tree.Name("proxy-row-delete"))
+	hitProxyBatchDelete              = tree.ID(proxiesHits, "proxy-batch-delete")
+	hitProxyBatchStartAll            = tree.ID(proxiesHits, "proxy-batch-start-all")
+	hitProxyBatchStopAll             = tree.ID(proxiesHits, "proxy-batch-stop-all")
+	hitProxyBatchClearSel            = tree.ID(proxiesHits, "proxy-batch-clear-sel")
+	hitProxyDeleteConfirmClose       = tree.ID(proxiesHits, "proxy-del-confirm-close")
+	hitProxyDeleteConfirmCancel      = tree.ID(proxiesHits, "proxy-del-confirm-cancel")
+	hitProxyDeleteConfirmSubmit      = tree.ID(proxiesHits, "proxy-del-confirm-submit")
+	hitProxyBatchDeleteConfirmClose  = tree.ID(proxiesHits, "proxy-bdel-confirm-close")
+	hitProxyBatchDeleteConfirmCancel = tree.ID(proxiesHits, "proxy-bdel-confirm-cancel")
+	hitProxyBatchDeleteConfirmSubmit = tree.ID(proxiesHits, "proxy-bdel-confirm-submit")
 )
 
 // Known-host management: its page and dialog, with the rows and their checkboxes
@@ -536,37 +570,44 @@ type State struct {
 	forwards           []forwardRecord
 	// forwardTunnels are the SSH transports forwards use when no open tab
 	// carries one. They have no terminal and are never saved.
-	forwardTunnels     []*forwardTunnel
-	selectedIdentityID uint32
-	selectedForwardID  uint32
-	selectedProxyID    uint32
-	forwardTable       ui.TableState
-	keysTable          ui.TableState
-	proxyTable         ui.TableState
-	forwardRows        forwardTableSource
-	keysRows           keyTableSource
-	proxyRows          proxyTableSource
-	// The catalog tables' columns and headings live here rather than in each
-	// paint: a table's spec keeps them until the paint ends, so a local array
-	// would escape and allocate every frame.
-	forwardColumns    [5]components.TableColumn
-	forwardHeadings   [5]string
-	keysColumns       [4]components.TableColumn
-	keysHeadings      [4]string
-	proxyColumns      [4]components.TableColumn
-	proxyHeadings     [4]string
-	activeSection     uint8
-	hostFilterOn      bool   // only the group named hostFilter is listed
-	hostFilter        string // a group name; empty is the unnamed bucket
-	hostFilterMenu    bool   // the chips that did not fit, as a menu
-	hostFilterHidden  int    // the first of hostChips whose chip is in that menu
-	hostChips         []int  // the groups that get a chip, as indexes of hostGroups
-	chipMenu          hostChipMenu
-	filterMoreButton  gfx.Rect
-	hostTotalDigits   string
-	groupMenu         groupMenuAnchor // where the Move group picker opens
-	moveGroups        *hostMoveGroupMenu
-	hostSelectionText string
+	forwardTunnels         []*forwardTunnel
+	selectedIdentityID     uint32
+	selectedForwardID      uint32
+	selectedProxyID        uint32
+	forwardTable           ui.TableState
+	keysTable              ui.TableState
+	proxyTable             ui.TableState
+	forwardRows            forwardTableSource
+	keysRows               keyTableSource
+	proxyRows              proxyTableSource
+	forwardColumns         [5]components.TableColumn
+	forwardHeadings        [5]string
+	keysColumns            [4]components.TableColumn
+	keysHeadings           [4]string
+	proxyColumns           [6]components.TableColumn
+	proxyHeadings          [6]string
+	proxyFilteredIndices   []int
+	proxyRowCells          []gfx.Rect
+	selectedBastionJumpID  uint32
+	selectedBastionTargets map[uint32]bool
+	proxyChecked           map[uint32]bool
+	proxyPendingDeleteID   uint32
+	bastionHubs            []bastionHub
+	bastionAllChipText     string
+	bastionAllCountText    string
+	proxyBatch             proxyBatchAssociateDialog
+	activeSection          uint8
+	hostFilterOn           bool   // only the group named hostFilter is listed
+	hostFilter             string // a group name; empty is the unnamed bucket
+	hostFilterMenu         bool   // the chips that did not fit, as a menu
+	hostFilterHidden       int    // the first of hostChips whose chip is in that menu
+	hostChips              []int  // the groups that get a chip, as indexes of hostGroups
+	chipMenu               hostChipMenu
+	filterMoreButton       gfx.Rect
+	hostTotalDigits        string
+	groupMenu              groupMenuAnchor // where the Move group picker opens
+	moveGroups             *hostMoveGroupMenu
+	hostSelectionText      string
 	// inputGapNote is the last terminal input gap reported to the log, so a
 	// paint that keeps asking for a surface that cannot exist logs it once.
 	inputGapNote       string
@@ -585,15 +626,18 @@ type State struct {
 	windowVisible      func() bool
 	systemKeys         systemKeyCapture
 	winChrome          windowChrome
-	hostView           hostViewMode
-	hostOrder          hostOrderMode
-	hostOrderMenu      bool
-	hostOrderButton    gfx.Rect
-	hostSort           hostSortState
-	bg                 backgroundState
-	hostsContent       float32
-	hostGroupMenu      bool
-	importMenu         bool
+	// desktopAwake says this window already holds the sleep request for a visible
+	// remote desktop; see keepAwakeForDesktop.
+	desktopAwake    bool
+	hostView        hostViewMode
+	hostOrder       hostOrderMode
+	hostOrderMenu   bool
+	hostOrderButton gfx.Rect
+	hostSort        hostSortState
+	bg              backgroundState
+	hostsContent    float32
+	hostGroupMenu   bool
+	importMenu      bool
 	// keysMenu is the open menu under the Keychain page's Add Key button, and
 	// keysAddButton where that button was painted.
 	keysMenu          bool
@@ -668,23 +712,29 @@ type State struct {
 	// search is the box beside Connect: typing narrows the host list, and
 	// Connect opens what it holds. visible lists the indexes into hosts that
 	// match it; it is rebuilt when the text or the host list changes.
-	search              text.Editor
-	visible             []int
-	visibleQuery        string
-	visibleHosts        int
-	status              string
-	language            i18n.Language
-	languageChosen      bool // the user picked it; until then it follows the system
-	messages            i18n.Messages
-	modal               modalKind
-	modalSession        uint32
-	dialogError         string
-	editor              hostEditor
-	forwardEditor       forwardEditor
-	forwardDialogError  string
-	proxyEditor         proxyEditor
-	proxyDialogError    string
-	options             Options
+	search             text.Editor
+	visible            []int
+	visibleQuery       string
+	visibleHosts       int
+	status             string
+	language           i18n.Language
+	languageChosen     bool // the user picked it; until then it follows the system
+	messages           i18n.Messages
+	modal              modalKind
+	modalSession       uint32
+	dialogError        string
+	editor             hostEditor
+	forwardEditor      forwardEditor
+	forwardDialogError string
+	proxyEditor        proxyEditor
+	proxyDialogError   string
+	options            Options
+	// post runs work on the window thread; nil uses ai.inbox, which Wake drains.
+	post func(func())
+	// setMenuBar installs the macOS menu bar; menuBarSig is the state it was
+	// built for, so Wake rebuilds it only when enablement or language changed.
+	setMenuBar          func([]app.Menu) error
+	menuBarSig          string
 	appearance          appearance
 	appearanceMode      appearanceMode
 	networkProxy        networkProxyMode
@@ -695,6 +745,11 @@ type State struct {
 	linkUp              atomic.Bool
 	terminalOption      terminalOptionMode
 	recentConnectSort   bool
+	// localShellsExpanded is whether the new-tab picker lists every shell under
+	// the Local Terminal row instead of folding them behind its arrow. Like the
+	// sort beside it, it is the user's choice and the picker opens the way they
+	// left it.
+	localShellsExpanded bool
 	recentConnections   map[string]time.Time
 	localShell          string // executable on this computer; empty uses the platform default
 	localStart          localStartPolicy
@@ -1051,6 +1106,7 @@ func (state *State) Close() {
 	if state == nil || state.closed {
 		return
 	}
+	state.keepAwakeForDesktop(false)
 	state.flushNoteDraft()
 	state.noteActiveLocalDirectory()
 	state.save()
@@ -1137,6 +1193,8 @@ func New(options Options) *State {
 	state := &State{
 		notes:              notesUI{noteDraft: &noteDraft{}},
 		options:            options.withDefaults(),
+		post:               options.Post,
+		setMenuBar:         options.SetMenuBar,
 		windowID:           max(1, options.WindowID),
 		revealResults:      make(chan revealResult, 1),
 		nextSessionID:      1,
@@ -1179,6 +1237,7 @@ func New(options Options) *State {
 	state.cellWidth, state.cellHeight = (&gfx.Canvas{}).MonoCellSize(state.terminalFontSize, state.terminalFontFace)
 	state.temporaryWorkspaceLayouts = make(map[layoutcore.WorkspaceID]layoutcore.LayoutSpec)
 	state.managedWorkspaceLayouts = make(map[layoutcore.WorkspaceID]layoutcore.LayoutSpec)
+	state.proxyChecked = make(map[uint32]bool)
 	// An icon-only button names itself to the keyboard as well as the pointer.
 	state.tooltip.ShowOnFocus()
 	state.setAppearance(appearanceDark)
@@ -1193,6 +1252,7 @@ func New(options Options) *State {
 	// writes no record for it.
 	state.history.inlineOff = true
 	state.forwardRows.records, state.keysRows.records, state.proxyRows.records = &state.forwards, &state.identities, &state.proxies
+	state.proxyRows.indices, state.proxyRows.jumpID = &state.proxyFilteredIndices, &state.selectedBastionJumpID
 	state.configDefaults = defaultsOf(state.snapshot())
 	config, saved, configBase, report, err := openConfig(state.options.StatePath, state.windowID)
 	state.config, state.configBase = config, configBase
@@ -1453,6 +1513,13 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 			return &state.proxyEditor.targetSelect.Query
 		case hitProxyDialogJump:
 			return &state.proxyEditor.jumpSelect.Query
+		}
+	case modalProxyBatchAssociate:
+		switch hit {
+		case hitProxyBatchSearch:
+			return &state.proxyBatch.query
+		case hitProxyBatchJumpInput:
+			return &state.proxyBatch.jumpQuery
 		}
 	case modalNewForward:
 		if hit == hitForwardDialogHost {
@@ -1726,6 +1793,9 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		return
 	case modalNewProxy:
 		state.clickProxyDialog(id)
+		return
+	case modalProxyBatchAssociate:
+		state.clickProxyBatchDialog(id)
 		return
 	case modalHostKey:
 		state.clickHostKey(id)
@@ -2820,6 +2890,9 @@ func (state *State) pointer(event gfx.PointerEvent) gfx.EventResult {
 	if result, handled := state.proxyPickerPointer(event); handled {
 		return result
 	}
+	if result, handled := state.proxyBatchPickerPointer(event); handled {
+		return result
+	}
 	if result, handled := state.forwardPickerPointer(event); handled {
 		return result
 	}
@@ -3053,6 +3126,9 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		return result
 	}
 	if result, handled := state.proxyDialogKey(event); handled {
+		return result
+	}
+	if result, handled := state.proxyBatchDialogKey(event); handled {
 		return result
 	}
 	if result, handled := state.forwardDialogKey(event); handled {

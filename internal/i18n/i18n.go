@@ -403,6 +403,9 @@ type Messages struct {
 	TipFilesLocal                          string
 	SFTPInsertPath                         string
 	MenuCopy                               string
+	MenuFile                               string
+	MenuEdit                               string
+	MenuView                               string
 	CopyHostAddress                        string
 	CopyAddressAndPort                     string
 	CopyConnectionName                     string
@@ -562,6 +565,8 @@ type Messages struct {
 	IconKey                     string
 	IconDesktop                 string
 	ErrLabelRequired            string
+	ErrAddressRequired          string
+	ErrDeviceRequired           string
 	ErrGroupRequired            string
 	ErrAddressTaken             string
 	ErrPortInvalid              string
@@ -724,18 +729,19 @@ type Messages struct {
 	// SessionNoShellInput is shown when someone types into a tab whose shell is
 	// gone: the keys go nowhere, so saying so is what keeps the keyboard from
 	// looking broken.
-	SessionNoShellInput   string
-	ConnClosed            string
-	ConnCanceled          string
-	ConnRejected          string
-	ConnFailedFmt         string
-	ConnAuthFailed        string
-	ConnSkippedKeyFmt     string
-	ConnChangedTitle      string
-	ConnChangedBodyFmt    string
-	ConnChangedTrustedFmt string
-	ConnChangedPresented  string
-	ConnChangedHintFmt    string
+	SessionNoShellInput     string
+	ConnClosed              string
+	ConnCanceled            string
+	ConnRejected            string
+	ConnFailedFmt           string
+	ConnAuthFailed          string
+	ConnTooManyAuthAttempts string
+	ConnSkippedKeyFmt       string
+	ConnChangedTitle        string
+	ConnChangedBodyFmt      string
+	ConnChangedTrustedFmt   string
+	ConnChangedPresented    string
+	ConnChangedHintFmt      string
 	// ConnProbeRefused explains a close that the client's own optional probes
 	// caused: the server permits only an interactive session, so the host was
 	// kept to one and the retry can connect.
@@ -964,51 +970,77 @@ type Messages struct {
 	ErrForwardHostMissing         string
 
 	// SSH jump-host routing.
-	ProxyTitle                 string
-	ProxyDescription           string
-	ProxyAdd                   string
-	ProxyEdit                  string
-	ProxyStart                 string
-	ProxyStop                  string
-	ProxyRemove                string
-	ProxyColumnTarget          string
-	ProxyColumnJump            string
-	ProxyColumnRoute           string
-	ProxyColumnStatus          string
-	ProxyRunning               string
-	ProxyStopped               string
-	ProxyEmpty                 string
-	ProxyEmptySub              string
-	ProxyCountFmt              string
-	ProxyListScroll            string
-	ProxySelected              string
-	ProxyAdded                 string
-	ProxyStartedStatus         string
-	ProxyStoppedStatus         string
-	ProxyRemoved               string
-	ProxyDialogTitle           string
-	ProxyEditDialogTitle       string
-	ProxyFieldTarget           string
-	ProxyFieldJump             string
-	ProxyCreate                string
-	ProxyRouteSave             string
-	ProxyUpdated               string
-	ErrProxyHostsRequired      string
-	ErrProxyTargetRequired     string
-	ErrProxyJumpRequired       string
-	ErrProxySameHost           string
-	ErrProxyCycle              string
-	ErrProxyTargetTaken        string
-	ErrProxyEditMissing        string
-	ProxyFieldViaShell         string
-	ProxyViaShellHelp          string
-	ProxyFieldRelay            string
-	ProxyRelayPlaceholder      string
-	ProxyRelayPreludeFmt       string
-	ProxyRelayNoPrelude        string
-	ProxyViaShellTag           string
-	ErrProxyRelay              string
-	ConnDetailConnectingViaFmt string
+	ProxyTitle                       string
+	ProxyDescription                 string
+	ProxyAdd                         string
+	ProxyEdit                        string
+	ProxyStart                       string
+	ProxyStop                        string
+	ProxyRemove                      string
+	ProxyColumnTarget                string
+	ProxyColumnJump                  string
+	ProxyColumnRoute                 string
+	ProxyColumnStatus                string
+	ProxyRunning                     string
+	ProxyStopped                     string
+	ProxyEmpty                       string
+	ProxyEmptySub                    string
+	ProxyCountFmt                    string
+	ProxyListScroll                  string
+	ProxySelected                    string
+	ProxyAdded                       string
+	ProxyStartedStatus               string
+	ProxyStoppedStatus               string
+	ProxyRemoved                     string
+	ProxyDialogTitle                 string
+	ProxyEditDialogTitle             string
+	ProxyFieldTarget                 string
+	ProxyFieldJump                   string
+	ProxyCreate                      string
+	ProxyRouteSave                   string
+	ProxyUpdated                     string
+	ErrProxyHostsRequired            string
+	ErrProxyTargetRequired           string
+	ErrProxyJumpRequired             string
+	ErrProxySameHost                 string
+	ErrProxyCycle                    string
+	ErrProxyTargetTaken              string
+	ErrProxyEditMissing              string
+	ProxyFieldViaShell               string
+	ProxyViaShellHelp                string
+	ProxyFieldRelay                  string
+	ProxyRelayPlaceholder            string
+	ProxyRelayPreludeFmt             string
+	ProxyRelayNoPrelude              string
+	ProxyViaShellTag                 string
+	ErrProxyRelay                    string
+	ProxyBatchAssociate              string
+	ProxyBatchAssociateTitle         string
+	ProxyBatchSelectPlaceholder      string
+	ProxyBatchCheckAll               string
+	ProxyBatchUncheckAll             string
+	ProxyBatchOverwrite              string
+	ProxyBatchAssociatedCountFmt     string
+	ProxyBatchUnbind                 string
+	ProxyBatchUnboundCountFmt        string
+	ProxyHubDevicesCountFmt          string
+	ProxyHubToggleAll                string
+	ProxyHubUnbindAll                string
+	HostMenuSetJump                  string
+	ProxyHubSelectJumpPrompt         string
+	ProxyDeleteConfirmTitle          string
+	ProxyDeleteConfirmPromptFmt      string
+	ProxyBatchDeleteConfirmTitle     string
+	ProxyBatchDeleteConfirmPromptFmt string
+	ProxyBatchSelectedCountFmt       string
+	ProxyBatchDelete                 string
+	ProxyBatchStartAll               string
+	ProxyBatchStopAll                string
+	ProxyBatchClearSelection         string
+	ProxyActionEdit                  string
+	ProxyActionDelete                string
+	ProxyColumnAction                string
+	ConnDetailConnectingViaFmt       string
 	// Host pickers shared by the jump-route and port-forwarding dialogs: the
 	// placeholder of the search field and the row shown when nothing matches.
 	HostPickerSearch    string
