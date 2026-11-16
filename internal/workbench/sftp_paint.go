@@ -201,6 +201,9 @@ func (state *State) declareSFTPPanel(c ui.C) {
 		followStyle = iconButtonActive
 	}
 	addHeader(hitSFTPFollowToggle, iconFollowFolder, messages.Tools.FilesFollow, false, followStyle)
+	if !local && !view.localOnly {
+		addHeader(hitSFTPLocateTerminal, iconTerminal, messages.Tools.FilesLocateTerminal, !state.canLocateSFTPTerminal(view))
+	}
 	moveIcon, moveHint := state.sftpPanelMoveAction()
 	headerTools = state.orderToolbarTools(toolbarSFTP, headerTools, false)
 
@@ -323,7 +326,7 @@ func (state *State) declareSFTPPanel(c ui.C) {
 		}
 		s.listSlot = ui.List(c, &folder.list, len(rows), func(row ui.ListRow) {
 			state.declareSFTPListRow(row, folder, view, searching, s.sizeWidth, s.modifiedWidth, rowWidth, columns)
-		}).Grow(1).HitWith(hitSFTPListBackground, messages.SFTPFiles, gfx.HitOptions{Role: gfx.RoleGroup, SkipFocus: true})
+		}).Grow(1).HitWith(hitSFTPListBackground, messages.SFTPFiles, gfx.HitOptions{Role: gfx.RoleGroup})
 		folder.seedSFTPListCurrent()
 		if folder.list.Changed() {
 			folder.takeSFTPListChoice()
