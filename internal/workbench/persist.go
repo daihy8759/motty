@@ -104,6 +104,7 @@ type savedState struct {
 	TerminalToolbarPosition string              `json:"terminal_toolbar_position,omitempty"`
 	TerminalToolbarSize     string              `json:"terminal_toolbar_size,omitempty"`
 	TerminalBellOff         bool                `json:"terminal_bell_off,omitempty"`
+	TerminalPasteConfirmOff bool                `json:"terminal_paste_confirm_off,omitempty"`
 	TerminalInputClickOff   bool                `json:"terminal_input_click_off,omitempty"`
 	TerminalLinkPlainClick  bool                `json:"terminal_link_plain_click,omitempty"`
 	AIPanelWidth            float32             `json:"ai_panel_width,omitempty"`
@@ -207,6 +208,8 @@ type savedState struct {
 	HostOrder              string           `json:"host_order,omitempty"`
 	HostSideWidth          float32          `json:"host_side_width,omitempty"`
 	HostTreeOpen           bool             `json:"host_tree_open,omitempty"`
+	HostsPanelOpen         bool             `json:"hosts_panel_open,omitempty"`
+	HostsPanelWidth        float32          `json:"hosts_panel_width,omitempty"`
 	HiddenHostTags         []string         `json:"hidden_host_tags,omitempty"`
 	HostPrivacy            bool             `json:"host_privacy,omitempty"`
 	HostPrivacyShowName    bool             `json:"host_privacy_show_name,omitempty"`
@@ -576,6 +579,7 @@ func (state *State) snapshot() savedState {
 		TerminalToolbarPosition:    state.terminalToolbarPosition.String(),
 		TerminalToolbarSize:        state.terminalToolbarSize.String(),
 		TerminalBellOff:            state.terminalBellOff,
+		TerminalPasteConfirmOff:    state.pasteConfirmOff,
 		TerminalInputClickOff:      state.terminalInputClickOff,
 		TerminalLinkPlainClick:     state.terminalLinkPlainClick,
 		AIPanelWidth:               state.ai.panelWidth,
@@ -766,6 +770,8 @@ func (state *State) snapshot() savedState {
 	saved.HostOrder = state.hostOrder.saved()
 	saved.HostSideWidth = state.hostSide.width
 	saved.HostTreeOpen = state.hostSide.open
+	saved.HostsPanelOpen = state.hostsPanel.open
+	saved.HostsPanelWidth = state.hostsPanel.width
 	saved.HiddenHostTags = state.hiddenHostTags
 	saved.HostPrivacy = state.hostPrivacy.enabled
 	saved.HostPrivacyShowName = !state.hostPrivacy.maskName
@@ -1139,6 +1145,10 @@ func (state *State) restoreLocal(saved savedState) {
 		state.hostSide.width = saved.HostSideWidth
 	}
 	state.hostSide.open = saved.HostTreeOpen
+	state.hostsPanel.open, state.hostsPanel.stale = saved.HostsPanelOpen, true
+	if saved.HostsPanelWidth >= hostsPanelMinWidth && saved.HostsPanelWidth <= hostsPanelMaxWidth {
+		state.hostsPanel.width = saved.HostsPanelWidth
+	}
 	state.hostPrivacy.enabled = saved.HostPrivacy
 	state.hostPrivacy.maskName = !saved.HostPrivacyShowName
 	state.hostPrivacy.maskAddress = !saved.HostPrivacyShowAddress
@@ -1190,6 +1200,7 @@ func (state *State) restoreShared(saved savedState) {
 	}
 	state.terminalShowLatency = saved.TerminalShowLatency
 	state.terminalBellOff = saved.TerminalBellOff
+	state.pasteConfirmOff = saved.TerminalPasteConfirmOff
 	state.terminalInputClickOff = saved.TerminalInputClickOff
 	state.terminalLinkPlainClick = saved.TerminalLinkPlainClick
 	if saved.TerminalSchemeDark == "" && saved.TerminalSchemeLight == "" && saved.TerminalScheme != "" {

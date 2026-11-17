@@ -4,6 +4,7 @@ package i18n
 
 var ChineseMessages = Messages{
 	RemoteLogs:     chineseRemoteLogs,
+	HostsPanel:     chineseHostsPanel,
 	ActionFeedback: chineseActionFeedback,
 	Monitor:        chineseMonitor,
 	Dashboard:      chineseDashboard,
@@ -69,6 +70,15 @@ var ChineseMessages = Messages{
 		LocaleBodyFmt: "仅在当前 shell 使用已验证的 %s。与 locale 有关的格式可能改变，不修改系统设置或启动文件。确认时命令行仍须为空。", LocaleConfirm: "修复当前会话",
 		LocaleRepairing: "正在等待 shell 确认 UTF-8…", LocaleSuccess: "当前 shell 已确认 UTF-8，中文编辑可按完整字符处理。", LocaleFailed: "shell 未确认 UTF-8，未继续尝试修改。",
 		SendFailed: "终端暂时无法接收本次输入，内容尚未发送。可以重试选择或取消。", LocaleDismiss: "本会话不再显示此提示", LocaleCanceled: "已取消会话修复，shell 环境未修改。",
+	},
+
+	PasteReview: PasteReviewMessages{
+		Title: "多行粘贴", SummaryFmt: "%d 行 · %d 个字符", EditorLabel: "粘贴内容预览",
+		Hint:        "“粘贴”按程序当前的方式整段发送；“逐行发送”为每行补一个回车，间隔 250 毫秒。",
+		TooLargeFmt: "文本过大，无法在这里编辑。预览只显示开头部分，发送的仍是全部 %d 行。",
+		Whole:       "粘贴", Lines: "逐行发送",
+		Stale:   "终端已变化，未发送任何内容；请重新粘贴。",
+		Stopped: "终端无法接收本次粘贴的剩余行；已发送的行不会重发。",
 	},
 
 	Transfers: TransferCenterMessages{
@@ -1234,7 +1244,7 @@ var chineseAIPanel = AIPanelMessages{
 	TargetNone:         "未选择连接（普通问答）",
 	TargetConnected:    "已连接",
 	TargetLocked:       "本轮锁定",
-	TargetHint:         "可勾选多个连接，第一个是固定的默认目标，切换标签页不会改变它；其余连接的终端内容会一并发给 AI，也可明确指定在其中操作。@也可引用会话；跨连接执行命令或修改文件时，会显示实际目标供审批。",
+	TargetHint:         "可勾选多个连接，第一个是固定的默认目标，切换标签页不会改变它；其余连接的终端内容会一并发给 AI，也可明确指定在其中操作。@也可引用会话；跨连接执行命令或修改文件时，卡片会显示实际目标，是否先确认由审批范围决定。",
 	TargetGroupFmt:     "%s · 整个标签页（%d）",
 	TargetLimitFmt:     "最多同时选择 %d 个连接",
 	TargetDisconnected: "已断开",
@@ -1884,12 +1894,14 @@ var chineseTools = ToolsMessages{
 	FontFallbackClear:       "清除",
 	FontFallbackPickerTitle: "备用字体",
 
-	PasteImageRow:         "在终端粘贴图片",
-	PasteImageDescription: "剪贴板里只有图片时，将图片保存在本机缓存或上传到 SSH 服务器的 ~/.cache/motty/paste，并粘贴路径供 Codex 等程序读取。文件保留一周。",
-	PasteImageUploading:   "正在保存剪贴板里的图片…",
-	PasteImageDoneFmt:     "图片已上传到 %s。",
-	PasteImageFailedFmt:   "无法保存剪贴板里的图片：%v",
-	PasteImageTooLarge:    "剪贴板里的图片太大，无法粘贴。",
+	PasteImageRow:           "在终端粘贴图片",
+	PasteImageDescription:   "剪贴板里只有图片时，将图片保存在本机缓存或上传到 SSH 服务器的 ~/.cache/motty/paste，并粘贴路径供 Codex 等程序读取。文件保留一周。",
+	PasteImageUploading:     "正在保存剪贴板里的图片…",
+	PasteImageDoneFmt:       "图片已上传到 %s。",
+	PasteImageFailedFmt:     "无法保存剪贴板里的图片：%v",
+	PasteImageTooLarge:      "剪贴板里的图片太大，无法粘贴。",
+	PasteConfirmRow:         "粘贴多行前确认",
+	PasteConfirmDescription: "粘贴包含换行的文本时先显示预览，可选择整段或逐行发送。关闭后按原样一次粘贴。",
 
 	PasswordHintRow:         "密码提示辅助",
 	PasswordHintDescription: "sudo 要求密码时提供该主机的已保存密码；su 要求密码时列出该主机和身份的密码供选择。按下 Enter 或点选之前不会发送任何内容。身份在「设置 > 安全 > 身份」中保存。",

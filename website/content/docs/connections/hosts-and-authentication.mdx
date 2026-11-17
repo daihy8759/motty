@@ -21,14 +21,31 @@ Motty supports:
 A round that asks several questions, for example a password and a one-time code
 from the same PAM stack, is shown as one dialog with one field per question.
 
-### Kerberos on macOS
+### Kerberos (GSSAPI)
 
 Select **Kerberos (GSSAPI)** in the host's **Authentication** field to sign in
-to a server that offers `gssapi-with-mic`. Motty uses your existing macOS
-Kerberos credentials. If your ticket has expired, renew it through your usual
-Kerberos sign-in flow. Credential delegation is disabled.
+to a server that offers `gssapi-with-mic`. The option is available on macOS,
+Linux and Windows:
+
+- **macOS** uses your existing Kerberos credentials from the system.
+- **Linux** loads the system `libgssapi_krb5` when a connection starts, so
+  install your distribution's Kerberos client libraries. Get a ticket with
+  `kinit`; Motty reads the default credential cache, or the one named by
+  `KRB5CCNAME`.
+- **Windows** uses the Kerberos tickets of the signed-in Windows account through
+  SSPI.
+
+If your ticket has expired, renew it through your usual Kerberos sign-in flow.
+Credential delegation is disabled.
 
 ### Private keys
+
+Selecting **Private Key** limits authentication to the key you choose. If no key
+is chosen, Motty tries the keys in the Keychain and the default `~/.ssh`
+identities. If the server accepts a key and then requests an OTP or another
+keyboard-interactive factor, Motty continues with a prompt or a saved one-time
+code. When the server rejects every candidate key, or the chosen key is no longer
+available, authentication fails without falling back to an interactive login.
 
 **Keychain > Add Key** offers three ways to bring a key in: **Import from File**
 (the file stays where it is), **Paste Private Key** (no file needed) and

@@ -31,6 +31,7 @@ const (
 	controlHit                                   // the slot is a pointer target
 	controlSearch                                // the search box
 	controlModelInput                            // the assistant's model-name field
+	controlStepsValue                            // the assistant's step-count field between its − and + buttons
 	controlFindPreference
 	controlWordSeparators   // the terminal's word-selection separators
 	controlSwatches         // a strip of round color dots
@@ -270,6 +271,8 @@ func (state *State) paintSettingsControls(canvas *gfx.Canvas) {
 			state.paintSettingsSearchBox(canvas, rect)
 		case controlModelInput:
 			state.paintAIModelInput(canvas, rect)
+		case controlStepsValue:
+			state.paintAIStepsValue(canvas, rect)
 		case controlFindPreference:
 			state.paintFindSetting(canvas, control.id, rect)
 		case controlWordSeparators:
@@ -450,6 +453,7 @@ func (state *State) paintTerminalSettings(page *settingsPage) {
 				func() { state.tabTitleMode = tabTitle; state.save() })
 			page.toggleRow(state.messages.Tools.LatencyRow, state.messages.Tools.LatencyDescription, state.terminalShowLatency, hitSettingsLatencyToggle)
 			page.toggleRow(state.messages.Tools.PasteImageRow, state.messages.Tools.PasteImageDescription, !state.pasteImageOff, hitSettingsPasteImageToggle)
+			page.toggleRow(state.messages.Tools.PasteConfirmRow, state.messages.Tools.PasteConfirmDescription, !state.pasteConfirmOff, hitSettingsPasteConfirmToggle)
 			page.toggleRow(state.messages.Tools.CloseConfirmRow, state.messages.Tools.CloseConfirmDescription, !state.closeConfirmOff, hitSettingsCloseConfirmToggle)
 			page.toggleRow(state.messages.Tools.PasswordHintRow, state.messages.Tools.PasswordHintDescription, !state.passwordHintOff, hitSettingsPasswordHintToggle)
 			page.toggleRow(state.messages.Tools.NotifyRow, state.messages.Tools.NotifyDescription, !state.notifyOff, hitSettingsNotifyToggle)

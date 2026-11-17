@@ -96,6 +96,10 @@ type Authentication struct {
 	// Methods limits the SSH authentication methods offered. Zero uses the
 	// default methods. Kerberos is opt-in.
 	Methods AuthMethods
+	// RequirePublicKey permits other methods only after the server reports
+	// partial success for publickey. A rejected or unavailable key cannot fall
+	// back to a password or keyboard-interactive login.
+	RequirePublicKey bool
 	// IdentityFiles lists private keys to try. Nil means the default OpenSSH
 	// identities; an empty slice disables identity files.
 	IdentityFiles []string
@@ -851,7 +855,7 @@ func (conn *Conn) handshake(endpoint Endpoint, socket net.Conn, known *hostKeys)
 	authentication := conn.authentication(endpoint)
 	if authentication.Methods&AuthKerberos != 0 && !KerberosAvailable {
 		socket.Close()
-		return nil, "", errors.New("Kerberos authentication requires a macOS build with cgo enabled")
+		return nil, "", errors.New("Kerberos authentication is not available in this build")
 	}
 	clientConfig := &ssh.ClientConfig{
 		Config: ssh.Config{KeyExchanges: wanted.KeyExchanges, Ciphers: wanted.Ciphers, MACs: wanted.MACs},
@@ -866,6 +870,10 @@ func (conn *Conn) handshake(endpoint Endpoint, socket net.Conn, known *hostKeys)
 		},
 		HostKeyAlgorithms: hostKeys,
 		ClientVersion:     "SSH-2.0-Motty",
+	}
+
+	if authentication.RequirePublicKey {
+		clientConfig.AuthCallback = requirePublicKey
 	}
 
 	// Closing the socket is the only way to interrupt a handshake that is

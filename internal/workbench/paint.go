@@ -216,6 +216,7 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 	// was painted with so a resize can work out the rows and columns.
 	state.viewport = size
 	state.measureTerminalCell(canvas)
+	state.requestPasteFrames(canvas)
 	if session := state.fullscreenDesktop(); session != nil {
 		state.beginMenus()
 		bounds := gfx.Rect{Width: size.Width, Height: size.Height}
@@ -676,6 +677,7 @@ func (state *State) declareShell(c ui.C) {
 			state.declareWorkspacePanes(c)
 			state.declareRemoteLogs(c)
 			state.declareContextPanel(c)
+			state.declareHostsPanel(c)
 		} else {
 			// The file-manager tab is part of the page like the panes.
 			state.declareSFTPTab(c)
@@ -2889,6 +2891,8 @@ func (state *State) declareDialogs(c ui.C) {
 		state.declareHostDialog(c)
 	case modalTerminalInput:
 		state.declareTerminalInputConfirm(c)
+	case modalPasteReview:
+		state.declarePasteReviewDialog(c)
 	case modalRemoteClipboard:
 		state.declareRemoteClipboardDialog(c)
 	case modalFileTransfer:

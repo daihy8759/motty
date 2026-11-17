@@ -4,6 +4,7 @@ package i18n
 
 var EnglishMessages = Messages{
 	RemoteLogs:     remoteLogsEnglish,
+	HostsPanel:     hostsPanelEnglish,
 	ActionFeedback: englishActionFeedback,
 	Monitor:        englishMonitor,
 	Dashboard:      englishDashboard,
@@ -69,6 +70,15 @@ var EnglishMessages = Messages{
 		LocaleBodyFmt: "Use the verified locale %s in this shell only. Locale-sensitive formatting may change. No system settings or startup files are modified. The command line must still be empty when you confirm.", LocaleConfirm: "Repair this session",
 		LocaleRepairing: "Waiting for the shell to confirm UTF-8…", LocaleSuccess: "The current shell confirmed UTF-8. Chinese editing can now use complete characters.", LocaleFailed: "The shell did not confirm UTF-8. No further repair was attempted.",
 		SendFailed: "The terminal could not queue this input. Nothing was sent; you can retry your choice or cancel.", LocaleDismiss: "Hide this warning for this session", LocaleCanceled: "Session repair canceled; the shell environment is unchanged.",
+	},
+
+	PasteReview: PasteReviewMessages{
+		Title: "Multi-line paste", SummaryFmt: "%d lines · %d characters", EditorLabel: "Paste preview",
+		Hint:        "Paste sends the text as the program expects it. Send line by line submits every line with Enter, 250 ms apart.",
+		TooLargeFmt: "This text is too large to edit here. The preview shows its beginning; all %d lines will still be sent.",
+		Whole:       "Paste", Lines: "Send line by line",
+		Stale:   "The terminal changed. Nothing was sent; paste again.",
+		Stopped: "The terminal could not take the rest of this paste. Lines already sent were not repeated.",
 	},
 
 	Transfers: TransferCenterMessages{
@@ -1234,7 +1244,7 @@ var englishAIPanel = AIPanelMessages{
 	TargetNone:         "No connection (general questions)",
 	TargetConnected:    "Connected",
 	TargetLocked:       "Locked for this request",
-	TargetHint:         "Tick several connections. The first is the default and stays put when switching tabs; the others send their terminal text along and can be operated on when you ask. Use @ to reference a session too; cross-connection commands and file changes show the actual target for approval.",
+	TargetHint:         "Tick several connections. The first is the default and stays put when switching tabs; the others send their terminal text along and can be operated on when you ask. Use @ to reference a session too; cross-connection commands and file changes name the actual target, and the auto-run scope decides whether they ask first.",
 	TargetGroupFmt:     "%s · whole tab (%d)",
 	TargetLimitFmt:     "At most %d connections can be selected at once",
 	TargetDisconnected: "Disconnected",
@@ -1887,12 +1897,14 @@ var englishTools = ToolsMessages{
 	NotifyRow:         "Desktop notifications",
 	NotifyDescription: "Show a system notification when a program in the terminal asks for one (OSC 9, 777 and 99). At most one a second per terminal.",
 
-	PasteImageRow:         "Paste images into terminals",
-	PasteImageDescription: "When the clipboard holds only an image, save it to the local cache or upload it to ~/.cache/motty/paste on the SSH server, then paste its path for programs such as Codex. Files are kept for a week.",
-	PasteImageUploading:   "Saving the clipboard image…",
-	PasteImageDoneFmt:     "Image uploaded to %s.",
-	PasteImageFailedFmt:   "Could not save the clipboard image: %v",
-	PasteImageTooLarge:    "The clipboard image is too large to paste.",
+	PasteImageRow:           "Paste images into terminals",
+	PasteImageDescription:   "When the clipboard holds only an image, save it to the local cache or upload it to ~/.cache/motty/paste on the SSH server, then paste its path for programs such as Codex. Files are kept for a week.",
+	PasteImageUploading:     "Saving the clipboard image…",
+	PasteImageDoneFmt:       "Image uploaded to %s.",
+	PasteImageFailedFmt:     "Could not save the clipboard image: %v",
+	PasteImageTooLarge:      "The clipboard image is too large to paste.",
+	PasteConfirmRow:         "Confirm before multi-line paste",
+	PasteConfirmDescription: "Show a preview before text containing line breaks reaches the shell. Turn off to paste multi-line text at once, as before.",
 
 	PasswordHintRow:         "Password prompt assist",
 	PasswordHintDescription: "When sudo asks for a password, offers the host's saved password; when su asks, lists the host's and identities' passwords to choose from. Nothing is sent until you press Enter or pick one. Save identities in Settings > Security > Identities.",

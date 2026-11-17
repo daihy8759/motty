@@ -67,6 +67,7 @@ func ChineseVariant(tag string) Language {
 // language means adding one field initialization, not touching call sites.
 type Messages struct {
 	RemoteLogs     RemoteLogMessages
+	HostsPanel     HostsPanelMessages
 	ActionFeedback ActionFeedbackMessages
 	Monitor        MonitorMessages
 	Dashboard      DashboardMessages
@@ -87,6 +88,9 @@ type Messages struct {
 	Toolbars ToolbarMessages
 	// TerminalInput holds the terminal command and character-handling notices.
 	TerminalInput TerminalInputMessages
+	// PasteReview holds the multi-line paste confirmation's texts; see
+	// paste_review.go.
+	PasteReview PasteReviewMessages
 	// Autofill holds the autofill rules' texts; see autofill.go.
 	Autofill       AutofillMessages
 	// LoginExpect holds a host's Expect/Send rules' texts; see login_expect.go.

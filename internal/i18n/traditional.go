@@ -4,6 +4,7 @@ package i18n
 
 var TraditionalMessages = Messages{
 	RemoteLogs:     traditionalRemoteLogs,
+	HostsPanel:     traditionalHostsPanel,
 	ActionFeedback: traditionalActionFeedback,
 	Monitor:        traditionalMonitor,
 	Dashboard:      traditionalDashboard,
@@ -69,6 +70,15 @@ var TraditionalMessages = Messages{
 		LocaleBodyFmt: "僅在目前 shell 使用已驗證的 %s。與 locale 有關的格式可能改變，不修改系統設定或啟動檔案。確認時命令列仍須為空。", LocaleConfirm: "修復目前工作階段",
 		LocaleRepairing: "正在等待 shell 確認 UTF-8…", LocaleSuccess: "目前 shell 已確認 UTF-8，中文編輯可按完整字元處理。", LocaleFailed: "shell 未確認 UTF-8，未繼續嘗試修改。",
 		SendFailed: "終端機暫時無法接收本次輸入，內容尚未傳送。可以重試選擇或取消。", LocaleDismiss: "本工作階段不再顯示此提示", LocaleCanceled: "已取消工作階段修復，shell 環境未修改。",
+	},
+
+	PasteReview: PasteReviewMessages{
+		Title: "多行貼上", SummaryFmt: "%d 行 · %d 個字元", EditorLabel: "貼上內容預覽",
+		Hint:        "「貼上」按程式目前的方式整段傳送；「逐行傳送」為每行補一個 Enter，間隔 250 毫秒。",
+		TooLargeFmt: "文字過大，無法在這裡編輯。預覽只顯示開頭部分，傳送的仍是全部 %d 行。",
+		Whole:       "貼上", Lines: "逐行傳送",
+		Stale:   "終端機已變化，未傳送任何內容；請重新貼上。",
+		Stopped: "終端機無法接收本次貼上的剩餘行；已傳送的行不會重發。",
 	},
 
 	Transfers: TransferCenterMessages{
@@ -1232,7 +1242,7 @@ var traditionalAIPanel = AIPanelMessages{
 	TargetNone:         "未選擇連線（普通問答）",
 	TargetConnected:    "已連線",
 	TargetLocked:       "本輪鎖定",
-	TargetHint:         "可勾選多個連線，第一個是固定的預設目標，切換分頁不會改變它；其餘連線的終端機內容會一並行給 AI，也可明確指定在其中操作。@也可引用工作階段；跨連線執行指令或修改檔案時，會顯示實際目標供核准。",
+	TargetHint:         "可勾選多個連線，第一個是固定的預設目標，切換分頁不會改變它；其餘連線的終端機內容會一並行給 AI，也可明確指定在其中操作。@也可引用工作階段；跨連線執行指令或修改檔案時，卡片會顯示實際目標，是否先確認由審批範圍決定。",
 	TargetGroupFmt:     "%s · 整個分頁（%d）",
 	TargetLimitFmt:     "最多同時選擇 %d 個連線",
 	TargetDisconnected: "已中斷",
@@ -1882,12 +1892,14 @@ var traditionalTools = ToolsMessages{
 	FontFallbackClear:       "清除",
 	FontFallbackPickerTitle: "備用字型",
 
-	PasteImageRow:         "在終端機貼上圖片",
-	PasteImageDescription: "剪貼簿裡只有圖片時，將圖片儲存在本機快取或上傳到 SSH 伺服器的 ~/.cache/motty/paste，再貼上路徑供 Codex 等程式讀取。檔案保留一週。",
-	PasteImageUploading:   "正在儲存剪貼簿裡的圖片…",
-	PasteImageDoneFmt:     "圖片已上傳到 %s。",
-	PasteImageFailedFmt:   "無法儲存剪貼簿裡的圖片：%v",
-	PasteImageTooLarge:    "剪貼簿裡的圖片太大，無法貼上。",
+	PasteImageRow:           "在終端機貼上圖片",
+	PasteImageDescription:   "剪貼簿裡只有圖片時，將圖片儲存在本機快取或上傳到 SSH 伺服器的 ~/.cache/motty/paste，再貼上路徑供 Codex 等程式讀取。檔案保留一週。",
+	PasteImageUploading:     "正在儲存剪貼簿裡的圖片…",
+	PasteImageDoneFmt:       "圖片已上傳到 %s。",
+	PasteImageFailedFmt:     "無法儲存剪貼簿裡的圖片：%v",
+	PasteImageTooLarge:      "剪貼簿裡的圖片太大，無法貼上。",
+	PasteConfirmRow:         "貼上多行前確認",
+	PasteConfirmDescription: "貼上包含換行的文字時先顯示預覽，可選擇整段或逐行傳送。關閉後按原樣一次貼上。",
 
 	PasswordHintRow:         "密碼提示輔助",
 	PasswordHintDescription: "sudo 要求密碼時提供該主機的已儲存密碼；su 要求密碼時列出該主機和身份的密碼供選擇。按下 Enter 或點選之前不會傳送任何內容。身份在「設定 > 安全 > 身份」中儲存。",
@@ -3308,4 +3320,8 @@ var traditionalSSHSync = SSHSyncMessages{
 	WarnChangedMeanwhile: "同步時 SSH 設定發生了變化，將再試一次。",
 	WarnFileMissing:      "SSH 設定檔不存在，因此沒有做任何更改。需要時會重新增立。",
 	WarnNoneLeftFmt:      "SSH 設定中已找不到任何一台已同步的主機(共 %d 台),因此保持原樣。",
+}
+
+var traditionalHostsPanel = HostsPanelMessages{
+	Toggle: "工作階段管理", Close: "關閉工作階段管理", Resize: "調整工作階段管理寬度", Manage: "管理主機",
 }
