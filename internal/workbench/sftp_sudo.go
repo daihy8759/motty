@@ -142,6 +142,9 @@ func (state *State) sftpPrivilegeDocumentBusy(view *sftpView) bool {
 }
 
 func (state *State) switchSudoSFTP(session *Session, view *sftpView, password string, elevated bool) {
+	// The transfer transport changes under the view; an upload or download that
+	// was under way continues from its partial once the new worker is usable.
+	view.worker.Interrupt()
 	view.worker.Close()
 	state.refreshSFTPTransfers(view)
 	state.archiveTransfers(view)
@@ -153,6 +156,11 @@ func (state *State) switchSudoSFTP(session *Session, view *sftpView, password st
 	view.remoteCopies = nil
 	view.sudo = elevated
 	connection, mode := session.conn, session.host.Transfer
+	if view.dedicated != nil && view.dedicated.ready {
+		// The panel opened a connection of its own when the server refused
+		// another channel on the session's transport (see sftp_connection.go).
+		connection = view.dedicated.conn
+	}
 	view.openFiles = func() (sftpclient.Remote, error) { return openRemoteFiles(connection, mode) }
 	if elevated {
 		opener := connection.(interface {

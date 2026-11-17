@@ -33,6 +33,9 @@ type fakeConn struct {
 	canceled          int
 	shells            []*fakeShell
 	shellErr          error
+	// shellHold, when set, keeps every shell request unanswered until it is
+	// closed: a gateway that silently drops the channel request.
+	shellHold         chan struct{}
 	configs           []sshconn.ShellConfig
 	sftp              sftpclient.Remote
 	sftpErr           error
@@ -91,9 +94,16 @@ func (fake *fakeConn) verifyCount() int {
 
 func (fake *fakeConn) OpenShell(config sshconn.ShellConfig) (Shell, error) {
 	fake.mu.Lock()
+	hold := fake.shellHold
+	shellErr := fake.shellErr
+	fake.mu.Unlock()
+	if hold != nil {
+		<-hold // a gateway that leaves the request unanswered
+	}
+	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if fake.shellErr != nil {
-		return nil, fake.shellErr
+	if shellErr != nil {
+		return nil, shellErr
 	}
 	shell := &fakeShell{done: make(chan struct{})}
 	fake.shells = append(fake.shells, shell)

@@ -615,6 +615,8 @@ type State struct {
 	hostSelections     []uint32
 	hostActionIDs      []uint32
 	hostGroups         []hostGroup
+	hostSide           hostCatalogSide
+	hostSideRows       []int
 	hostTreeRows       []hostTreeRow
 	hostList           hostCatalogList
 	hostGridDrag       hostGridDrag
@@ -1084,6 +1086,9 @@ type State struct {
 	// into, and keyPassphraseDraw the painter kept so a repaint allocates none.
 	keyPassphraseField ui.Box
 	keyPassphraseDraw  func(*ui.DrawContext)
+	// credentialReturn is the modal the identity dialog returns to when the host
+	// form opened it to make an identity for itself; modalNone otherwise.
+	credentialReturn modalKind
 	// sessionLogs is this window's local connection journal; it is off only
 	// when the user disabled metadata capture in the settings.
 	sessionLogs    sessionLogs
@@ -1585,6 +1590,8 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 		switch hit {
 		case hitCredentialName:
 			return &state.credentialForm.name
+		case hitCredentialUser:
+			return &state.credentialForm.user
 		case hitCredentialPassword:
 			return &state.credentialForm.password
 		}
@@ -2693,6 +2700,9 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 	if result, handled := state.hostListBarPointer(event); handled {
 		return result
 	}
+	if result, handled := state.hostSidePointer(event); handled {
+		return result
+	}
 	if result, handled := state.hostListPointer(event); handled {
 		return result
 	}
@@ -3344,7 +3354,7 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		return gfx.EventResult{Handled: true, Repaint: true}
 	}
 	if state.modal == modalCredential && event.Key == gfx.KeyEnter && !event.Repeat &&
-		(event.Target == hitCredentialName || event.Target == hitCredentialPassword) {
+		(event.Target == hitCredentialName || event.Target == hitCredentialUser || event.Target == hitCredentialPassword) {
 		state.submitCredential()
 		return gfx.EventResult{Handled: true, Repaint: true}
 	}

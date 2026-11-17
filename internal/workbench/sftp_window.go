@@ -18,14 +18,17 @@ import (
 // The terminal entry borrows that connection; the host-menu entry owns its
 // connection or authenticated share. Both own their browser and SFTP worker.
 type sftpWindow struct {
-	owner                       *State
-	session                     Session
-	window                      *app.ContentWindow
-	view                        *sftpView
-	closed, closeConfirm        bool
-	closedSignal                atomic.Bool
-	allowClose, afterClosed     func()
-	activeLocal                 bool
+	owner                   *State
+	session                 Session
+	window                  *app.ContentWindow
+	view                    *sftpView
+	closed, closeConfirm    bool
+	closedSignal            atomic.Bool
+	allowClose, afterClosed func()
+	activeLocal             bool
+	// pendingFocus is the control the next paint hands the keyboard to, for a
+	// focus change the model makes outside an input event.
+	pendingFocus                gfx.ID
 	localRefresh                bool
 	pendingLocal                string
 	phase                       sshconn.Phase
@@ -194,6 +197,7 @@ func (w *sftpWindow) pump() {
 	if !w.connected() {
 		if w.view.sudo {
 			w.owner.forgetSFTPDocumentAccess(w.view)
+			w.view.worker.Interrupt()
 			w.view.worker.Close()
 			w.owner.refreshSFTPTransfers(w.view)
 			w.owner.archiveTransfers(w.view)
@@ -328,6 +332,10 @@ func (w *sftpWindow) onClosed() {
 		w.owner.forgetSFTPDocumentAccess(w.view)
 	}
 	if w.view.worker != nil {
+		// The window's connection is going away with it. Its unfinished uploads
+		// and downloads keep their partial files and wait for a view of the same
+		// host (ADR 0028).
+		w.view.worker.Interrupt()
 		w.view.worker.Close()
 		w.owner.refreshSFTPTransfers(w.view)
 		w.owner.archiveTransfers(w.view)

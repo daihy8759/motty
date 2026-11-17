@@ -370,13 +370,23 @@ type Options struct {
 	// FontFamilies lists every installed font family, for the choice of the
 	// interface's own. Nil uses the platform's list.
 	FontFamilies func() []string
+	// FontWeights lists the weights a family is installed with, ascending, for
+	// the main and the bold text of the interface. Nil uses the platform's list,
+	// and an empty list where the platform cannot report a family's weights.
+	FontWeights func(family string) []int
 	// SetInterfaceFont names the family the window's text is drawn in, or ""
-	// for the platform's own interface font; it reports whether the platform
-	// can follow a family at all. Nil uses the platform's own.
-	SetInterfaceFont func(family string) bool
+	// for the platform's own interface font, and the weights its main and bold
+	// text are drawn at (0 for the platform's own); it reports whether the
+	// platform can follow a family at all. Nil uses the platform's own.
+	SetInterfaceFont func(family string, main, bold int) bool
 	// MonoFamilies lists the installed fixed-pitch font families. Nil uses
 	// app.MonospaceFamilies.
 	MonoFamilies func() []string
+	// SetTerminalFontWeights names the weights the terminal's text is drawn at,
+	// main for its regular text and bold for its bold runs (0 for the platform's
+	// own), and reports whether the platform has the choice. Nil uses the
+	// platform's own.
+	SetTerminalFontWeights func(main, bold int) bool
 	// WallNow is the time of day, for one-time codes. Nil uses time.Now.
 	WallNow func() time.Time
 	// Now is a monotonic clock, for how long a connection has taken and how long
@@ -479,11 +489,17 @@ func (options Options) withDefaults() Options {
 	if options.MonoFamilies == nil {
 		options.MonoFamilies = app.MonospaceFamilies
 	}
+	if options.SetTerminalFontWeights == nil {
+		options.SetTerminalFontWeights = app.SetMonospaceFontWeights
+	}
 	if options.FontFamilies == nil {
 		options.FontFamilies = app.FontFamilies
 	}
+	if options.FontWeights == nil {
+		options.FontWeights = app.FontWeights
+	}
 	if options.SetInterfaceFont == nil {
-		options.SetInterfaceFont = app.SetInterfaceFontFamily
+		options.SetInterfaceFont = app.SetInterfaceFont
 	}
 	if options.WallNow == nil {
 		options.WallNow = time.Now
@@ -595,6 +611,9 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	session.resetLatency()
 	avoidShare := session.avoidShare || loopbackTunnel(host)
 	session.avoidShare = false
+	// A new transport deserves its own attempt: the server may accept another
+	// channel now, or the host may have changed.
+	session.fileConnectionSeparate = false
 	session.closeSSHBrowser()
 	session.stopRemoteLogs()
 	state.redialSessionForwards(session.ID)
@@ -626,6 +645,7 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	session.restored = false
 	session.autoRestore, session.restoreNote = false, ""
 	session.host = host
+	session.agent, session.agentWatch = agentNone, agentWatch{}
 	session.Address = state.sessionAddress(host)
 	session.endpoint = sshconn.Endpoint{Host: host.Address, Port: host.Port, User: state.login(host)}
 	session.role = sshconn.EndpointTarget
@@ -705,6 +725,10 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 // has no host to dial.
 func (state *State) sshConfigFor(session *Session, host Host) (config sshconn.Config, valid bool) {
 	config, route, valid := state.hostCatalog.sshConfigFor(host, session.host, state.connectionEnv(state.notifyFor(session)))
+	// A hardware security key signs through an agent. The window prepares one
+	// lazily, only when an identity turns out to be an sk-* key, and releases
+	// it with the connection.
+	config.SecurityKeyAgent = newSecurityKeyAgent(state).Agent
 	session.proxyRoute, session.jumpPath = route.proxyKey, route.jumpPath
 	return config, valid
 }
@@ -918,6 +942,7 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 	session.version = status.Version
 	session.phase = status.Phase
 	session.attempt = status.Attempt
+	session.securityKey = status.SecurityKey
 	session.busy = false
 	session.hostKey = status.HostKey
 	session.questions = status.Questions
@@ -1353,6 +1378,7 @@ func (state *State) showNextPrompt() {
 
 func (state *State) closeModal() {
 	returnToRules := state.ruleManager.returning && (state.modal == modalHighlightRule || state.modal == modalAutofillRule || state.modal == modalDeleteRule)
+	returnToHost := state.modal == modalCredential && state.credentialReturn != modalNone
 	if state.modal == modalRuleManager {
 		state.ruleManager = ruleManagerUI{}
 	}
@@ -1413,6 +1439,10 @@ func (state *State) closeModal() {
 		state.ruleManager.returning = false
 		state.ruleManager.list = nil
 	}
+	if returnToHost {
+		state.modal = state.credentialReturn
+		state.credentialReturn = modalNone
+	}
 	state.modalSession = 0
 	state.reveal.reset()
 	state.passwordFields = nil
@@ -1445,6 +1475,9 @@ func (state *State) promptSession() *Session {
 	}
 	if w := state.sftpWindows[state.modalSession]; w != nil && w.ownsConnection && !w.closed {
 		return &w.session
+	}
+	if session := state.dedicatedFileSession(state.modalSession); session != nil {
+		return session
 	}
 	return nil
 }

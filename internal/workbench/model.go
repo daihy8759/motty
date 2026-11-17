@@ -186,6 +186,10 @@ type Session struct {
 	// avoidShare makes the next connection a fresh one: the server refused one
 	// more channel on the shared connection.
 	avoidShare bool
+	// fileConnectionSeparate says the server refused a session channel on this
+	// terminal's transport, so the file panel opens its own connection instead
+	// of asking it again. A new terminal connection forgets it.
+	fileConnectionSeparate bool
 	// notified is when this terminal last had a notification shown.
 	notified  time.Duration
 	didNotify bool
@@ -214,11 +218,13 @@ type Session struct {
 	transfer fileTransfer
 	rzsz     *rzszJob
 	// desk is the remote desktop a VNC tab shows; nil for every other kind.
-	desk     *desktopView
-	version  uint64
-	phase    sshconn.Phase
-	attempt  int
-	answered uint64
+	desk    *desktopView
+	version uint64
+	phase   sshconn.Phase
+	attempt int
+	// securityKey is set while the agent waits for a hardware key.
+	securityKey bool
+	answered    uint64
 	// otpSent is set once a one-time code was typed for this connection, so a
 	// refused one is never sent again by itself.
 	otpSent   bool
@@ -233,6 +239,10 @@ type Session struct {
 	fileHistory [2]sftpSavedHistory
 	// pastingImage is set while a pasted image is on its way to the server.
 	pastingImage bool
+	// agent is the coding agent in this local terminal's foreground, and
+	// agentWatch is when that was last read; both are cleared when the shell ends.
+	agent      codingAgent
+	agentWatch agentWatch
 	// relay is where this session's background goroutines report progress. It
 	// points at the window the session is in, and moves with the session.
 	relay *notifyRelay

@@ -129,9 +129,16 @@ type sftpFolder struct {
 }
 
 type sftpView struct {
-	detached                        *sftpWindow // optional native dual-pane owner; transport/navigation stay per view
-	worker                          *sftpclient.Worker
-	openFiles                       func() (sftpclient.Remote, error) // the server's files again, outside the worker's queue; nil when unavailable
+	detached  *sftpWindow // optional native dual-pane owner; transport/navigation stay per view
+	worker    *sftpclient.Worker
+	openFiles func() (sftpclient.Remote, error) // the server's files again, outside the worker's queue; nil when unavailable
+	// transport is the SSH connection this panel's worker opens files on: the
+	// session's own or, when the server refused another channel there, the
+	// panel's separate connection (see sftp_connection.go).
+	transport *filesTransport
+	// dedicated is the panel's separate connection while it is being made and
+	// once it carries the files.
+	dedicated                       *sftpDedicated
 	sudo                            bool
 	transferScan                    uint64
 	transferHost                    *transferHost
@@ -245,6 +252,7 @@ type sftpView struct {
 	waiting               string
 	pathRequest           string // the directory submitted through the path input, awaiting its listing
 	abandonedPath         string // a path request the user canceled while it was in flight
+	restorePath           string
 	terminalPath          string // an explicit navigation, never a shell report or background refresh
 	terminalPromptVersion uint64
 	terminalScreenVersion uint64 // plain-shell locate must keep the same visible prompt during the read
@@ -270,12 +278,13 @@ const (
 )
 
 func (state *State) openSFTP(session *Session) {
+	saved := savedHistoryFor(session)
 	if session != nil && session.isLocal() && session.files == nil {
 		view := &sftpView{local: true, localOnly: true}
-		view.adoptHistory(session.fileHistory)
+		view.adoptHistory(saved)
 		view.selected, view.lfolder.selected = -1, -1
 		session.files = view
-		start := session.fileHistory[0].path
+		start := saved[0].path
 		if start == "" || session.term != nil && session.term.followPath != "" {
 			start = state.localPanelStart(session)
 		}
@@ -290,13 +299,14 @@ func (state *State) openSFTP(session *Session) {
 	}
 	connection, transfer := session.conn, session.host.Transfer
 	view := &sftpView{busy: true, operation: sftpclient.OperationList}
-	view.adoptHistory(session.fileHistory)
+	view.adoptHistory(saved)
 	view.startListingStatus(state.messages.SFTPLoading)
 	view.sftpFolder.showHidden = true
 	view.transferServer, view.transferAddress = session.Title, session.Address
 	view.transferHost = transferHostFor(session)
 	view.selected, view.lfolder.selected = -1, -1
-	view.openFiles = func() (sftpclient.Remote, error) { return openRemoteFiles(connection, transfer) }
+	view.transport = &filesTransport{conn: connection}
+	view.openFiles = func() (sftpclient.Remote, error) { return openRemoteFiles(view.transport.connection(), transfer) }
 	view.worker = sftpclient.NewWorker(view.openFiles, state.notifyFor(session))
 	state.configureSFTPWorker(view)
 	session.files = view
@@ -305,7 +315,15 @@ func (state *State) openSFTP(session *Session) {
 			state.terminalDirectory(session.ID, cwd)
 		}
 	}
-	state.listSFTP(view, session.fileHistory[1].path)
+	view.restorePath = saved[1].path
+	if session.fileConnectionSeparate {
+		// This server already refused a channel on the terminal transport:
+		// opening the files the same way would fail the same way, so the panel
+		// connects for itself from the start.
+		state.startFileConnection(session, view, saved[1].path)
+		return
+	}
+	state.listSFTP(view, saved[1].path)
 	if !view.busy {
 		view.busy = false
 		view.errorText = state.messages.SFTPUnavailable
@@ -316,9 +334,14 @@ func (state *State) closeSFTP(session *Session) {
 	if session == nil {
 		return
 	}
-	session.fileHistory = [2]sftpSavedHistory{}
 	if session.files == nil {
 		return
+	}
+	for side, saved := range session.files.saveHistory() {
+		if saved.path != "" {
+			saved.endpoint = session.Address
+			session.fileHistory[side] = saved
+		}
 	}
 	if state.modal == modalFileProperties && session.ID == state.activeSessionID {
 		state.clickFileProperties(hitFilePropertiesClose)
@@ -335,6 +358,11 @@ func (state *State) closeSFTP(session *Session) {
 		session.files.cancelExtract()
 	}
 	if session.files.worker != nil {
+		// The connection is what is going away. An upload or download that was
+		// under way keeps its partial file and its row, and a worker opened for
+		// this host again continues it (ADR 0028); only a transfer the user
+		// ended stays canceled.
+		session.files.worker.Interrupt()
 		session.files.worker.Close()
 		state.refreshSFTPTransfers(session.files)
 		state.archiveTransfers(session.files)
@@ -342,6 +370,7 @@ func (state *State) closeSFTP(session *Session) {
 	if session.files.sudo {
 		state.forgetSFTPDocumentAccess(session.files)
 	}
+	state.stopFileConnection(session.files)
 	session.files.openFiles = nil
 	session.files.sudo = false
 	state.forgetTerminalUploads(session.files)
@@ -493,6 +522,12 @@ func (state *State) clickSFTP(id gfx.ID) {
 			state.toggleSFTPFollow(session)
 		default:
 			folder.headerMenuOpen = false
+			for _, tool := range state.chrome.sftpPanel.overflowTools {
+				if tool.id == id && !tool.disabled {
+					state.clickSFTP(id)
+					break
+				}
+			}
 		}
 		return
 	}
@@ -2127,6 +2162,7 @@ func (state *State) pumpSFTP(session *Session) {
 		return
 	}
 	view := session.files
+	state.pumpFileConnection(session, view)
 	state.pumpSFTPArchive(session, view)
 	state.pumpSFTPEditor(session, view)
 	defer func() {
@@ -2138,6 +2174,11 @@ func (state *State) pumpSFTP(session *Session) {
 	}()
 	if view.worker == nil {
 		return
+	}
+	if !view.busy {
+		// A view that is ready again is what an interrupted upload or download
+		// was waiting for; its partial file is verified before it continues.
+		state.resumeInterruptedTransfers(view)
 	}
 	state.refreshSFTPTransfers(view)
 	for {
@@ -2195,12 +2236,9 @@ func (state *State) pumpSFTP(session *Session) {
 						view.status = state.messages.SFTPCanceled
 					} else if errors.Is(result.Err, sftpclient.ErrDestinationExists) {
 						if view.detached == nil {
-							// Opening here asks for a decision, so show every
-							// transfer: a saved Active filter would hide the entry
-							// that needs Replace, Skip or Resume.
-							state.transfers.filter = 0
-							state.transfers.host = nil
-							state.transfers.open, state.transfers.scroll = true, 0
+							// Open failures directly so long active or completed
+							// groups cannot push the conflict out of sight.
+							state.showTransferConflict()
 						}
 					} else {
 						view.errorText = state.formatSFTPError(result.Err)
@@ -2227,6 +2265,18 @@ func (state *State) pumpSFTP(session *Session) {
 				continue
 			}
 			view.busy = false
+			if result.Operation == sftpclient.OperationList && view.restorePath != "" {
+				restoring := result.Path == view.restorePath
+				view.restorePath = ""
+				var status *sftp.StatusError
+				if restoring && (sftpclient.IsPathNotFound(result.Err) || errors.Is(result.Err, os.ErrPermission) ||
+					errors.As(result.Err, &status) && status.FxCode() == sftp.ErrSSHFxPermissionDenied) {
+					state.showSFTPPathErrorAt(view, result.Path, result.Err)
+					view.sftpFolder.history = sftpHistory{}
+					state.listSFTP(view, "")
+					continue
+				}
+			}
 			if result.Operation == sftpclient.OperationMoveSelection {
 				if result.Err != nil {
 					detail := fmt.Sprintf(state.messages.SFTPErrorFmt, result.Err)
@@ -2265,10 +2315,18 @@ func (state *State) pumpSFTP(session *Session) {
 					continue
 				}
 				if result.Err == nil && !state.sftpPathInput {
+					// The accepted path replaces the editor with breadcrumbs; hand
+					// the keyboard to the control that takes its place.
+					if view.sftpFolder.pathEditing && view.detached != nil {
+						view.detached.pendingFocus = sftpWindowPathEdit[1]
+					}
 					view.sftpFolder.pathEditing = false
 				}
 			}
 			if result.Err != nil {
+				if state.separateFileConnection(session, view, result) {
+					continue
+				}
 				if result.Operation == sftpclient.OperationList {
 					view.navigation = sftpNavigation{}
 				}
