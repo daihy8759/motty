@@ -324,8 +324,6 @@ type aiPanel struct {
 	paintedHistory             []aiPaintedHistoryRow
 	copySlots                  []aiCopySlot
 	statusLabel                string
-	statusActivity             ui.Box
-	statusPainted              bool
 	historyTop                 float32
 
 	// focusBack asks the next paint to put the keyboard back in the terminal
@@ -447,6 +445,8 @@ type aiPanel struct {
 	storeNotice                   string
 	storeNoticeFor                error
 	confirmFor                    *aiApproval
+	confirmField                  ui.Field // the confirmation word's page field, bound to ai.confirm
+	confirmBound                  bool
 	confirmFormat, confirmText    string
 	moreCount                     int
 	moreFormat, moreText          string

@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/components"
@@ -52,7 +51,6 @@ var (
 	hitExportHosts             = tree.ID(shellHits, "export-hosts")
 	hitImportHostCatalog       = tree.ID(shellHits, "import-host-catalog")
 	hitImportMenu              = tree.ID(shellHits, "import-menu")
-	hitImportMenuDismiss       = tree.ID(shellHits, "import-menu-dismiss")
 	hitHostGroupDismiss        = tree.ID(shellHits, "host-group-dismiss")
 	hitHostFilterAll           = tree.ID(shellHits, "host-filter-all")
 	hitHostFilterMore          = tree.ID(shellHits, "host-filter-more")
@@ -196,7 +194,6 @@ var (
 // Key management: its page and the rows of its table.
 var (
 	hitKeysAdd         = tree.ID(keysHits, "keys-add")
-	hitKeysMenuDismiss = tree.ID(keysHits, "keys-menu-dismiss")
 	hitKeysImport      = tree.ID(keysHits, "keys-import")
 	hitKeysPaste       = tree.ID(keysHits, "keys-paste")
 	hitKeysGenerate    = tree.ID(keysHits, "keys-generate")
@@ -294,12 +291,6 @@ var (
 	hitProxyBatchOverwrite           = tree.ID(proxiesHits, "proxy-batch-overwrite")
 	hitProxyBatchCheckList           = tree.Sub(proxiesHits, tree.Name("proxy-batch-check"))
 	hitProxyTargetCheckList          = tree.Sub(proxiesHits, tree.Name("proxy-target-check"))
-	hitProxyBatchJumpInput           = tree.ID(proxiesHits, "proxy-batch-jump-input")
-	hitProxyBatchJumpTrigger         = tree.ID(proxiesHits, "proxy-batch-jump-trigger")
-	hitProxyBatchJumpDismiss         = tree.ID(proxiesHits, "proxy-batch-jump-dismiss")
-	hitProxyBatchJumpScroll          = tree.ID(proxiesHits, "proxy-batch-jump-scroll")
-	hitProxyBatchJumpScope           = tree.ID(proxiesHits, "proxy-batch-jump-scope")
-	hitProxyBatchJumpItemList        = tree.Sub(proxiesHits, tree.Name("proxy-batch-jump-item"))
 	hitProxyCheckAll                 = tree.ID(proxiesHits, "proxy-check-all")
 	hitProxyRowCheckList             = tree.Sub(proxiesHits, tree.Name("proxy-row-check"))
 	hitProxyRowSwitchList            = tree.Sub(proxiesHits, tree.Name("proxy-row-switch"))
@@ -541,7 +532,11 @@ type State struct {
 	tabOptions        []components.TabOption
 	workspaceTabs     []layoutcore.WorkspaceInfo
 	// workspacePaneTabLabels is the tab strip's labels, reused every frame.
-	workspacePaneTabLabels []string
+	workspacePaneTabLabels  []string
+	workspacePaneTabIndices []int
+	// workspacePaneTabChoice is the page Tabs' chosen pane, which a click or
+	// the arrows move; the paint that finds it changed makes that pane active.
+	workspacePaneTabChoice int
 	tabStrip               tabStrip
 	windowBarScroll        windowBarScroll
 	tabOrientation         tabOrientation
@@ -609,7 +604,12 @@ type State struct {
 	hostTotalDigits        string
 	groupMenu              groupMenuAnchor // where the Move group picker opens
 	moveGroups             *hostMoveGroupMenu
-	hostSelectionText      string
+	// hostGroupCopy makes the group picker's choice a destination for copies
+	// rather than for moves; hostClipboard is what Paste duplicates.
+	hostGroupCopy     bool
+	hostClipboard     []uint32
+	hostBlankMenu     hostBlankMenu
+	hostSelectionText string
 	// inputGapNote is the last terminal input gap reported to the log, so a
 	// paint that keeps asking for a surface that cannot exist logs it once.
 	inputGapNote       string
@@ -619,7 +619,7 @@ type State struct {
 	hostGroups         []hostGroup
 	hostSide           hostCatalogSide
 	hostsPanel         hostsPanel
-	hostSideRows       []int
+	hostSideRows       []hostSideRow
 	hostTreeRows       []hostTreeRow
 	hostList           hostCatalogList
 	hostGridDrag       hostGridDrag
@@ -643,10 +643,8 @@ type State struct {
 	hostsContent    float32
 	hostGroupMenu   bool
 	importMenu      bool
-	// keysMenu is the open menu under the Keychain page's Add Key button, and
-	// keysAddButton where that button was painted.
+	// keysMenu is the open menu under the Keychain page's Add Key button.
 	keysMenu          bool
-	keysAddButton     gfx.Rect
 	hostsBounds       gfx.Rect // the hosts page as last painted; the menus anchor to it
 	hostsGridViewport gfx.Rect // the card grid's absolute viewport as last painted
 	terminalMenu      terminalMenu
@@ -680,6 +678,7 @@ type State struct {
 	workspaceLibraryExpanded      bool
 	workspaceLibraryPointerID     string
 	workspaceLibraryScroll        float32
+	workspaceLibraryScrollSynced  float32
 	workspaceLibraryBounds        gfx.Rect
 	workspaceLibraryContent       float32
 	workspaceTemplateMoreBounds   []gfx.Rect
@@ -687,7 +686,10 @@ type State struct {
 	workspaceTemplateDelete       workspaceTemplateDelete
 	workspaceCommandEdit          workspaceCommandInline
 	workspaceTemplateFocusPending gfx.ID
-	workspaceDraft                workspaceDraft
+	// workspaceHeaderFocusPending is where the keyboard returns after a header
+	// menu closes; the pane painter applies it once the page has painted.
+	workspaceHeaderFocusPending gfx.ID
+	workspaceDraft              workspaceDraft
 	// workspaceHeaderPlan and workspaceHeaderSlots are what the managed
 	// workspace's header declaration leaves for its painter.
 	workspaceHeaderPlan  workspaceHeaderPlan
@@ -794,8 +796,9 @@ type State struct {
 	// terminal or host is already open, instead of opening another one.
 	startupReuse  bool
 	startupPicker struct {
-		open   bool
-		bounds gfx.Rect // the chooser's place on the settings page
+		open bool
+		// shown says the last paint declared the menu, so closing it saves once.
+		shown bool
 	}
 	// openStream opens the stream of a Telnet or serial host; tests replace it.
 	openStream func(context.Context, streamRequest) (Shell, error)
@@ -847,8 +850,8 @@ type State struct {
 	defaultEditor           ExternalEditor // hands remote folders to this computer's editor
 	customEditorPath        string
 	monitorRect             gfx.Rect
+	monitorUI               monitorPageUI
 	monitorMenu             bool
-	monitorMenuRect         gfx.Rect
 	monitorResizing         bool
 	monitorResizeGrab       float32
 	monitorResizeWorkspace  layoutcore.WorkspaceID
@@ -919,26 +922,21 @@ type State struct {
 	// was none), so wheel events can tell which view they are over. The panel is
 	// declared inside the workbench page now, so contextPanelScope is the page
 	// container its elements live in, and contextPanelMode says which view it
-	// declared. contextDrawer is the page's drawer chrome while the panel is a
-	// narrow overlay; its description is kept for the paint that opens it.
-	contextRect              gfx.Rect
-	contextPanelScope        gfx.Scope
-	contextPanelMode         contextPanelMode
-	contextPanelDocked       bool
-	contextDrawer            components.Drawer
-	contextDrawerDescription string
-	contextDrawerOpen        bool
-	// The panel's Draw callbacks are method values made once: a paint that made
-	// them again would allocate.
-	contextPanelDraw   func(*ui.DrawContext)
-	contextDrawerBegin func(*ui.DrawContext)
-	contextDrawerEnd   func(*ui.DrawContext)
-	shortcuts          shortcutMap
-	shortcutCapture    shortcutAction
-	shortcutError      string
-	reconnectWaiters   int
-	pal                *palette
-	theme              gfx.Theme
+	// declared. contextDrawerOpen is the narrow overlay's open state.
+	contextRect        gfx.Rect
+	contextPanelScope  gfx.Scope
+	contextPanelMode   contextPanelMode
+	contextPanelDocked bool
+	contextDrawerOpen  bool
+	// The panel's Draw callback is a method value made once: a paint that made
+	// it again would allocate.
+	contextPanelDraw func(*ui.DrawContext)
+	shortcuts        shortcutMap
+	shortcutCapture  shortcutAction
+	shortcutError    string
+	reconnectWaiters int
+	pal              *palette
+	theme            gfx.Theme
 	// termPal is the terminal's own look: pal with the chosen color scheme and
 	// the highlight rules applied. termEpoch counts its rebuilds.
 	termPal   palette
@@ -1055,9 +1053,9 @@ type State struct {
 	cellWidth, cellHeight float32
 	panes                 []Pane
 	paneSplits            []PaneSplit
+	paneSplitters         []paneSplitterUI
 	terminalDrop          terminalDrop // the terminal that files being dragged over would be uploaded from
 	terminalUploads       []terminalUploadBatch
-	draggedPaneSplit      uint32
 	draggedContextDivider bool
 	deck                  layoutcore.Deck
 	workspaceViewCacheID  layoutcore.WorkspaceID
@@ -1075,23 +1073,19 @@ type State struct {
 	hostKeyDescription       string
 	passwordFields           []text.Editor
 	sudoSFTP                 sudoSFTPDialog
-	passwordRects            []gfx.Rect
-	passwordBoxes            []ui.Box
+	passwordInputs           []dialogField
 	passwordQuestions        []sshconn.Question
 	passwordError            string
 	passwordDescription      string
 	keyPassphrase            text.Editor
 	keyPassphraseError       string
 	keyPassphraseDescription string
+	keyPassphraseInput       dialogField
 	clipboardRequest         remoteClipboardRequest
 	autofillRules            autofillUI
 	loginExpectStep          loginExpectStepState
 	credentialForm           credentialUI
 	commandPalette           commandPalette
-	// keyPassphraseField is the slot the passphrase dialog's field is painted
-	// into, and keyPassphraseDraw the painter kept so a repaint allocates none.
-	keyPassphraseField ui.Box
-	keyPassphraseDraw  func(*ui.DrawContext)
 	// credentialReturn is the modal the identity dialog returns to when the host
 	// form opened it to make an identity for itself; modalNone otherwise.
 	credentialReturn modalKind
@@ -1529,8 +1523,6 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 		switch hit {
 		case hitProxyBatchSearch:
 			return &state.proxyBatch.query
-		case hitProxyBatchJumpInput:
-			return &state.proxyBatch.jumpQuery
 		}
 	case modalNewForward:
 		if hit == hitForwardDialogHost {
@@ -1942,7 +1934,7 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		return
 	}
 	if state.clickHostOrder(id) || state.clickHostsPanel(id) || state.clickToolbarDockMenu(id) || state.clickWorkspaceTemplateManagement(id) ||
-		state.clickHostGroupActions(id) || state.clickTerminalMenu(id) || state.clickGhostMenu(id) || state.clickTabMenu(id) || state.clickHostMenu(id) || state.clickLocalShellPicker(id) || state.clickSnippetMenu(id) || state.clickSFTPMenu(id) {
+		state.clickHostGroupActions(id) || state.clickTabMenu(id) {
 		return
 	}
 	if state.clickWorkspaceCommand(id) {
@@ -2634,12 +2626,6 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 	if result, handled := state.workspaceLibraryPointer(event); handled {
 		return result
 	}
-	if result, handled := state.dashboardPointer(event); handled {
-		return result
-	}
-	if result, handled := state.sessionLogsPointer(event); handled {
-		return result
-	}
 	if state.modal == modalFileProperties {
 		if event.Target == hitFilePropertiesClose || event.Target == hitFilePropertiesDismiss {
 			return gfx.EventResult{}
@@ -2661,21 +2647,6 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 	if result, handled := state.windowBarScrollPointer(event); handled {
 		return result
 	}
-	if result := state.toolbarSettingsPointer(event); result.Handled {
-		return result
-	}
-	if result := state.sidebarSettingsPointer(event); result.Handled {
-		return result
-	}
-	if result := state.ruleManagerPointer(event); result.Handled {
-		return result
-	}
-	if result := state.sftpColumnSettingsPointer(event); result.Handled {
-		return result
-	}
-	if result, handled := state.transferCenterPointer(event); handled {
-		return result
-	}
 	if state.aiTrackPointer(event) {
 		defer func() { outcome.Repaint = true }()
 	}
@@ -2691,29 +2662,14 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 	if result, handled := state.menuPointer(event); handled {
 		return result
 	}
-	if result, handled := state.terminalMenuPointer(event); handled {
-		return result
-	}
-	if result, handled := state.ghostMenuPointer(event); handled {
-		return result
-	}
-	if result, handled := state.tabMenuPointer(event); handled {
-		return result
-	}
 	if result, handled := state.tabMiddlePointer(event); handled {
 		return result
 	}
 	if result, handled := state.tabDragPointer(event); handled {
 		return result
 	}
-	if result, handled := state.hostMenuPointer(event); handled {
-		return result
-	}
 	state.hostPressPointer(event)
 	if result, handled := state.hostSortPointer(event); handled {
-		return result
-	}
-	if result, handled := state.snippetReorderPointer(event); handled {
 		return result
 	}
 	if result, handled := state.hostListBarPointer(event); handled {
@@ -2723,18 +2679,6 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 		return result
 	}
 	if result, handled := state.hostListPointer(event); handled {
-		return result
-	}
-	if result, handled := state.hostGroupActionsPointer(event); handled {
-		return result
-	}
-	if result, handled := state.localShellPickerPointer(event); handled {
-		return result
-	}
-	if result, handled := state.snippetMenuPointer(event); handled {
-		return result
-	}
-	if result, handled := state.sftpMenuDismissPointer(event); handled {
 		return result
 	}
 	if result, handled := state.sftpPlacesPointer(event); handled {
@@ -2762,9 +2706,6 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 		return result
 	}
 	if result, handled := state.monitorPointer(event); handled {
-		return result
-	}
-	if result, handled := state.paneDividerPointer(event); handled {
 		return result
 	}
 	// A press on a pane's own ground switches to that pane, and the keyboard goes
@@ -2918,9 +2859,6 @@ func (state *State) pointer(event gfx.PointerEvent) gfx.EventResult {
 		}
 	}
 	if result, handled := state.proxyPickerPointer(event); handled {
-		return result
-	}
-	if result, handled := state.proxyBatchPickerPointer(event); handled {
 		return result
 	}
 	if result, handled := state.forwardPickerPointer(event); handled {
@@ -3164,9 +3102,6 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 	if result, handled := state.proxyDialogKey(event); handled {
 		return result
 	}
-	if result, handled := state.proxyBatchDialogKey(event); handled {
-		return result
-	}
 	if result, handled := state.forwardDialogKey(event); handled {
 		return result
 	}
@@ -3191,13 +3126,7 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 	if result, handled := state.snippetGroupKey(event); handled {
 		return result
 	}
-	if result, handled := state.snippetReorderKey(event); handled {
-		return result
-	}
 	if result := state.toolbarSettingsKey(event); result.Handled {
-		return result
-	}
-	if result := state.sidebarSettingsKey(event); result.Handled {
 		return result
 	}
 	if result := state.sftpColumnSettingsKey(event); result.Handled {
@@ -3225,17 +3154,6 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 	// Escape hides it before it can reach a dialog or the page.
 	if event.Key == gfx.KeyEscape && state.openMenuScroll() == nil && state.tooltip.Dismiss() {
 		return gfx.EventResult{Handled: true, Repaint: true}
-	}
-	if state.terminalMenu.open && event.Key == gfx.KeyEscape {
-		state.terminalMenu.open = false
-		return gfx.EventResult{Handled: true, Repaint: true}
-	}
-	if state.ghostMenu.open && event.Key == gfx.KeyEscape {
-		state.ghostMenu.open = false
-		return gfx.EventResult{Handled: true, Repaint: true}
-	}
-	if result, handled := state.workspaceTemplateMenuKey(event); handled {
-		return result
 	}
 	if result, handled := state.workspaceTemplateDeleteKey(event); handled {
 		return result
@@ -3281,9 +3199,6 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		return result
 	}
 	if result, handled := state.hostManagementKey(event); handled {
-		return result
-	}
-	if result, handled := state.keysKey(event); handled {
 		return result
 	}
 	if state.modal == modalNewHost && event.Key == gfx.KeyEnter && event.Modifiers == 0 && state.EditorFor(event.Target) != nil {
@@ -3364,11 +3279,6 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		state.submitOutboundProxy()
 		return gfx.EventResult{Handled: true, Repaint: true}
 	}
-	if state.modal == modalForm {
-		if result, handled := state.formKey(event); handled {
-			return result
-		}
-	}
 	if state.modal == modalForm && event.Key == gfx.KeyEnter && !event.Repeat && state.formEditor(event.Target) != nil && state.multilineField(event.Target) == nil {
 		state.submitForm()
 		return gfx.EventResult{Handled: true, Repaint: true}
@@ -3386,17 +3296,6 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 	if state.modal == modalHighlightRule && event.Key == gfx.KeyEnter && event.Target == hitHighlightPattern && !event.Repeat {
 		state.submitHighlightRule()
 		return gfx.EventResult{Handled: true, Repaint: true}
-	}
-	if state.modal == modalSnippet && event.Target == hitSnippetCommand {
-		if _, composing := state.snippets.command.Composition(); !composing {
-			movement, extend := components.TextareaMovementForKey(event.Key, event.Modifiers)
-			if movement != components.TextareaMoveNone {
-				value := state.snippets.command.String()
-				to := state.snippets.commandLayout.Move(value, aiByteOffset(value, state.snippets.command.Caret()), movement)
-				state.snippets.command.MoveTo(utf8.RuneCountInString(value[:to]), extend)
-				return gfx.EventResult{Handled: true, Repaint: true}
-			}
-		}
 	}
 	if state.modal == modalSnippet && event.Key == gfx.KeyEnter && (event.Target == hitSnippetName || event.Target == hitSnippetGroup) && !event.Repeat {
 		// submitSnippet refuses while either field is composing: that Enter

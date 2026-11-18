@@ -462,8 +462,12 @@ type Messages struct {
 
 	// Toolbar and host table.
 	NewHost          string
+	NewGroup         string
 	EditHost         string
 	CopyHost         string
+	CopyHostTo       string
+	CopyHostAndEdit  string
+	PasteHost        string
 	DeleteHost       string
 	MoveHostGroup    string
 	HostGroupActions HostGroupMessages
@@ -599,6 +603,8 @@ type Messages struct {
 	HostDeletedFmt              string
 	HostUpdated                 string
 	HostCopied                  string
+	HostPastedFmt               string
+	HostCopiedToFmt             string
 	HostCopyLabelFmt            string
 	HostSelectionFmt            string
 	MoveGroupNone               string

@@ -115,6 +115,9 @@ const (
 	// iconArrowUpDown is the command bar's order button.
 	iconArrowUpDown
 	iconLocalProxy
+	// The solid folders mark a group in the host trees, open or closed.
+	iconFolderSolid
+	iconFolderSolidOpen
 )
 
 // terminalPage reports whether the window shows the panes of a workspace rather
@@ -159,6 +162,7 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 	state.syncVisible()
 	state.syncSFTPTabs()
 	state.reveal.beginPaint()
+	state.chrome.flags.used, state.chrome.flags.stopCount = 0, 0
 	state.toolbarDock.count = 0
 	state.toolbarDock.zones = [7]gfx.Rect{}
 	state.toolbarDock.bottomViewports = [2]gfx.Rect{}
@@ -175,14 +179,7 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 	// way.
 	state.reconcileDragHosts()
 	state.devBeginPaint()
-	state.ai.cfg.mcpSelectBounds = gfx.Rect{}
-	state.ai.cfg.agentSelectBounds = gfx.Rect{}
-	state.localShellMenu.bounds = gfx.Rect{}
-	state.editorMenu.bounds = gfx.Rect{}
 	state.fileManagerRect = gfx.Rect{}
-	if state.activeSection != sectionSettings || state.settingsCategory != settingsFiles || state.settingsSearching() {
-		state.editorMenu.open = false
-	}
 	if state.activeSection != sectionSettings || state.settingsCategory != settingsTerminal || state.settingsSearching() {
 		state.localShellMenu.open = false
 	}
@@ -194,10 +191,6 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 		}
 	}
 	state.ai.panel.targetBounds = gfx.Rect{}
-	if !state.aiSettingsVisible() || state.settingsCategory != settingsMCP || state.settingsSearching() {
-		state.ai.cfg.mcpSelectOpen = false
-		state.ai.cfg.agentSelectOpen = false
-	}
 	state.aiPanelBeginPaint()
 	if state.noteSidebarFocusBack && state.activeSection == sectionTerminal {
 		state.noteSidebarFocusBack = false
@@ -223,7 +216,6 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 		state.windowPage().Draw(canvas, bounds, state.declareShell)
 		state.paintDesktopDetails(canvas, session, bounds)
 		state.endMenus()
-		state.paintTransferProgressCard(canvas)
 		state.tooltip.Paint(canvas, state.Theme(), state.windowRect(), components.TooltipOptions{Layer: tooltipLayer, SideOffset: tooltipGap}, components.HoverTooltipDelay)
 		state.fileNotices.paint(canvas, state.Theme(), state.windowRect())
 		return
@@ -300,13 +292,12 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 		state.paintNotesPanel(canvas, size)
 		state.paintIndependentMonitor(canvas, size)
 		state.paintWorkspaceSideRail(canvas, size)
-		state.paintWorkspacePaneTools(canvas)
 		// Assistant popovers may intentionally extend to the window edge; paint
 		// the rail first so they can remain above it and nothing is clipped.
 		state.paintAIPanel(canvas, size)
 		// The bottom command drawer sits beneath the panes, in the space the
 		// panes gave up for it.
-		state.paintCommandsDrawer(canvas, size)
+		state.paintCommandsDrawer(canvas)
 	} else if fileManager {
 		state.paintSFTPTab(canvas, state.fileManagerPixelBounds(size))
 		state.paintAIPanel(canvas, size)
@@ -315,8 +306,6 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 		canvas.Clip(workspace)
 		if !state.devPaintPage(canvas, workspace) {
 			switch state.activeSection {
-			case sectionDashboard:
-				state.paintDashboard(canvas, workspace)
 			case sectionSettings:
 				state.paintSettingsDetails(canvas)
 			case sectionNotes:
@@ -339,50 +328,16 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 	state.paintToolbarDockBottom(canvas, size)
 	viewport := state.windowRect()
 	state.paintAITargetSelect(canvas)
-	state.paintMCPClientSelect(canvas)
-	state.paintLocalShellSelect(canvas)
 	state.paintFindPreferences(canvas)
-	state.paintEditorSelect(canvas)
-	state.paintStartupHostSelect(canvas)
-	state.paintMonitorIntervalMenu(canvas)
-	state.paintDashboardMenu(canvas)
-	state.paintSessionLogFilters(canvas)
-	switch state.modal {
-	case modalDashboardAdd:
-		state.paintDashboardAddMenu(canvas)
-	case modalDashboard:
-		state.paintDashboardDialog(canvas, viewport)
-	case modalSessionLink:
-		state.paintSessionLinkDialog(canvas, viewport)
-	case modalDeleteRule:
-		state.paintDeleteRuleDialog(canvas, viewport)
-	case modalSFTPColumns:
-		state.paintSFTPColumnSettings(canvas, viewport)
-	case modalLocalProxy:
-		state.paintLocalProxyScrollbar(canvas)
-	}
-	state.paintTerminalMenu(canvas, viewport)
-	state.paintGhostMenu(canvas, viewport)
-	state.paintToolbarDockMenu(canvas, viewport)
-	state.paintTabMenu(canvas, viewport)
-	state.paintHostMenu(canvas, viewport)
-	state.paintHostGroupActions(canvas, viewport)
-	state.paintWorkspaceTemplateMenu(canvas, viewport)
-	state.paintLocalShellPicker(canvas, viewport)
-	state.paintSnippetMenu(canvas, viewport)
-	state.paintSFTPMenu(canvas, viewport)
 	state.paintQueuedSFTPHeaderMenu(canvas)
 	state.paintHostMenus(canvas, viewport)
 	state.endMenus()
-	state.paintSnippetHoverCard(canvas, viewport)
-	state.paintTransferDetails(canvas, viewport)
 	state.requestReconnectFrames(canvas)
 	state.requestAutofillFrames(canvas)
 	state.requestLoginCommandFrames(canvas)
 	state.requestInjectionFrames(canvas)
 	state.requestIdleKeepAliveFrames(canvas)
 	state.paintLocalProxyFocus(canvas)
-	state.paintTransferProgressCard(canvas)
 	// Last, so a tooltip is never covered by what it describes.
 	if _, formatting := canvas.Hovered().In(hitNoteFormats); !formatting {
 		state.tooltip.Paint(canvas, state.Theme(), viewport, components.TooltipOptions{Layer: tooltipLayer, SideOffset: tooltipGap}, components.HoverTooltipDelay)
@@ -504,7 +459,7 @@ func (state *State) windowPage() *ui.Page {
 	if chrome.windowPage == nil {
 		chrome.windowPage = ui.NewPage(ui.PageConfig{
 			Tree: &tree, Root: shellPageRoot, Theme: &state.theme, View: state.declareShell,
-			ScrollbarSize: catalogBarGutter,
+			ScrollbarSize: catalogBarGutter, Styles: &ui.Styles{Switch: state.switchLook},
 		})
 	}
 	return chrome.windowPage
@@ -531,27 +486,12 @@ func (state *State) WindowConfig(base app.Config) app.Config {
 // the wheel over its backdrop: the panel keeps still behind it, as it did when
 // its list was painted by hand and the window's own handler saw the event first.
 func (state *State) scrollWindow(event gfx.ScrollEvent) gfx.EventResult {
-	if state.transfers.open && state.transferCenterAvailable() {
-		if !state.transfers.selectOpen.IsZero() {
-			if result, handled := state.menuWheel(event); handled {
-				return result
-			}
-		}
-		if result, handled := state.transferCenterScroll(event); handled {
-			return result
-		}
-	}
 	if state.hostGroupMenu {
 		// The move picker and its backdrop own the wheel over the host list.
 		return state.Scroll(event)
 	}
 	// 模态弹窗中的浮动下拉选择框拥有最顶层视觉层级，滚轮事件必须优先处理，
 	// 避免穿透并触发底层页面或弹窗内的 ui.Scroll 列表。
-	if state.modal == modalProxyBatchAssociate && state.proxyBatch.jumpOpen {
-		if result := state.scrollProxyBatchDialog(event); result.Handled {
-			return result
-		}
-	}
 	if state.modal == modalNewProxy && (state.proxyEditor.targetSelect.Open || state.proxyEditor.jumpSelect.Open) {
 		if result := state.scrollProxyDialog(event); result.Handled {
 			return result
@@ -587,11 +527,11 @@ func (state *State) scrollWindow(event gfx.ScrollEvent) gfx.EventResult {
 	// table or list under the pointer first, and those lie behind the dialog
 	// too, so the page would scroll them out from under it.
 	if state.modal != modalNone {
-		if state.modal == modalProxyBatchAssociate && !state.proxyBatch.jumpOpen {
-			r := state.proxyBatch.listRect
-			if event.X >= r.X && event.X < r.X+r.Width && event.Y >= r.Y && event.Y < r.Y+r.Height {
-				return state.windowPage().Wheel(event)
-			}
+		if state.modal == modalProxyBatchAssociate {
+			// The jump picker's open list and the candidates are the page's.
+			result := state.windowPage().Wheel(event)
+			result.Handled = true
+			return result
 		}
 		return state.Scroll(event)
 	}
@@ -640,6 +580,9 @@ func (state *State) declareShell(c ui.C) {
 	// and picture area in the same page, with no shell around them.
 	if session := state.fullscreenDesktop(); session != nil {
 		state.declareDesktopBody(c, session, gfx.Rect{Width: state.viewport.Width, Height: state.viewport.Height})
+		state.declareTransferProgressCards(c)
+		state.declareDashboardDialog(c)
+		state.declareDashboardAddMenu(c)
 		return
 	}
 	chrome, pal := &state.chrome, state.pal
@@ -664,7 +607,6 @@ func (state *State) declareShell(c ui.C) {
 				workspace.Children(func() { state.declareHostsWorkspace(c) })
 			}
 			workspace.Children(func() { state.devDeclareWorkspace(c) })
-			workspace.Children(func() { state.declareDashboardEmpty(c) })
 			// The catalog sections are part of this page too: each declares its
 			// body here, beside its own slots, and paints the rows and buttons it
 			// lays out once the page has placed them.
@@ -686,6 +628,9 @@ func (state *State) declareShell(c ui.C) {
 		// the pane-chrome band and blocks presses on its blank surface.
 		state.declareVerticalTabsOverlay(c)
 	}
+	// The connection monitor's panel is part of this page too: a drawer at
+	// narrow widths, otherwise the region the panes leave beside them.
+	state.declareIndependentMonitor(c)
 	// The bottom strip and each side rail are containers of this page too, at
 	// the outer bands their reserves keep free. Their tools are painted by the
 	// window after the page, into the slots these declarations leave.
@@ -715,10 +660,19 @@ func (state *State) declareShell(c ui.C) {
 	// them.
 	state.declareDialogs(c)
 	state.declareKnownHostsDialog(c)
+	state.declareMenus(c)
+	// The command drawer's filter and order dropdowns are page menus too; the
+	// bar under them is the window's.
+	state.declareCommandsMenus(c)
+	// The dashboard's own dialog and its hosts-page add menu are page controls
+	// too: they are open over whatever section asked for them.
+	state.declareDashboardDialog(c)
+	state.declareDashboardAddMenu(c)
 	// The drag overlay is hitless and paints over the page on the drag layer.
 	state.declareTabDragOverlays(c)
 	state.declareWorkspaceCardDragOverlay(c)
 	state.declareToolbarDockDragOverlay(c)
+	state.declareTransferProgressCards(c)
 }
 
 // windowBarGeometry lays the bar out once without its contents to find out how
@@ -1253,12 +1207,8 @@ type chromeLayout struct {
 	// passwordSave is the slot the save box of the password dialog was laid out
 	// in.
 	passwordSave ui.Box
-	// passwordFieldsDraw paints the password dialog's fields into the slots its
-	// body declared; it is kept so a warm repaint allocates nothing.
-	passwordFieldsDraw func(*ui.DrawContext)
-	// dialogFooter is the actions and painter of the open dialog's hand-painted
-	// footer; it is kept so a repaint declares the footer without allocating.
-	dialogFooter dialogFooterScratch
+	// flags are the values the page's checkboxes and switches are declared over.
+	flags pageFlags
 	// hostDialogTitle labels the host form's scroll viewport. The handlers below
 	// are the form's Draw and DrawOver declarations kept once, so a warm repaint
 	// of the form allocates nothing.
@@ -1273,9 +1223,6 @@ type chromeLayout struct {
 	newTabAdd   ui.Box
 	newTabAll   ui.Box
 	newTabShown bool
-	// importButton is where the toolbar's Import button was painted: the menu
-	// it opens hangs under it, right-aligned.
-	importButton gfx.Rect
 	// chips are the slots of the group chips of the hosts page, in the order
 	// they are painted: All, the groups that fit, then More. The slice is kept
 	// so a repaint does not allocate.
@@ -1444,7 +1391,10 @@ func (state *State) paintHostsWorkspace(canvas *gfx.Canvas, bounds gfx.Rect) {
 func (state *State) paintHostMenus(canvas *gfx.Canvas, viewport gfx.Rect) {
 	bounds := state.hostsBounds
 	if bounds.Width == 0 {
-		return
+		// The session manager opens the same group picker from the terminal page,
+		// where the hosts page was never painted; the picker anchors to the point
+		// its menu was opened at, so any window-wide bounds serve.
+		bounds = state.windowRect()
 	}
 	if state.hostGroupMenu {
 		state.paintHostGroupMenu(canvas, bounds, viewport)
@@ -1455,13 +1405,6 @@ func (state *State) paintHostMenus(canvas *gfx.Canvas, viewport gfx.Rect) {
 	if state.chipMenu.open {
 		state.paintHostChipMenu(canvas, viewport)
 	}
-	if state.importMenu {
-		state.paintImportMenu(canvas, viewport)
-	}
-	if state.hostPrivacy.menu {
-		state.paintHostPrivacyMenu(canvas, viewport)
-	}
-	state.paintHostOrder(canvas, viewport)
 }
 
 // hostsHeaderPlan works out the header of the hosts page from the window: the
@@ -1576,6 +1519,7 @@ func (state *State) declareHostsToolbar(c ui.C, width float32, plan hostsHeaderP
 		b.connect = state.declareButtonSized(c, hitConnect, m.Connect, plan.connectIcon, false, false, state.typedQuery() != "", toolbarFont, plan.condensed).Size(plan.connectWidth, toolbarHeight).MarginSides(0, buttonGap, 0, 0)
 		ui.Spacer(c)
 		b.importButton = state.declareButtonSized(c, hitImportMenu, m.ImportMenu, plan.importIcon, false, false, true, toolbarFont, plan.condensed).Size(plan.importWidth, toolbarHeight).MarginSides(0, buttonGap, 0, 0)
+		state.declareImportMenu(c, b.importButton)
 		b.newHost = state.declareButtonSized(c, hitAddHost, m.NewHost, plan.newHostIcon, true, false, true, toolbarFont, plan.condensed).Size(plan.newHostWidth, toolbarHeight)
 	})
 }
@@ -1728,6 +1672,8 @@ func (state *State) declareHostViewControls(c ui.C) {
 			// The far-right control is the display-order menu, wearing the
 			// manual-sort mark; manual moves are made by dragging a host.
 			chrome.hostToggle.order = state.declareIconButton(c, hitHostOrder, iconTransfer, m.HostCatalog.Order, false, orderStyle).Size(26, 26).MarginSides(0, 0, 0, 6)
+			state.declareHostPrivacyMenu(c, chrome.hostToggle.privacy)
+			state.declareHostOrderMenu(c, chrome.hostToggle.order)
 		})
 	})
 }
@@ -1752,7 +1698,6 @@ func (state *State) paintHostsHeader(canvas *gfx.Canvas) {
 		InlineStart:   components.InputGroupSlot{Kind: components.InputGroupSlotIcon, Icon: lucideIcons[iconSearch]},
 	})
 	// Connect needs something to connect to.
-	chrome.importButton = b.importButton.Rect()
 }
 
 // paintHostsRightHeader paints the list's header controls over the slots the
@@ -1795,21 +1740,36 @@ func (state *State) paintHostsRightHeader(canvas *gfx.Canvas, layout hostsLayout
 	}
 }
 
-// paintImportMenu lists the three ways to bring hosts in under the Import
-// button, right-aligned with it.
-func (state *State) paintImportMenu(canvas *gfx.Canvas, viewport gfx.Rect) {
+// declareImportMenu declares the menu of ways to bring hosts in under the
+// Import button, with the whole catalog's export beside them. A choice runs as
+// if its control had been clicked.
+func (state *State) declareImportMenu(c ui.C, anchor ui.Box) {
+	if !state.importMenu {
+		return
+	}
 	m := state.messages
-	menu := components.BeginDropdownMenu(canvas, state.Theme(), state.popupBelow(canvas, state.chrome.importButton, 200, 4*32+8+9, ui.End),
-		components.DropdownMenuOptions{Layer: dialogLayer, Scope: dialogScope, DismissID: hitImportMenuDismiss, Viewport: viewport, Scroll: state.menuScrollFor(hitImportMenuDismiss)})
-	state.menuPlaced(menu.Bounds())
-	menu.AddItem(components.DropdownMenuItem{ID: hitImportSessions, Label: m.Tools.ImportSessions})
-	menu.AddItem(components.DropdownMenuItem{ID: hitImportHostCatalog, Label: m.ImportCatalog})
-	menu.AddItem(components.DropdownMenuItem{ID: hitImportSSHConfig, Label: m.SSHConfigImport})
-	// With nothing checked the row of actions is away, and exporting the whole
-	// catalog lives next to importing one.
-	menu.AddSeparator()
-	menu.AddItem(components.DropdownMenuItem{ID: hitExportHosts, Label: m.ExportHosts, Disabled: len(state.hosts) == 0})
-	menu.End()
+	ui.PopupLayer(c, dialogLayer)
+	ui.Menu(c, anchor, &state.importMenu, func(menu *ui.MenuItems) {
+		menu.WidthRange(200, 200)
+		for _, source := range [...]struct {
+			id    gfx.ID
+			label string
+		}{
+			{hitImportSessions, m.Tools.ImportSessions},
+			{hitImportHostCatalog, m.ImportCatalog},
+			{hitImportSSHConfig, m.SSHConfigImport},
+		} {
+			if menu.Item(source.label).Clicked() {
+				c.After(func() { state.click(source.id, true) })
+			}
+		}
+		// With nothing checked the row of actions is away, and exporting the whole
+		// catalog lives next to importing one.
+		menu.Separator()
+		if menu.Item(m.ExportHosts).Disabled(len(state.hosts) == 0).Clicked() {
+			c.After(func() { state.click(hitExportHosts, true) })
+		}
+	})
 }
 
 // popupBelow is where a menu width wide and height tall hangs under anchor, 4
@@ -2300,7 +2260,12 @@ func (state *State) declareHostGroupTreeRow(c ui.C, d *hostRowDrawer, width floa
 		if group.Name == "" {
 			label = state.messages.HostGroupDefault
 		}
-		ui.Text(c, label).FontSize(metrics.FontSizeS).Weight(gfx.WeightSemibold).Color(textColor).LineHeight(23).Ellipsis().Shrink(1)
+		folder := lucideIcons[iconFolderSolid]
+		if group.Expanded || strings.TrimSpace(state.visibleQuery) != "" {
+			folder = lucideIcons[iconFolderSolidOpen]
+		}
+		ui.Icon(c, folder).Size(16, 16).Shrink(0)
+		ui.Text(c, label).FontSize(metrics.FontSizeM).Weight(gfx.WeightSemibold).Color(textColor).LineHeight(23).Ellipsis().Shrink(1)
 		ui.Text(c, group.Count).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(countColor).LineHeight(21)
 	})
 }
@@ -2689,28 +2654,30 @@ var lucideIcons = [...]gfx.Icon{
 	iconCheck:    icons.Check,
 	iconPause:    icons.Pause,
 
-	iconFile:       icons.File,
-	iconLink:       icons.Link,
-	iconUpload:     icons.Upload,
-	iconDownload:   icons.Download,
-	iconFolderUp:   icons.FolderUp,
-	iconFolderPlus: icons.FolderPlus,
-	iconPencil:     icons.Pencil,
-	iconTrash:      icons.Trash2,
-	iconLock:       icons.Lock,
-	iconRefresh:    icons.RotateCw,
-	iconArrowUp:    icons.ArrowUp,
-	iconFolderOpen: icons.FolderOpen,
-	iconActivity:   icons.Activity,
-	iconRecord:     icons.CircleDot,
-	iconRecordStop: icons.CircleStop,
-	iconPlay:       icons.Play,
-	iconStop:       icons.CircleStop,
-	iconFilm:       icons.Film,
-	iconFileDown:   icons.FileDown,
-	iconColumns2:   icons.Columns2,
-	iconRows2:      icons.Rows2,
-	iconGrid2x2:    icons.Grid2x2,
+	iconFile:            icons.File,
+	iconLink:            icons.Link,
+	iconUpload:          icons.Upload,
+	iconDownload:        icons.Download,
+	iconFolderUp:        icons.FolderUp,
+	iconFolderPlus:      icons.FolderPlus,
+	iconPencil:          icons.Pencil,
+	iconTrash:           icons.Trash2,
+	iconLock:            icons.Lock,
+	iconRefresh:         icons.RotateCw,
+	iconArrowUp:         icons.ArrowUp,
+	iconFolderOpen:      icons.FolderOpen,
+	iconFolderSolid:     icons.FolderSolid,
+	iconFolderSolidOpen: icons.FolderSolidOpen,
+	iconActivity:        icons.Activity,
+	iconRecord:          icons.CircleDot,
+	iconRecordStop:      icons.CircleStop,
+	iconPlay:            icons.Play,
+	iconStop:            icons.CircleStop,
+	iconFilm:            icons.Film,
+	iconFileDown:        icons.FileDown,
+	iconColumns2:        icons.Columns2,
+	iconRows2:           icons.Rows2,
+	iconGrid2x2:         icons.Grid2x2,
 
 	iconBot:              icons.Bot,
 	iconHistory:          icons.History,
@@ -2821,35 +2788,14 @@ func dialogButton(c ui.C, label string, variant components.ButtonVariant, disabl
 	return button.Disabled(disabled)
 }
 
-// dialogFooterScratch keeps the state a dialog footer paints from: the
-// actions of the open dialog, and the handler that paints them. The handler is
-// made once, so a warm repaint declares the footer without allocating.
-type dialogFooterScratch struct {
-	actions []components.ButtonAction
-	draw    func(*ui.DrawContext)
-}
-
-// dialogActionFooter paints a footer whose buttons keep the application's own
-// identities, for a dialog that opens with one of them focused: DialogSpec's
-// InitialFocusID names a hit, and the page names its own buttons, so these
-// stay hand-painted beside the page's slots as the dialog's other controls are.
-// Their actions stay in the central click dispatcher.
+// dialogActionFooter declares a footer whose buttons keep the application's
+// own identities, for a dialog that opens with one of them focused:
+// DialogSpec's InitialFocusID names a hit. Their actions stay in the central
+// click dispatcher.
 func (state *State) dialogActionFooter(c ui.C, actions ...components.ButtonAction) {
-	scratch := &state.chrome.dialogFooter
-	if cap(scratch.actions) < len(actions) {
-		scratch.actions = make([]components.ButtonAction, len(actions))
+	for _, action := range actions {
+		dialogButton(c, action.Label, action.Variant, action.Disabled).Hit(action.ID, action.Label)
 	}
-	scratch.actions = scratch.actions[:len(actions)]
-	copy(scratch.actions, actions)
-	if scratch.draw == nil {
-		scratch.draw = state.drawDialogActions
-	}
-	ui.Slot(c).Fill().DrawOver(scratch.draw)
-}
-
-// drawDialogActions paints the open dialog's hand-painted footer.
-func (state *State) drawDialogActions(d *ui.DrawContext) {
-	components.BeginButtonRow(d.Canvas, *d.Theme, d.Rect).Size(components.ButtonSizeDefault).Paint(state.chrome.dialogFooter.actions...)
 }
 
 // dialogViewport is the frame the dialogs are centered in.
@@ -2883,6 +2829,10 @@ func (state *State) declareDialogs(c ui.C) {
 		state.declareFileProperties(c)
 	case modalLocalProxy:
 		state.declareLocalProxyDialog(c)
+	case modalSessionLink:
+		state.declareSessionLinkDialog(c)
+	case modalDeleteRule:
+		state.declareDeleteRuleDialog(c)
 	case modalUpdate:
 		state.declareUpdateDialog(c)
 	case modalUpdateProgress:
@@ -2923,8 +2873,10 @@ func (state *State) declareDialogs(c ui.C) {
 		state.declareAutofillConfirm(c)
 	case modalToolbarSettings:
 		state.declareToolbarSettings(c)
+	case modalSFTPColumns:
+		state.declareSFTPColumnSettings(c)
 	case modalSidebarSettings:
-		state.paintSidebarSettings(c.Canvas(), c.Bounds())
+		state.declareSidebarSettings(c)
 	case modalHighlightRule:
 		state.declareHighlightDialog(c)
 	case modalRuleManager:
@@ -3262,8 +3214,9 @@ func (state *State) paintHostFormFields(canvas *gfx.Canvas) {
 	if idleKeepAliveProtocol(protocol) {
 		state.paintAdvancedSection(canvas)
 	}
-	// The choices are the page's controls: keep the option the tab ring reaches
-	// in the form's stops, by the identity its paint reported.
+	// The checkboxes and the choices are the page's controls: keep them in the form's
+	// stops, by the identity their paint reported.
+	state.rememberDialogChecks()
 	state.rememberHostChoice(canvas, b.protocol.Rect(), &editor.form.choiceIDs.protocol, state.hostProtocolChoiceLabel(editor.protocol))
 	if b.flow.Valid() {
 		state.rememberHostChoice(canvas, b.flow.Rect(), &editor.form.choiceIDs.flow, state.hostFlowChoiceLabel(editor.flow))
@@ -3329,6 +3282,8 @@ func (state *State) declareMoveHostGroupDialog(c ui.C) {
 		title, submit, label = state.messages.HostGroupActions.Rename, state.messages.HostGroupActions.Save, state.messages.HostGroupActions.Name
 	case hostGroupCreateChild:
 		title, submit, label = state.messages.HostGroupActions.NewChild, state.messages.HostGroupActions.Create, state.messages.HostGroupActions.Name
+	case hostGroupCreateRoot:
+		title, submit, label = state.messages.NewGroup, state.messages.HostGroupActions.Create, state.messages.HostGroupActions.Name
 	case hostGroupRelocate:
 		title, submit, label = state.messages.HostGroupActions.Move, state.messages.MoveGroupSubmit, state.messages.HostGroupActions.Parent
 	}
@@ -3367,27 +3322,10 @@ func (state *State) declareHostGroupDeleteDialog(c ui.C) {
 		Scope: dialogScope, DismissID: hitMoveGroupDismiss, CloseID: hitMoveGroupClose, InitialFocusID: hitGroupDeleteParent,
 	})
 	dialog.Body(func() {
-		column := ui.Column(c).Fill()
-		column.DrawOver(func(d *ui.DrawContext) {
-			canvas, theme := d.Canvas, *d.Theme
-			choices := state.groupDeleteChoices()
-			fullLabels := [2]string{choices[0].Label, choices[1].Label}
-			for index := range choices {
-				choices[index].Label = elide(canvas, choices[index].Label, theme.Metrics.FontSizeM, gfx.WeightMedium, d.Rect.Width-32)
-			}
-			selected := hitGroupDeleteParent
-			if state.groupActions.ungroup {
-				selected = hitGroupDeleteUngroup
-			}
-			components.BeginRadioGroup(canvas, theme, d.Rect, choices[:], selected).Paint()
-			for index := range canvas.Hits() {
-				hit := &canvas.Hits()[index]
-				for option := range choices {
-					if hit.ID == choices[option].ID {
-						hit.Label, hit.Value, hit.Hint = fullLabels[option], fullLabels[option], fullLabels[option]
-					}
-				}
-			}
+		choices := state.groupDeleteChoices()
+		ui.RadioGroup(c).Children(func() {
+			ui.RadioID(c.Key("parent"), hitGroupDeleteParent, &state.groupActions.ungroup, false, choices[0])
+			ui.RadioID(c.Key("ungroup"), hitGroupDeleteUngroup, &state.groupActions.ungroup, true, choices[1])
 		})
 	})
 	dialog.Footer(func() {
@@ -3403,6 +3341,15 @@ func (state *State) declareHostGroupDeleteDialog(c ui.C) {
 // declareMoveGroupBody lays out the one field the dialog shows and paints it
 // into its slot.
 func (state *State) declareMoveGroupBody(c ui.C, label string, viewport gfx.Rect) {
+	if state.groupActions.op != hostGroupRelocate {
+		ui.Column(c).Fill().Children(func() {
+			state.groupActions.input.declare(c, state, &state.hostGroupEditor, dialogFieldSpec{
+				ID: hitMoveGroupField, Label: label, Placeholder: state.messages.FieldGroupPlaceholder,
+				Error: state.dialogError, Height: 90,
+			})
+		})
+		return
+	}
 	column := ui.Column(c).Fill()
 	column.Children(func() {
 		state.groupActions.slot = ui.Slot(c).Height(90)
@@ -3415,17 +3362,8 @@ func (state *State) declareMoveGroupBody(c ui.C, label string, viewport gfx.Rect
 			field = field.Invalid()
 		}
 		content := field.Paint(label, "", state.dialogError)
-		value := state.hostGroupEditor.String()
-		focused := canvas.Focused() == hitMoveGroupField
 		content.Height = 32
-		if state.groupActions.op == hostGroupRelocate {
-			state.paintHostGroupParentSelect(canvas, content, viewport)
-		} else {
-			components.PaintInput(canvas, theme, content, components.InputSnapshot{
-				ID: hitMoveGroupField, Label: label, Value: value,
-				Placeholder: state.messages.FieldGroupPlaceholder, Focused: focused, PlatformEditing: focused && value != "",
-			})
-		}
+		state.paintHostGroupParentSelect(canvas, content, viewport)
 	})
 }
 
@@ -3657,17 +3595,24 @@ func (state *State) declarePasswordDialog(c ui.C) {
 // them and, when the vault can keep it, the box that offers to save it. The
 // fields themselves are painted into their slots by the body's DrawOver.
 func (state *State) declarePasswordBody(c ui.C) {
-	boxes := state.passwordBoxes
-	if len(boxes) != len(state.passwordQuestions) {
-		boxes = make([]ui.Box, len(state.passwordQuestions))
-		state.passwordBoxes = boxes
+	multi := len(state.passwordQuestions) > 1
+	if len(state.passwordInputs) != len(state.passwordQuestions) {
+		state.passwordInputs = make([]dialogField, len(state.passwordQuestions))
 	}
-	multi := len(boxes) > 1
 	state.chrome.passwordSave = ui.Box{}
 	column := ui.Column(c).Fill().PadSides(2, 4, 0, 4)
 	column.Children(func() {
-		for index := range boxes {
-			boxes[index] = ui.Slot(c).Height(62).MarginSides(0, 0, 4, 0)
+		for index, question := range state.passwordQuestions {
+			label := strings.TrimSpace(question.Text)
+			if label == "" {
+				label = state.messages.PasswordLabel
+			}
+			ui.Column(c.KeyInt(index)).Height(62).MarginSides(0, 0, 4, 0).Children(func() {
+				state.passwordInputs[index].declare(c, state, &state.passwordFields[index], dialogFieldSpec{
+					ID: hitPasswordFields.At(index + 1), Label: label, Secret: question.Secret,
+					Invalid: state.passwordError != "", Height: 62,
+				})
+			})
 		}
 		state.hintLineC(c)
 		state.problemLineC(c, state.passwordError)
@@ -3682,39 +3627,6 @@ func (state *State) declarePasswordBody(c ui.C) {
 			})
 		}
 	})
-	column.DrawOver(state.passwordFieldsDraw())
-}
-
-// passwordFieldsDraw returns the handler that paints the password dialog's
-// fields, made once so a warm repaint allocates nothing.
-func (state *State) passwordFieldsDraw() func(*ui.DrawContext) {
-	if state.chrome.passwordFieldsDraw == nil {
-		state.chrome.passwordFieldsDraw = state.drawPasswordFields
-	}
-	return state.chrome.passwordFieldsDraw
-}
-
-// drawPasswordFields paints a field per question into the slots the body
-// declared. The box that offers to save the password is a page element, declared
-// by declarePasswordBody.
-func (state *State) drawPasswordFields(d *ui.DrawContext) {
-	canvas, theme := d.Canvas, *d.Theme
-	for index := range state.passwordBoxes {
-		question := state.passwordQuestions[index]
-		label := strings.TrimSpace(question.Text)
-		if label == "" {
-			label = state.messages.PasswordLabel
-		}
-		field := components.BeginField(canvas, theme, state.passwordBoxes[index].Rect())
-		content := field.Paint(label, "", "")
-		value := state.passwordFields[index].String()
-		id := hitPasswordFields.At(index + 1)
-		focused := canvas.Focused() == id
-		state.paintSecretInput(canvas, content, components.InputSnapshot{
-			ID: id, Label: label, Value: value, Secure: question.Secret,
-			Focused: focused, PlatformEditing: focused && (value != "" || !question.Secret), Invalid: state.passwordError != "",
-		})
-	}
 }
 
 // passwordBodyHeight is tall enough for every question's field, the error line
@@ -3790,7 +3702,10 @@ func (state *State) declareKeyPassphraseDialog(c ui.C) {
 	dialog.Body(func() {
 		column := ui.Column(c).Fill().PadSides(2, 4, 0, 4)
 		column.Children(func() {
-			state.keyPassphraseField = ui.Slot(c).Height(62)
+			state.keyPassphraseInput.declare(c, state, &state.keyPassphrase, dialogFieldSpec{
+				ID: hitKeyPassphraseField, Label: m.KeyPassphraseLabel, Description: m.KeyPassphraseHint,
+				Secret: true, Invalid: state.keyPassphraseError != "", Height: 62,
+			})
 			if state.keyPassphraseError != "" {
 				ui.Text(c, state.keyPassphraseError).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).Color(state.pal.danger).LineHeight(18).MarginSides(12, 0, 0, 0)
 			}
@@ -3804,29 +3719,11 @@ func (state *State) declareKeyPassphraseDialog(c ui.C) {
 				state.declareSaveBox(c, hitKeyPassphraseSave, m.KeyPassphraseSave, "", gfx.ID{})
 			}
 		})
-		if state.keyPassphraseDraw == nil {
-			state.keyPassphraseDraw = state.drawKeyPassphraseField
-		}
-		column.DrawOver(state.keyPassphraseDraw)
 	})
 	dialog.Footer(func() {
 		state.dialogActionFooter(c,
 			components.ButtonAction{ID: hitKeyPassphraseSkip, Label: m.KeyPassphraseSkip, Variant: components.ButtonSecondary},
 			components.ButtonAction{ID: hitKeyPassphraseSubmit, Label: m.KeyUnlock},
 		)
-	})
-}
-
-// drawKeyPassphraseField paints the passphrase field into the slot the dialog's
-// body laid out.
-func (state *State) drawKeyPassphraseField(d *ui.DrawContext) {
-	m := state.messages
-	field := components.BeginField(d.Canvas, *d.Theme, state.keyPassphraseField.Rect())
-	content := field.Paint(m.KeyPassphraseLabel, m.KeyPassphraseHint, "")
-	value := state.keyPassphrase.String()
-	focused := d.Canvas.Focused() == hitKeyPassphraseField
-	state.paintSecretInput(d.Canvas, content, components.InputSnapshot{
-		ID: hitKeyPassphraseField, Label: m.KeyPassphraseLabel, Value: value, Secure: true,
-		Focused: focused, PlatformEditing: focused && value != "", Invalid: state.keyPassphraseError != "",
 	})
 }

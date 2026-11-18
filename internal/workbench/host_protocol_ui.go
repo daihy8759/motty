@@ -18,6 +18,7 @@ var (
 	hitDialogViaSSH               = tree.ID(hostProtocolUiHits, "dialog-via-ssh")
 	hitDialogClipboard            = tree.ID(hostProtocolUiHits, "dialog-clipboard")
 	hitDialogConsole              = tree.ID(hostProtocolUiHits, "dialog-console")
+	hitDialogRemoteAudio          = tree.ID(hostProtocolUiHits, "dialog-remote-audio")
 	hitDialogStandardSecurity     = tree.ID(hostProtocolUiHits, "dialog-standard-security")
 	hitDialogStandardSecurityHelp = tree.ID(hostProtocolUiHits, "dialog-standard-security-help")
 	hitDialogChromeless           = tree.ID(hostProtocolUiHits, "dialog-chromeless")
@@ -403,6 +404,8 @@ func (state *State) clickHostProtocol(id gfx.ID) bool {
 		editor.chromeless = !editor.chromeless
 	case id == hitDialogConsole:
 		editor.console = !editor.console
+	case id == hitDialogRemoteAudio:
+		editor.noAudio = !editor.noAudio
 	case id == hitDialogStandardSecurity:
 		editor.standardSecurity = !editor.standardSecurity
 	case id == hitDialogAdvanced:
@@ -672,15 +675,13 @@ const (
 
 // hostVNCRowsBody is where the desktop switches' body put each checkbox row.
 type hostVNCRowsBody struct {
-	tunnel, clipboard, chromeless, console, standardSecurity, standardSecurityHelp ui.Box
+	standardSecurityHelp ui.Box
 }
 
 // hostAlgoRowsBody is where the SSH algorithm rows put each control.
 type hostAlgoRowsBody struct {
 	algo, custom, login, otp, scan, paste, remove ui.Box
-	x11, agentFwd, noHistory, interactive, locale ui.Box
-	identitiesOnly, identitiesOnlyHelp            ui.Box
-	agentAccess, agentHelp                        ui.Box
+	identitiesOnlyHelp, agentHelp                 ui.Box
 }
 
 // paintAlgorithmRows draws the SSH algorithm choice and, for a custom one, the
@@ -698,21 +699,10 @@ func (state *State) paintAlgorithmRows(canvas *gfx.Canvas) {
 		state.paintDialogField(canvas, hitDialogAlgorithms, fieldAlgorithms, m.AlgoCustomField, m.AlgoCustomPlaceholder, b.custom.Rect())
 	}
 	state.paintDialogField(canvas, hitDialogLoginCommand, fieldLoginCommand, m.LoginCommandField, m.LoginCommandPlaceholder, b.login.Rect())
-	var removeRect gfx.Rect
-	if editor.otpSaved {
-		removeRect = b.remove.Rect()
-	}
-	state.paintOTPRow(canvas, b.otp.Rect(), b.scan.Rect(), b.paste.Rect(), removeRect)
-	state.paintDialogCheckbox(canvas, hitDialogForwardX11, m.X11Forward, editor.forwardX11, b.x11)
-	state.paintDialogCheckbox(canvas, hitDialogAgentForward, m.AgentForward, editor.agentForward, b.agentFwd)
-	state.paintDialogCheckbox(canvas, hitDialogNoHistory, state.messages.History.HostNoRecord, editor.noHistory, b.noHistory)
-	state.paintDialogCheckbox(canvas, hitDialogInteractiveOnly, m.InteractiveOnly, editor.interactiveOnly, b.interactive)
-	state.paintDialogCheckbox(canvas, hitDialogSendLocale, m.SendLocale, editor.sendLocale, b.locale)
+	state.paintOTPRow(canvas, b.otp.Rect(), b.scan.Rect(), b.paste.Rect(), b.remove)
 	if editor.auth == authAutomatic {
-		state.paintDialogCheckbox(canvas, hitDialogIdentitiesOnly, m.IdentitiesOnly, editor.identitiesOnly, b.identitiesOnly)
 		state.paintHelpIcon(canvas, hitDialogIdentitiesOnlyHelp, m.IdentitiesOnlyNote, b.identitiesOnlyHelp.Rect())
 	}
-	state.paintDialogCheckbox(canvas, hitDialogAgentAccess, m.AgentAccess, editor.agentAccess, b.agentAccess)
 	// After the checkbox, whose words reach to the end of the row, so that this is
 	// the hit on top where the two meet.
 	state.paintHelpIcon(canvas, hitDialogAgentAccessHelp, m.AgentAccessNote, b.agentHelp.Rect())
@@ -736,9 +726,15 @@ func (state *State) declareHostAlgoRows(c ui.C) {
 			b.otp = ui.Slot(c).Grow(1)
 		})
 		ui.Row(c).Height(otpButtonsRow).Gap(8).Children(func() {
-			b.scan = ui.Slot(c).Size(algoScanWidth, 30).Self(ui.Start)
-			b.paste = ui.Slot(c).Size(algoPasteWidth, 30).Self(ui.Start)
-			b.remove = ui.Slot(c).Size(algoRemoveWidth, 30).Self(ui.Start)
+			b.scan = ui.Button(c, m.OTPScan).Small().Outline().Hit(hitDialogOTPScan, m.OTPScan).Size(algoScanWidth, 30).Self(ui.Start)
+			b.paste = ui.Button(c, m.OTPPaste).Small().Outline().Hit(hitDialogOTPPaste, m.OTPPaste).Size(algoPasteWidth, 30).Self(ui.Start)
+			if editor.otpSaved {
+				label := m.OTPRemove
+				if editor.otpRemove {
+					label = m.OTPKeep
+				}
+				b.remove = ui.Button(c, label).Small().Outline().Hit(hitDialogOTPRemove, label).Size(algoRemoveWidth, 30).Self(ui.Start)
+			}
 		})
 		heading := func(title string) {
 			ui.Column(c).Height(groupHeadingHeight).Children(func() {
@@ -747,16 +743,16 @@ func (state *State) declareHostAlgoRows(c ui.C) {
 			})
 		}
 		heading(m.AdvancedSession)
-		b.x11 = state.declareDialogCheckboxC(c, m.X11Forward, 4, 0)
-		b.agentFwd = state.declareDialogCheckboxC(c, m.AgentForward, 12, 0)
-		b.noHistory = state.declareDialogCheckboxC(c, state.messages.History.HostNoRecord, 12, 0)
-		b.interactive = state.declareDialogCheckboxC(c, m.InteractiveOnly, 12, 0)
-		b.locale = state.declareDialogCheckboxC(c, m.SendLocale, 12, 0)
+		state.declareDialogCheck(c, hitDialogForwardX11, m.X11Forward, editor.forwardX11, 4, 0)
+		state.declareDialogCheck(c, hitDialogAgentForward, m.AgentForward, editor.agentForward, 12, 0)
+		state.declareDialogCheck(c, hitDialogNoHistory, state.messages.History.HostNoRecord, editor.noHistory, 12, 0)
+		state.declareDialogCheck(c, hitDialogInteractiveOnly, m.InteractiveOnly, editor.interactiveOnly, 12, 0)
+		state.declareDialogCheck(c, hitDialogSendLocale, m.SendLocale, editor.sendLocale, 12, 0)
 		if editor.auth == authAutomatic {
-			b.identitiesOnly, b.identitiesOnlyHelp = state.declareDialogCheckboxHelpC(c, m.IdentitiesOnly, 12, 0)
+			_, b.identitiesOnlyHelp = state.declareDialogCheckHelp(c, hitDialogIdentitiesOnly, m.IdentitiesOnly, editor.identitiesOnly, 12, 0)
 		}
 		heading(m.AdvancedAgents)
-		b.agentAccess, b.agentHelp = state.declareDialogCheckboxHelpC(c, m.AgentAccess, 4, 0)
+		_, b.agentHelp = state.declareDialogCheckHelp(c, hitDialogAgentAccess, m.AgentAccess, editor.agentAccess, 4, 0)
 		state.declareHostIdleKeepAliveRows(c)
 	})
 }
@@ -765,7 +761,7 @@ func (state *State) declareHostAlgoRows(c ui.C) {
 // read it from a QR code image, and for a
 // saved one a button, in its own rectangle, to take it away. The secret itself
 // is never drawn.
-func (state *State) paintOTPRow(canvas *gfx.Canvas, field, scan, paste, remove gfx.Rect) {
+func (state *State) paintOTPRow(canvas *gfx.Canvas, field, scan, paste gfx.Rect, remove ui.Box) {
 	m, editor := state.messages.Tools, &state.editor
 	placeholder := m.OTPPlaceholder
 	if editor.otpSaved {
@@ -775,26 +771,19 @@ func (state *State) paintOTPRow(canvas *gfx.Canvas, field, scan, paste, remove g
 		}
 	}
 	state.paintDialogField(canvas, hitDialogOTP, fieldOTP, m.OTPField, placeholder, field)
-	components.BeginButton(canvas, state.Theme(), hitDialogOTPScan, scan).Small().Outline(m.OTPScan)
 	state.rememberHostControl(hitDialogOTPScan, scan)
-	components.BeginButton(canvas, state.Theme(), hitDialogOTPPaste, paste).Small().Outline(m.OTPPaste)
 	state.rememberHostControl(hitDialogOTPPaste, paste)
 	if editor.otpSaved {
-		label := m.OTPRemove
-		if editor.otpRemove {
-			label = m.OTPKeep
-		}
-		components.BeginButton(canvas, state.Theme(), hitDialogOTPRemove, remove).Small().Outline(label)
-		state.rememberHostControl(hitDialogOTPRemove, remove)
+		state.rememberHostControl(hitDialogOTPRemove, remove.Rect())
 	}
 }
 
 // vncRowsHeight is the room of the three switches every remote desktop host has.
 const vncRowsHeight = 4 + 20 + (12 + 20) + (12 + 20) + 16
 
-// rdpRowsHeight adds the two switches only an RDP host has: the console
-// session and Standard RDP Security.
-const rdpRowsHeight = vncRowsHeight + 2*(12+20)
+// rdpRowsHeight adds the three switches only an RDP host has: the console
+// session, remote audio and Standard RDP Security.
+const rdpRowsHeight = vncRowsHeight + 3*(12+20)
 
 // desktopRowsHeight is the room paintVNCRows takes for the protocol on screen.
 func (state *State) desktopRowsHeight() float32 {
@@ -807,27 +796,16 @@ func (state *State) desktopRowsHeight() float32 {
 // paintVNCRows paints the switches of a VNC or RDP host in the slots the host
 // form's page laid out: connecting through SSH, sharing the clipboard, showing
 // the picture without the bars around it and, for RDP, asking Windows for its
-// console (administrative) session and choosing Standard RDP Security. A host
-// whose route carries the connection cannot also use the same-machine tunnel,
-// so that switch is dimmed and inert.
+// console (administrative) session, playing remote sound and choosing Standard
+// RDP Security. A host whose route carries the connection cannot also use the
+// same-machine tunnel, so that switch is dimmed and inert.
 func (state *State) paintVNCRows(canvas *gfx.Canvas) {
 	editor, m := &state.editor, state.messages.Desktop
 	b := &editor.form.vncBody
-	viaLabel := m.ViaSSH
-	if state.desktopRouteConfigured() {
-		viaLabel = m.ViaSSHRouted
-		state.paintDialogCheckboxDisabled(canvas, hitDialogViaSSH, viaLabel, editor.viaSSH, b.tunnel)
-	} else {
-		state.paintDialogCheckbox(canvas, hitDialogViaSSH, viaLabel, editor.viaSSH, b.tunnel)
-	}
-	state.paintDialogCheckbox(canvas, hitDialogClipboard, m.ShareClipboard, editor.clipboard, b.clipboard)
-	state.paintDialogCheckbox(canvas, hitDialogChromeless, m.HideBars, editor.chromeless, b.chromeless)
 	// The rows this frame laid out are the ones before a protocol click wrote
 	// its new value at the end of the declaration: painting the console row
 	// needs the RDP rows on the page, not just RDP in effect.
 	if editor.form.layoutProtocol == protocolRDP {
-		state.paintDialogCheckbox(canvas, hitDialogConsole, m.ConsoleSession, editor.console, b.console)
-		state.paintDialogCheckbox(canvas, hitDialogStandardSecurity, m.StandardSecurity, editor.standardSecurity, b.standardSecurity)
 		// After the checkbox, whose words reach to the end of the row, so that
 		// this is the hit on top where the two meet.
 		state.paintHelpIcon(canvas, hitDialogStandardSecurityHelp, m.StandardSecurityNote, b.standardSecurityHelp.Rect())
@@ -837,7 +815,7 @@ func (state *State) paintVNCRows(canvas *gfx.Canvas) {
 // declareHostVNCRows lays out the switches of a VNC or RDP host: connecting
 // through SSH, sharing the clipboard, showing the picture without the bars
 // around it and, for RDP, asking Windows for its console (administrative)
-// session and choosing Standard RDP Security.
+// session, playing remote sound and choosing Standard RDP Security.
 func (state *State) declareHostVNCRows(c ui.C) {
 	editor, m := &state.editor, state.messages.Desktop
 	b := &editor.form.vncBody
@@ -848,15 +826,16 @@ func (state *State) declareHostVNCRows(c ui.C) {
 	}
 	ui.Column(c).Fill().Children(func() {
 		if routed {
-			b.tunnel = state.declareDialogCheckboxMutedC(c, viaLabel, 4, 0)
+			state.declareDialogCheckDisabled(c, hitDialogViaSSH, viaLabel, editor.viaSSH, 4, 0)
 		} else {
-			b.tunnel = state.declareDialogCheckboxC(c, viaLabel, 4, 0)
+			state.declareDialogCheck(c, hitDialogViaSSH, viaLabel, editor.viaSSH, 4, 0)
 		}
-		b.clipboard = state.declareDialogCheckboxC(c, m.ShareClipboard, 12, 0)
-		b.chromeless = state.declareDialogCheckboxC(c, m.HideBars, 12, 0)
+		state.declareDialogCheck(c, hitDialogClipboard, m.ShareClipboard, editor.clipboard, 12, 0)
+		state.declareDialogCheck(c, hitDialogChromeless, m.HideBars, editor.chromeless, 12, 0)
 		if editor.protocol == protocolRDP {
-			b.console = state.declareDialogCheckboxC(c, m.ConsoleSession, 12, 0)
-			b.standardSecurity, b.standardSecurityHelp = state.declareDialogCheckboxHelpC(c, m.StandardSecurity, 12, 0)
+			state.declareDialogCheck(c, hitDialogConsole, m.ConsoleSession, editor.console, 12, 0)
+			state.declareDialogCheck(c, hitDialogRemoteAudio, m.RemoteAudio, !editor.noAudio, 12, 0)
+			_, b.standardSecurityHelp = state.declareDialogCheckHelp(c, hitDialogStandardSecurity, m.StandardSecurity, editor.standardSecurity, 12, 0)
 		}
 	})
 }

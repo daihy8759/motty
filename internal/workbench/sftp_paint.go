@@ -1040,16 +1040,10 @@ func (state *State) declareSFTPDialog(c ui.C, viewport gfx.Rect, view *sftpView)
 // the application's identities, and the view keeps the draw so the footer is
 // the same when an application modal stands beside the dialog.
 func (state *State) declareSFTPDialogFooter(c ui.C, view *sftpView) {
-	if view.dialogFooterDraw == nil {
-		view.dialogFooterDraw = func(d *ui.DrawContext) {
-			actions := [...]components.ButtonAction{
-				{ID: hitSFTPDialogCancel, Label: view.dialogCancelLabel, Variant: components.ButtonSecondary},
-				{ID: hitSFTPDialogSubmit, Label: view.dialogSubmitLabel, Variant: view.dialogSubmitVariant},
-			}
-			components.BeginButtonRow(d.Canvas, *d.Theme, d.Rect).Size(components.ButtonSizeDefault).Paint(actions[:]...)
-		}
-	}
-	ui.Slot(c).Fill().DrawOver(view.dialogFooterDraw)
+	state.dialogActionFooter(c,
+		components.ButtonAction{ID: hitSFTPDialogCancel, Label: view.dialogCancelLabel, Variant: components.ButtonSecondary},
+		components.ButtonAction{ID: hitSFTPDialogSubmit, Label: view.dialogSubmitLabel, Variant: view.dialogSubmitVariant},
+	)
 }
 
 // paintSFTPDialogDetails paints the open dialog's fields into the slots the
@@ -1063,34 +1057,34 @@ func (state *State) paintSFTPDialogDetails(canvas *gfx.Canvas, view *sftpView) {
 		state.paintSFTPOwnership(canvas, view)
 		return
 	}
-	messages, theme := state.messages, state.Theme()
-	fieldLabel := view.dialogFieldLabel
-	field := components.BeginField(canvas, theme, view.dialogFirst.Rect())
-	if view.dialogError != "" {
-		field = field.Invalid()
-	}
-	content := field.Paint(fieldLabel, "", view.dialogError)
-	value := view.dialogEditor.String()
-	focused := canvas.Focused() == hitSFTPDialogField
-	components.PaintInput(canvas, theme, content, components.InputSnapshot{
-		ID:              hitSFTPDialogField,
-		Label:           fieldLabel,
-		Value:           value,
-		Focused:         focused,
-		PlatformEditing: focused && value != "",
-	})
 	if view.dialog == sftpDialogChmod {
 		state.paintSFTPChmodGrid(canvas, view, &view.dialogChmod)
 	}
-	if view.dialog == sftpDialogSymlink {
-		second := components.BeginField(canvas, theme, view.dialogSecond.Rect()).Paint(messages.Tools.LinkTarget, "", "")
-		secondValue := view.dialogEditor2.String()
-		secondFocused := canvas.Focused() == hitSFTPDialogField2
-		components.PaintInput(canvas, theme, second, components.InputSnapshot{
-			ID: hitSFTPDialogField2, Label: messages.Tools.LinkTarget, Value: secondValue,
-			Focused: secondFocused, PlatformEditing: secondFocused && secondValue != "",
-		})
+}
+
+// declareSFTPDialogField declares field i (0 the first, 1 a link's target) of a dialog as a
+// page field: a labelled row around a text bound to the dialog's editor. The error of the
+// dialog is the first field's.
+func (state *State) declareSFTPDialogField(c ui.C, view *sftpView, i int, label string) {
+	if !view.dialogBound {
+		view.dialogTexts[0].Bind(&view.dialogEditor)
+		view.dialogTexts[1].Bind(&view.dialogEditor2)
+		view.dialogBound = true
 	}
+	id := hitSFTPDialogField
+	if i == 1 {
+		id = hitSFTPDialogField2
+	}
+	invalid := i == 0 && view.dialogError != ""
+	row := &view.dialogRows[i]
+	row.Invalid = invalid
+	row.Error = ""
+	if i == 0 {
+		row.Error = view.dialogError
+	}
+	ui.FormField(c, row, label).FillWidth().Height(64).Shrink(0).Children(func() {
+		ui.TextFieldID(c, id, &view.dialogTexts[i], label, "")
+	})
 }
 
 // paintSFTPOwnership paints the ownership dialog's two editable suggestion
@@ -1200,9 +1194,14 @@ func (state *State) declareSFTPDialogBody(c ui.C, view *sftpView) {
 		switch {
 		case sftpDialogShowsField(view.dialog):
 			ui.Column(c).Shrink(0).Gap(8).PadSides(6, 4, 0, 4).Children(func() {
-				view.dialogFirst = ui.Slot(c).Height(64).Shrink(0)
-				if view.dialog == sftpDialogSymlink || view.dialog == sftpDialogChown {
+				if view.dialog == sftpDialogChown {
+					view.dialogFirst = ui.Slot(c).Height(64).Shrink(0)
 					view.dialogSecond = ui.Slot(c).Height(64).Shrink(0)
+				} else {
+					state.declareSFTPDialogField(c, view, 0, view.dialogFieldLabel)
+				}
+				if view.dialog == sftpDialogSymlink {
+					state.declareSFTPDialogField(c, view, 1, state.messages.Tools.LinkTarget)
 				}
 				if view.dialog == sftpDialogChmod {
 					view.dialogChmod = state.declareSFTPChmodGrid(c)
