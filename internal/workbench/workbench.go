@@ -2340,12 +2340,6 @@ func (state *State) clickHostDialog(id gfx.ID) {
 	if state.clickHostTags(id) {
 		return
 	}
-	if state.clickHostColorPicker(id) {
-		return
-	}
-	if state.editor.colorPicker.open {
-		return
-	}
 	if state.clickLoginExpect(id) {
 		return
 	}

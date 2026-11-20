@@ -52,7 +52,6 @@ func (state *State) declareLoginExpectSection(c ui.C) {
 	editor := &state.editor
 	open := editor.loginExpectOpen
 	column := ui.Column(c).Fill()
-	var enable ui.Box
 	column.Children(func() {
 		header := ui.Row(c).Height(32).FillWidth().PadSides(0, 0, 0, 2).Gap(8).Items(ui.Center).
 			Radius(radius.control).Hover(ui.Look{}.Background(pal.surfaceSoft))
@@ -75,7 +74,7 @@ func (state *State) declareLoginExpectSection(c ui.C) {
 			return
 		}
 		ui.Paragraph(c, m.SectionHint, 2).FontSize(metrics.FontSizeS).Color(pal.muted).LineHeight(15)
-		enable = state.declareDialogCheckboxC(c, m.Enabled, 6, 0)
+		state.declareDialogCheck(c, hitDialogLoginExpectEnable, m.Enabled, editor.loginExpect.Enabled, 6, 0)
 		for index := range editor.loginExpect.Steps {
 			state.declareLoginExpectRow(c, index)
 		}
@@ -84,11 +83,6 @@ func (state *State) declareLoginExpectSection(c ui.C) {
 			c.After(func() { state.clickLoginExpect(hitDialogLoginExpectAdd) })
 		}
 	})
-	if open {
-		column.DrawOver(func(d *ui.DrawContext) {
-			state.paintDialogCheckbox(d.Canvas, hitDialogLoginExpectEnable, m.Enabled, editor.loginExpect.Enabled, enable)
-		})
-	}
 }
 
 // declareLoginExpectRow lays out one saved rule: its summary, then the buttons
@@ -353,16 +347,16 @@ func (state *State) declareLoginExpectStepDialog(c ui.C) {
 
 func (state *State) declareLoginExpectStepDialogBody(c ui.C) {
 	m, editor := state.messages.LoginExpect, &state.loginExpectStep
-	var wait, send, timeout, delay, enterRow, modeRow, sensRow ui.Box
+	var wait, send, timeout, delay ui.Box
 	column := ui.Column(c).Fill().PadSides(2, 4, 0, 4)
 	column.Children(func() {
 		wait = ui.Slot(c).Height(62).MarginSides(0, 0, 4, 0)
 		send = ui.Slot(c).Height(62).MarginSides(0, 0, 4, 0)
 		timeout = ui.Slot(c).Height(62).MarginSides(0, 0, 4, 0)
 		delay = ui.Slot(c).Height(62).MarginSides(0, 0, 4, 0)
-		enterRow = state.declareDialogCheckboxC(c, m.AppendEnter, 2, 0)
-		modeRow = state.declareDialogCheckboxC(c, m.CommandMode, 6, 0)
-		sensRow = state.declareDialogCheckboxC(c, m.Sensitive, 6, 0)
+		state.declareDialogCheck(c, hitLoginExpectStepEnter, m.AppendEnter, editor.appendEnter, 2, 0)
+		state.declareDialogCheck(c, hitLoginExpectStepCommandMode, m.CommandMode, editor.commandMode, 6, 0)
+		state.declareDialogCheck(c, hitLoginExpectStepSensitive, m.Sensitive, editor.sensitive, 6, 0)
 		if editor.err != "" {
 			ui.Text(c, editor.err).FontSize(metrics.FontSizeS).Weight(gfx.WeightMedium).
 				Color(state.pal.danger).LineHeight(18).MarginSides(12, 0, 0, 0)
@@ -378,9 +372,6 @@ func (state *State) declareLoginExpectStepDialogBody(c ui.C) {
 		state.paintLoginExpectStepField(canvas, hitLoginExpectStepSend, m.SendLabel, placeholder, &editor.send, send.Rect(), false, editor.sensitive)
 		state.paintLoginExpectStepField(canvas, hitLoginExpectStepTimeout, m.TimeoutLabel, "30", &editor.timeout, timeout.Rect(), false, false)
 		state.paintLoginExpectStepField(canvas, hitLoginExpectStepDelay, m.DelayLabel, m.DelayPlaceholder, &editor.delay, delay.Rect(), false, false)
-		state.paintDialogCheckbox(canvas, hitLoginExpectStepEnter, m.AppendEnter, editor.appendEnter, enterRow)
-		state.paintDialogCheckbox(canvas, hitLoginExpectStepCommandMode, m.CommandMode, editor.commandMode, modeRow)
-		state.paintDialogCheckbox(canvas, hitLoginExpectStepSensitive, m.Sensitive, editor.sensitive, sensRow)
 	})
 }
 
