@@ -8,6 +8,7 @@ import (
 
 	"github.com/vivaui/viva/gfx"
 	"motty/internal/i18n"
+	"motty/internal/update"
 )
 
 // The terminal's font size is any whole number of points from the smallest that
@@ -388,10 +389,6 @@ func (state *State) applyLanguage() {
 	state.refreshForwards()
 	state.refreshProxies()
 	state.refreshSnippets()
-	// The host dialog's encoding options carry a localised UTF-8 label, and its
-	// icon options localised labels for the generic icons.
-	state.resetHostEncodingPicker()
-	state.resetHostIconPicker()
 	for index := range state.sessions {
 		state.sessions[index].reconnectText = ""
 		state.describe(&state.sessions[index])
@@ -508,7 +505,16 @@ var (
 	settingsTabOrientationChoices  = [...]tabOrientation{tabsHorizontal, tabsVertical}
 	settingsCloseChoices           = [...]closeAction{closeToTray, closeQuits}
 	settingsRelaunchChoices        = [...]relaunchAction{relaunchRaise, relaunchNewWindow}
+	settingsUpdateSourceChoices    = [...]update.Source{update.SourceOfficial, update.SourceCNB}
 )
+
+// settingsUpdateSourceLabel names an update source for its choice row.
+func (state *State) settingsUpdateSourceLabel(source update.Source) string {
+	if source == update.SourceCNB {
+		return state.messages.Tools.GeneralUpdateSourceCNB
+	}
+	return state.messages.Tools.GeneralUpdateSourceOfficial
+}
 
 func (state *State) settingsLanguageLabel(language i18n.Language) string {
 	switch language {

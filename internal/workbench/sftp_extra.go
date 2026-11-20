@@ -17,6 +17,7 @@ import (
 	"motty/internal/sftpclient"
 	"motty/internal/sshconn"
 	"motty/internal/term"
+	"motty/internal/update"
 	layoutcore "motty/internal/workspace"
 )
 
@@ -375,14 +376,14 @@ func (state *State) paintFilesSettings(page *settingsPage) {
 			if state.customEditorSettingVisible() {
 				path := state.customEditorPath
 				description := m.FilesCustomEditorNotSet
-				if !customEditorSupported() {
+				if !customEditorChoice() {
 					description = m.FilesCustomEditorUnavailable
 				}
 				if path != "" {
 					description = path
 				}
 				var actions []components.ButtonAction
-				if customEditorSupported() {
+				if customEditorChoice() {
 					actions = append(actions, components.ButtonAction{
 						ID: hitSettingsCustomEditorChoose, Label: m.FilesCustomEditorChoose, Variant: components.ButtonOutline,
 					})
@@ -404,7 +405,7 @@ func (state *State) paintFilesSettings(page *settingsPage) {
 }
 
 func (state *State) customEditorSettingVisible() bool {
-	return customEditorSupported() || state.defaultEditor == editorCustom || state.customEditorPath != ""
+	return customEditorChoice() || state.defaultEditor == editorCustom || state.customEditorPath != ""
 }
 
 // clickFilesSettings handles the presses of the Files settings.
@@ -589,6 +590,7 @@ func (state *State) restoreSFTPSettings(saved savedState) {
 		state.defaultEditor = editorNone
 	}
 	state.updateAtStart = saved.UpdateCheck != "off"
+	state.update.source = update.ParseSource(saved.UpdateSource)
 	state.closeAction = closeActionFromString(saved.CloseAction)
 	state.relaunchAction = relaunchActionFromString(saved.RelaunchAction)
 	state.trayHintShown = saved.TrayHintShown

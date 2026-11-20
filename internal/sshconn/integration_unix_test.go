@@ -475,3 +475,209 @@ func TestIntegrationRejectsUnsupportedShells(t *testing.T) {
 		}
 	}
 }
+
+// Bash before 4.4 has no PS0, so it reports the start of a command line from a
+// DEBUG trap. The trap path is forced here so that a current Bash exercises it,
+// and macOS's Bash 3.2 takes it by itself. Each line typed must be announced
+// once, nothing else may be, and the user's own DEBUG trap must still run.
+func TestIntegrationDebugTrapReportsEachCommandLineOnce(t *testing.T) {
+	program, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash unavailable")
+	}
+	checkCommandStartReports(t, program, true)
+}
+
+// MOTTY_TEST_OLD_BASH names a real Bash before 4.4, such as the 4.2 of CentOS 7,
+// which then starts the way it does for a user, with nothing forced.
+func TestIntegrationRealOldBashReportsEachCommandLineOnce(t *testing.T) {
+	program := os.Getenv("MOTTY_TEST_OLD_BASH")
+	if program == "" {
+		t.Skip("MOTTY_TEST_OLD_BASH names no Bash before 4.4")
+	}
+	checkCommandStartReports(t, program, false)
+}
+
+func checkCommandStartReports(t *testing.T, program string, forceTrap bool) {
+	t.Helper()
+	home, runtimeDir := t.TempDir(), t.TempDir()
+	profile := "PS1='user-prompt> '\nPROMPT_COMMAND='printf \"user-hook\\n\"'\ntrap 'printf \"user-debug:%s\\n\" \"$BASH_COMMAND\"' DEBUG\n"
+	if err := os.WriteFile(filepath.Join(home, ".bash_profile"), []byte(profile), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := integrationScriptWith(program, forceTrap, "debug-trap-token")
+	shell, err := localshell.Start(localshell.Config{
+		Shell: "/bin/sh", Args: []string{"-c", script, "sh", program}, Dir: home,
+		Env:  []string{"HOME=" + home, "SHELL=" + program, "TMPDIR=" + runtimeDir, "LANG=en_US.UTF-8"},
+		Cols: 120, Rows: 24,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(shell.Close)
+	screen := term.New(120, 24, 0)
+	screen.SetPromptToken("debug-trap-token")
+	ready, starts, output := 0, 0, ""
+	screen.SetPromptReady(func() { ready++ })
+	screen.SetCommandStart(func() { starts++ })
+	await := func(what string, done func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			data := shell.Drain(nil)
+			output += string(data)
+			screen.Write(data)
+			if done() {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("waiting for %s (ready=%d starts=%d): %q", what, ready, starts, output)
+	}
+	// run sends input and waits for the prompts that follow it, then lets the
+	// shell go quiet so that a stray extra report would be seen.
+	run := func(input string, prompts int, text string) {
+		t.Helper()
+		before := ready
+		shell.Write([]byte(input))
+		await(input, func() bool { return ready >= before+prompts && strings.Contains(output, text) })
+		time.Sleep(100 * time.Millisecond)
+		data := shell.Drain(nil)
+		output += string(data)
+		screen.Write(data)
+	}
+	await("first prompt", func() bool { return ready > 0 })
+	if starts != 1 {
+		t.Fatalf("the shell did not announce command-start reporting once: %d", starts)
+	}
+	steps := []struct {
+		name, input, text string
+		prompts, starts   int
+	}{
+		{"one command", "echo marker-one\r", "marker-one\r\n", 1, 1},
+		{"an empty line", "\r", "", 1, 0},
+		{"typeahead", "echo marker-two\recho marker-three\r", "marker-three\r\n", 2, 2},
+		{"a compound command", "for i in 1 2 3; do echo loop$i; done\r", "loop3\r\n", 1, 1},
+		{"a pipeline", "echo piped | cat\r", "piped\r\n", 1, 1},
+		{"a failing command", "false\r", "", 1, 1},
+	}
+	for _, step := range steps {
+		before := starts
+		run(step.input, step.prompts, step.text)
+		if starts-before != step.starts {
+			t.Fatalf("%s: %d command starts reported, want %d; output %q", step.name, starts-before, step.starts, output)
+		}
+	}
+	run("echo status=$?\r", 1, "status=1\r\n")
+	if !strings.Contains(output, "user-debug:echo marker-one\r\n") {
+		t.Fatalf("the user's DEBUG trap did not run with its BASH_COMMAND: %q", output)
+	}
+	if !strings.Contains(output, "user-hook\r\n") {
+		t.Fatalf("the user's PROMPT_COMMAND was lost: %q", output)
+	}
+	shell.Write([]byte("exit 5\r"))
+	select {
+	case <-shell.Done():
+	case <-time.After(8 * time.Second):
+		t.Fatal("the shell did not exit")
+	}
+	if shell.ExitStatus() != 5 {
+		t.Fatalf("exit status = %d, want 5", shell.ExitStatus())
+	}
+	if files, err := os.ReadDir(runtimeDir); err != nil || len(files) != 0 {
+		t.Fatalf("session files leaked: %v, %v", files, err)
+	}
+}
+
+// A user who exports PROMPT_COMMAND keeps that export when the integration
+// wraps it, so su/sudo hand the value to a shell that has none of the motty
+// functions (issue #1060). The injected entries must expand to nothing there
+// instead of "command not found", while the user's own entries keep running and
+// the integrated shell keeps reporting statuses.
+func TestIntegrationExportedPromptCommandDoesNotBreakChildShell(t *testing.T) {
+	checkExportedPromptCommand(t, "PS1='user-prompt> '\nexport PROMPT_COMMAND='printf \"user-hook\\n\"'\n")
+}
+
+// set -a (allexport) exports the gate along with PROMPT_COMMAND, so the flag
+// has to be kept unexported explicitly; otherwise su's shell inherits it and
+// the wrapped entries run again.
+func TestIntegrationAllexportPromptCommandDoesNotBreakChildShell(t *testing.T) {
+	checkExportedPromptCommand(t, "PS1='user-prompt> '\nset -a\nPROMPT_COMMAND='printf \"user-hook\\n\"'\n")
+}
+
+func checkExportedPromptCommand(t *testing.T, profile string) {
+	t.Helper()
+	program, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash unavailable")
+	}
+	home, runtimeDir := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".bash_profile"), []byte(profile), 0600); err != nil {
+		t.Fatal(err)
+	}
+	shell, err := localshell.Start(localshell.Config{
+		Shell: "/bin/sh", Args: []string{"-c", integrationScript(program, "leak-token"), "sh", program}, Dir: home,
+		Env:  []string{"HOME=" + home, "SHELL=" + program, "TMPDIR=" + runtimeDir, "LANG=en_US.UTF-8"},
+		Cols: 120, Rows: 24,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(shell.Close)
+	screen := term.New(120, 24, 0)
+	screen.SetPromptToken("leak-token")
+	ready, lastExit, output := 0, -1, ""
+	screen.SetPromptReady(func() { ready++ })
+	screen.SetCommandFinished(func(code int) { lastExit = code })
+	await := func(what string, done func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			data := shell.Drain(nil)
+			output += string(data)
+			screen.Write(data)
+			if done() {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("waiting for %s: %q", what, output)
+	}
+	await("first prompt", func() bool { return ready > 0 })
+	before := ready
+	shell.Write([]byte("false\r"))
+	await("parent status", func() bool { return ready > before })
+	if lastExit != 1 {
+		t.Fatalf("integrated shell exit status = %d, want 1: %q", lastExit, output)
+	}
+	// The gate itself must not reach a child shell: with it set, the wrapped
+	// entries would expand to functions the child does not have.
+	shell.Write([]byte("bash --norc --noprofile -c 'printf \"CHILD_FLAG %s\\n\" \"${_motty_active-unset}\"'\r"))
+	shell.Write([]byte("printf 'CHILD_PROBE\\r\\n'\r"))
+	await("child flag", func() bool { return strings.Contains(output, "CHILD_PROBE\r\r\n") })
+	if !strings.Contains(output, "CHILD_FLAG unset") {
+		t.Fatalf("a child shell inherited _motty_active: %q", output)
+	}
+	// A plain child shell inherits the exported PROMPT_COMMAND but defines none
+	// of the integration's functions, the way su's target shell does.
+	childStart := len(output)
+	shell.Write([]byte("bash --norc --noprofile -i\r"))
+	shell.Write([]byte("printf 'CHILD_UP\\n'\r"))
+	await("child shell", func() bool { return strings.Contains(output, "CHILD_UP\r\n") })
+	child := output[childStart:]
+	if strings.Contains(child, "command not found") {
+		t.Fatalf("inherited PROMPT_COMMAND broke the child shell: %q", child)
+	}
+	if !strings.Contains(child, "user-hook\r\n") {
+		t.Fatalf("the user's own PROMPT_COMMAND entry stopped running in the child: %q", child)
+	}
+	before = ready
+	shell.Write([]byte("exit\r"))
+	await("back in parent", func() bool { return ready > before })
+	shell.Write([]byte("exit\r"))
+	select {
+	case <-shell.Done():
+	case <-time.After(8 * time.Second):
+		t.Fatal("the shell did not exit")
+	}
+}

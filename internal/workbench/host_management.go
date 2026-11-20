@@ -9,7 +9,6 @@ import (
 	"github.com/vivaui/viva/text"
 
 	"motty/internal/configstore"
-	"motty/internal/keyidentity"
 	"motty/internal/sshconn"
 	"motty/internal/vault"
 	layoutcore "motty/internal/workspace"
@@ -272,9 +271,6 @@ func (state *State) singleHostAction() (Host, bool) {
 
 func (state *State) submitHostDialog() {
 	if !state.commitHostGroupQuery() {
-		return
-	}
-	if !state.commitHostEncodingQuery() {
 		return
 	}
 	if !state.commitHostTagQuery() {
@@ -720,7 +716,7 @@ func (state *State) hostPassphraseChanges() (changes []vault.Change, failure str
 		return nil, state.messages.VaultUnavailable
 	}
 	secret := []byte(typed)
-	_, err := keyidentity.Load(identity.Path, secret)
+	err := state.keyPassphraseOpens(identity, secret)
 	clear(secret)
 	if err != nil {
 		return nil, state.messages.KeyPassphraseWrong
@@ -1064,12 +1060,12 @@ func (state *State) hostManagementKey(event gfx.KeyEvent) (gfx.EventResult, bool
 		return gfx.EventResult{}, false
 	}
 	if event.Target == hitHostSideWidth {
-		if bounds := state.hostSide.splitBounds; bounds.Width > 1 {
-			if fraction, ok := state.hostSideResizable(nil).FractionForKey(event.Key); ok {
-				state.hostSide.width = fraction * (bounds.Width - 1)
-				state.save()
-				return handled, true
+		if result := state.hostSide.split.Key(event); result.Handled {
+			if state.hostSide.split.Pos > 0 {
+				state.hostSide.width = state.hostSide.split.Pos
 			}
+			state.save()
+			return handled, true
 		}
 	}
 	if event.Key == gfx.KeySpace && !event.Release && state.clickHostScopeSelection(event.Target) {

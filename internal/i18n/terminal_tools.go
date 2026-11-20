@@ -77,6 +77,25 @@ type ToolsMessages struct {
 	SnippetColumnGroup        string
 	SnippetFilterAll          string
 	SnippetFilterNone         string
+	SnippetGroupsManage       string
+	SnippetGroupsTitle        string
+	SnippetGroupsDescription  string
+	SnippetGroupCountFmt      string
+	SnippetGroupEmpty         string
+	SnippetGroupRename        string
+	SnippetGroupRenameTitle   string
+	SnippetGroupRenameField   string
+	SnippetGroupRenameSave    string
+	SnippetGroupRenameInvalid string
+	SnippetGroupConflict      string
+	SnippetGroupMissing       string
+	SnippetGroupDelete        string
+	SnippetGroupDeleteTitle   string
+	SnippetGroupDeleteBodyFmt string
+	SnippetGroupDeleteConfirm string
+	SnippetGroupsClose        string
+	StatusGroupRenamedFmt     string
+	StatusGroupDeletedFmt     string
 	SnippetCountFilteredFmt   string
 	SnippetColumnCommand      string
 	SnippetSortAction         string
@@ -343,6 +362,7 @@ type ToolsMessages struct {
 	ImportGuideURL               string
 	ImportPickerFmt              string // the client's name
 	ImportFolderPickerFmt        string // the client's name; it keeps sessions in a folder
+	ImportConfigFolderPickerFmt  string // the client's name; it keeps its data in a folder
 	ImportCanceled               string
 	ImportFailedFmt              string
 	ImportSummaryFmt             string // hosts, client, duplicates
@@ -618,6 +638,10 @@ type ToolsMessages struct {
 	GeneralUpdateDescription        string
 	GeneralUpdateCheck              string
 	GeneralUpdateDownload           string
+	GeneralUpdateSource             string
+	GeneralUpdateSourceDescription  string
+	GeneralUpdateSourceOfficial     string
+	GeneralUpdateSourceCNB          string
 	GeneralUpdateStartup            string
 	GeneralUpdateStartupDescription string
 	UpdateChecking                  string
@@ -667,6 +691,9 @@ type ToolsMessages struct {
 	DiagnosticsFailedFmt            string
 	PreviousCrashTitle              string
 	PreviousCrashBodyFmt            string
+	PreviousCrashReveal             string
+	PreviousCrashRevealFailed       string
+	PreviousCrashRevealMissing      string
 	CatBackup                       string
 	CatMCP                          string
 	BackupGroupFile                 string
