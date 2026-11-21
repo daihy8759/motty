@@ -82,7 +82,14 @@ func main() {
 	config := &ssh.ServerConfig{
 		ServerVersion: banner,
 		PublicKeyCallback: func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			if bytes.Equal(key.Marshal(), fixture.publicKey.Marshal()) || certs.acceptKey(key) {
+			// Under E2E_USER_CERT=1 only the certificate the fixture signed is
+			// accepted, so a client that falls back to the bare key fails: that
+			// is what proves the certificate was the credential.
+			accepted := certs.acceptKey(key)
+			if certs.userCert == nil && bytes.Equal(key.Marshal(), fixture.publicKey.Marshal()) {
+				accepted = true
+			}
+			if accepted {
 				return nil, nil
 			}
 			return nil, fmt.Errorf("denied")
@@ -470,7 +477,10 @@ func serve(sshConn ssh.Conn, sftpRoot string, channel ssh.Channel, requests <-ch
 					}()
 					continue
 				}
-				command.Stdout, command.Stderr = channel, channel
+				// The client's integration upload sends the script on stdin; a
+				// real sshd hands it to the command. Without the channel here the
+				// upload only creates an empty file and integration silently fails.
+				command.Stdin, command.Stdout, command.Stderr = channel, channel, channel
 				status := uint32(0)
 				if err := command.Run(); err != nil {
 					status = 1
@@ -591,6 +601,15 @@ func prepareFixture() (fixture, error) {
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(sftpRoot, name), []byte(content), 0o644); err != nil {
+			return fail(err)
+		}
+	}
+	// A document window's preview bound only shows on a file larger than it, so
+	// a test asks for one instead of the fixture carrying 20 MiB every run.
+	if mib, err := strconv.Atoi(os.Getenv("E2ESSHD_LARGE_TEXT_MIB")); err == nil && mib > 0 {
+		line := []byte("0123456789abcdef\n")
+		data := bytes.Repeat(line, (mib<<20)/len(line)+1)[:mib<<20]
+		if err := os.WriteFile(filepath.Join(sftpRoot, "large-preview.txt"), data, 0o644); err != nil {
 			return fail(err)
 		}
 	}

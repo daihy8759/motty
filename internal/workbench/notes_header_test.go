@@ -24,6 +24,33 @@ func paintNoteWindowAt(t *testing.T, s *State, width float32) *gfx.Canvas {
 	return &c
 }
 
+// The toolbar's visible labels are the compact glyphs it has always shown;
+// the localized names belong in the tooltip and the accessible name. Passing
+// the name to Hit rewrites the button's label, which made the long Chinese
+// names paint over each other (the notes page regression).
+func TestNotesFormattingButtonsShowCompactLabels(t *testing.T) {
+	s := newTestState(t, freshOptions(t))
+	s.Click(hitNotes)
+	s.Click(hitNoteAdd)
+	c := paintNotesPage(s, 800)
+	first, ok := hitByID(c, hitNoteFormats.At(0))
+	if !ok || first.Label != noteFormatLabels[0] {
+		t.Fatalf("heading button label = %q, want %q", first.Label, noteFormatLabels[0])
+	}
+	if !canvasHasText(c, noteFormatLabels[0]) {
+		t.Fatalf("heading button does not paint %q", noteFormatLabels[0])
+	}
+	if canvasHasText(c, s.noteFormatName(0)) || canvasHasText(c, s.noteFormatName(1)) {
+		t.Fatal("formatting buttons paint their accessible names instead of their compact labels")
+	}
+	// An icon-only action keeps the localized name for assistive technology,
+	// but the name must not be painted in place of its icon.
+	italic, ok := hitByID(c, hitNoteFormats.At(2))
+	if !ok || italic.Label != s.noteFormatName(2) || canvasHasText(c, s.noteFormatName(2)) {
+		t.Fatalf("italic action label=%q visible=%v", italic.Label, canvasHasText(c, s.noteFormatName(2)))
+	}
+}
+
 func TestNotesLibraryHeaderIconsKeepModeIdentitiesAndPinState(t *testing.T) {
 	s := newTestState(t, freshOptions(t))
 	s.Click(hitNotes)
@@ -70,6 +97,35 @@ func TestNotesLibraryHeaderIconsKeepModeIdentitiesAndPinState(t *testing.T) {
 	unpinned, _ := hitByID(c, hitNotePin)
 	if unpinned.Label != s.noteText("Pin note", "置顶笔记") {
 		t.Fatal("unpin state not reflected")
+	}
+}
+
+// The mode group keeps the existing action identities and selects exactly one
+// mode without changing the draft. Its segments share edges instead of being
+// three independent rounded controls.
+func TestNotesModeButtonsAreOneControlledGroup(t *testing.T) {
+	s := newTestState(t, freshOptions(t))
+	s.Click(hitNotes)
+	s.Click(hitNoteAdd)
+	s.notes.body.Insert("keep this draft")
+	ids := [...]gfx.ID{hitNoteModes.At(0), hitNoteModes.At(2), hitNoteModes.At(1)}
+	for _, selected := range ids {
+		s.Click(selected)
+		canvas := paintNotesPage(s, 800)
+		var previous gfx.Hit
+		for index, id := range ids {
+			hit, ok := hitByID(canvas, id)
+			if !ok || hit.Selected != (id == selected) || hit.Hint == "" {
+				t.Fatalf("mode %v: %+v", id, hit)
+			}
+			if index > 0 && previous.Bounds.Right() != hit.Bounds.X {
+				t.Fatal("the mode items do not share their edges")
+			}
+			previous = hit
+		}
+		if s.notes.body.String() != "keep this draft" {
+			t.Fatal("changing the view mode changed the draft")
+		}
 	}
 }
 

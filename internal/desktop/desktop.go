@@ -202,6 +202,16 @@ type FileClipboard interface {
 	SetClipboardFiles(paths []string) (FileOffer, error)
 }
 
+// ImageClipboard is a Session that can give the picture on this computer's
+// clipboard to the remote system's clipboard, so that its user pastes it: RDP
+// does; VNC carries text only.
+type ImageClipboard interface {
+	Session
+	// SetClipboardImage makes the PNG picture what the remote clipboard holds,
+	// replacing the text it held before.
+	SetClipboardImage(png []byte) error
+}
+
 // FileReceiver is a Session that can take files the remote system put on its
 // clipboard. The files are saved beside this computer's own clipboard, so the
 // user can paste them where they are working.
@@ -352,6 +362,12 @@ type Options struct {
 	// session; the backend reports the connection as not encrypted. VNC chooses
 	// its security types with the server and ignores this.
 	StandardSecurity bool
+	// LegacyTLS lets an RDP connection offer the TLS suites that use RSA key
+	// exchange (with AES-CBC or AES-GCM) to a server that offers nothing newer.
+	// They have no forward secrecy and CBC has known weaknesses, so this is an
+	// explicit accommodation for an old server, not a default. Modern suites
+	// stay in the offer; VNC ignores this.
+	LegacyTLS bool
 	// Username and Domain are the account a protocol with accounts signs in as.
 	// VNC account authentication uses Username; Domain belongs to RDP.
 	Username, Domain string

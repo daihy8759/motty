@@ -29,6 +29,11 @@ var ErrAuthFailed = errors.New("rdp: the server refused the account or password"
 // ask for one.
 var ErrAuthRequired = errors.New("rdp: a password is required")
 
+// ErrTLSFailed is returned by Open when the TLS handshake failed. It is the
+// library's error, kept here so a caller can tell a handshake a legacy server
+// may accept from other failures without importing the client package.
+var ErrTLSFailed = rdpcore.ErrTLSFailed
+
 // Defaults of the picture a session asks for when the caller gives no size:
 // the client chooses the size when it connects. The workbench gives the size of
 // its pane and follows it through Resize; this is only for a caller that does
@@ -145,6 +150,7 @@ func Open(ctx context.Context, dial desktop.Dialer, address string, opts desktop
 	if opts.StandardSecurity {
 		config.Security = rdpcore.SecurityStandard
 	}
+	config.LegacyTLS = opts.LegacyTLS
 	config.GFX = true
 	config.NoAVC = true // no H.264 decoder: the server then sends RemoteFX or ClearCodec
 	if opts.Audio {
@@ -492,6 +498,15 @@ func (session *Session) SetClipboard(text string) error {
 		return nil
 	}
 	return session.client.SetClipboard(text)
+}
+
+// SetClipboardImage offers a picture from this computer's clipboard as what the
+// remote clipboard holds, replacing its text (see desktop.ImageClipboard).
+func (session *Session) SetClipboardImage(png []byte) error {
+	if !session.opts.Clipboard {
+		return nil
+	}
+	return session.client.SetClipboardImage(png)
 }
 
 // SetClipboardFiles offers files of this computer to the server's clipboard, as a

@@ -213,9 +213,12 @@ type terminal struct {
 	inputLine bool
 	// autofill is what the autofill rules need to know of this terminal.
 	autofill autofill.Watcher
-	// passwordHint is the sudo prompt line the saved password is on offer at: set
+	// passwordHint is the recognised account password prompt: set
 	// while that line is still under the cursor and nothing was sent since.
 	passwordHint string
+	// passwordOffered is the last prompt whose manual password list was shown.
+	// A new row can offer another password after a refused authentication.
+	passwordOffered terminalPasswordPrompt
 	// recorder decides which typed lines the command history may keep; it is
 	// only fed while historyOn says the history is wanted for this terminal.
 	recorder  cmdhistory.Recorder
@@ -660,12 +663,26 @@ func (t *terminal) send(p []byte) bool {
 	if t.transferHoldsInput {
 		return false
 	}
-	return t.sendInput(p, true)
+	return t.sendInput(p, true, true)
+}
+
+// sendKeyState writes a key event that is not typing: a bare modifier, or a
+// release. win32-input-mode and the kitty protocol carry key state as input
+// the program needs, but pressing Control on its way to Control+Insert must
+// not clear the selection that shortcut is about to copy, and letting go of a
+// key must not take the view away from what the user selected or scrolled to.
+func (t *terminal) sendKeyState(p []byte) bool {
+	if t.transferHoldsInput {
+		return false
+	}
+	return t.sendInput(p, true, false)
 }
 
 // A confirmed input snapshot has already drained and validated its owner.
 // Consuming another transition after that check would invalidate the decision.
-func (t *terminal) sendInput(p []byte, drain bool) bool {
+// typing says whether p is the user typing rather than key state, and so
+// whether it clears the selection and returns the view to the live screen.
+func (t *terminal) sendInput(p []byte, drain, typing bool) bool {
 	// Any other input takes the terminal back from a line-by-line paste: the
 	// remaining lines would otherwise be interleaved with what the user is
 	// typing. The queue's own writes pass through writing.
@@ -685,8 +702,10 @@ func (t *terminal) sendInput(p []byte, drain bool) bool {
 	if t.exec != nil && userInterrupts(p) {
 		t.finishExec(endUser) // the user took the terminal back; the keys go on to the shell
 	}
-	t.selection.clear()
-	t.screen.ScrollToBottom()
+	if typing {
+		t.selection.clear()
+		t.screen.ScrollToBottom()
+	}
 	t.autofill.Typed(p)
 	feed := t.historyOn != nil && t.historyOn()
 	if !feed && t.completionFeed != nil {
@@ -849,7 +868,23 @@ func (t *terminal) sendProtocol(p []byte) bool {
 	if t.shell == nil || len(p) == 0 {
 		return false
 	}
-	accepted := t.writeShellInput(p)
+	return t.recordProtocol(p, t.writeShellInput(p))
+}
+
+// answerQuery writes the terminal's answer to a query the program on the far
+// side made (device attributes, colors, mode reports). An answer is not input:
+// the program asked for it now and stops waiting shortly, so it is never held
+// back with the user's typing while the shell integration is installed. A
+// reply that arrived after the window would reach the shell as keystrokes.
+// ASCII, so no charset conversion applies.
+func (t *terminal) answerQuery(p []byte) bool {
+	if t.shell == nil || len(p) == 0 {
+		return false
+	}
+	return t.recordProtocol(p, t.shell.Write(p))
+}
+
+func (t *terminal) recordProtocol(p []byte, accepted bool) bool {
 	if accepted {
 		t.noteInput()
 		t.recording.append(t.recordingNow(), terminalRecordingInput, p)
@@ -1095,11 +1130,11 @@ func (state *State) shellOpened(session *Session, shell Shell, err error) {
 		}
 	}
 	t.screen.SetReply(func(reply []byte) {
-		t.sendProtocol(reply)
+		t.answerQuery(reply)
 	})
 	state.startLoginExpect(session)
 	t.screen.SetCellPixels(state.cellPixelWidth, state.cellPixelHeight)
-	t.armInitialization(session)
+	t.armInitialization(state, session)
 	state.startInjection(session, shell)
 	state.describe(session)
 }
@@ -1970,7 +2005,7 @@ func (state *State) terminalKey(session *Session, event gfx.KeyEvent) gfx.EventR
 		}
 	}
 	modes := t.screen.Modes()
-	if t.screen.KeyboardFlags() == 0 && (state.passwordHintKey(session, event) || state.ghostKey(session, event)) {
+	if t.screen.KeyboardFlags() == 0 && state.ghostKey(session, event) {
 		t.noteAcceptedKey(event)
 		return handled
 	}
@@ -2002,6 +2037,12 @@ func (state *State) terminalKey(session *Session, event gfx.KeyEvent) gfx.EventR
 		bytes = term.EncodeKeyEvent(event, t.screen.KeyboardFlags(), modes.AppCursorKeys)
 	}
 	if len(bytes) > 0 {
+		if event.Release || event.Key.IsModifier() {
+			// Key state is not typing: it reaches the program, but leaves the
+			// selection and the scrollback view where the user put them.
+			state.typedKeyState(session, bytes)
+			return handled
+		}
 		scrolled := t.screen.ViewOffset() > 0
 		predictionChanged := t.prediction.reset()
 		state.typed(session, bytes)
@@ -2200,7 +2241,7 @@ func (state *State) Scroll(event gfx.ScrollEvent) gfx.EventResult {
 		return result
 	}
 	tabScroll := &state.tabStrip
-	if state.tabOrientation == tabsVertical && len(state.sftpTabs) > 0 &&
+	if state.tabOrientation == tabsVertical && state.fileTabCount() > 0 &&
 		pointInRect(event.X, event.Y, state.fileTabStrip.area) {
 		tabScroll = &state.fileTabStrip
 	}

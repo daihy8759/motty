@@ -276,6 +276,74 @@ func TestDashboardSimpleViewScrollGeometry(t *testing.T) {
 	}
 }
 
+// The simple view's view column is too narrow for the tabs' labels, so each row
+// shows the three view icons alone; the labels stay the tabs' names.
+func TestDashboardSimpleViewTabsAreIconOnly(t *testing.T) {
+	state := dashboardNativeFixture(t)
+	state.dashboardPanel().Simple = true
+	var canvas gfx.Canvas
+	state.Paint(&canvas, gfx.Size{Width: 1400, Height: 900})
+	m := state.messages.Monitor
+	if _, ok := canvasTextByValue(&canvas, m.Overview); ok {
+		t.Fatal("the simple view painted a view label in its 40-wide strip")
+	}
+	for _, label := range []string{m.Overview, m.Disks, m.Network} {
+		if _, ok := canvasHitByLabelRole(&canvas, label, gfx.RoleTab); !ok {
+			t.Fatalf("view tab %q is missing", label)
+		}
+	}
+}
+
+// A chart's series and its fill are built in the plot's own view box, so every
+// triangle stays inside the chart's canvas instead of spilling past the card.
+func TestDashboardChartStaysInsideItsCanvas(t *testing.T) {
+	state := dashboardNativeFixture(t)
+	var canvas gfx.Canvas
+	state.Paint(&canvas, gfx.Size{Width: 1448, Height: 724})
+	p := state.dashboardPanel()
+	width := int(state.catalogSectionBounds().Width - 36)
+	checked := 0
+	for _, id := range p.Hosts {
+		r := state.dashboardRow(p, id, width)
+		for metric := range 3 {
+			cache := &r.charts[metric]
+			if cache.size.Width <= 0 || cache.size.Height <= 0 {
+				continue
+			}
+			checked++
+			for _, triangle := range cache.canvas.Triangles() {
+				for _, point := range triangle.Points {
+					if point.X < 0 || point.X > cache.size.Width || point.Y < 0 || point.Y > cache.size.Height {
+						t.Fatalf("%s metric %d paints %v outside its %v canvas", id, metric, point, cache.size)
+					}
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no chart was painted")
+	}
+}
+
+// A simple row's view strip is inset the same distance at its top and bottom,
+// so it is centered in a row that has no disk or network table under it.
+func TestDashboardSimpleViewTabsAreVerticallyCentered(t *testing.T) {
+	state := dashboardNativeFixture(t)
+	p := state.dashboardPanel()
+	r := state.dashboardRow(p, "host-0", 1200)
+	row := gfx.Rect{Width: 1000, Height: dashboardSimpleHeight(r)}
+	var canvas gfx.Canvas
+	controls := state.dashboardRowControlRects(&canvas, p, state.hosts[0], r, row, true, true)
+	top := controls.tabs.Y
+	bottom := row.Height - (controls.tabs.Y + controls.tabs.Height)
+	if top < 6 || bottom < 6 {
+		t.Fatalf("view strip leaves %v above and %v below the row", top, bottom)
+	}
+	if top != bottom {
+		t.Fatalf("view strip is not vertically centered: %v above, %v below", top, bottom)
+	}
+}
+
 // The sampling clock reads the interval, paused state and live count each
 // declaration; an unwritten view left its hands still.
 func TestDashboardRefreshClockTracksCollection(t *testing.T) {
@@ -387,7 +455,7 @@ func TestMonitorEmptyStateCentersWithoutFooter(t *testing.T) {
 			if line.Bounds.Width > state.monitorRect.Width-32+1 {
 				t.Fatalf("message width %v exceeds the panel inset", line.Bounds.Width)
 			}
-			top := state.monitorRect.Y + infoBarHeight + monitorControlsHeight + monitorHostInfoHeight
+			top := state.monitorRect.Y + infoBarHeight + monitorControlsHeight
 			bottom := state.monitorRect.Y + state.monitorRect.Height
 			center := line.Bounds.Y + line.Bounds.Height/2
 			if center <= top || center >= bottom {
@@ -401,8 +469,7 @@ func TestMonitorEmptyStateCentersWithoutFooter(t *testing.T) {
 }
 
 // The monitor header keeps the close action at the right edge and the move
-// action beside it, the title at x+35, and an 82-wide interval with the pause
-// four pixels to its right.
+// action beside it, the title at x+35, then interval and pause controls.
 func TestMonitorHeaderOrderAndWidths(t *testing.T) {
 	state, _ := monitorFixture(t)
 	var canvas gfx.Canvas
@@ -436,8 +503,12 @@ func TestMonitorHeaderOrderAndWidths(t *testing.T) {
 	if !ok {
 		t.Fatal("interval control is missing")
 	}
-	if interval.Bounds.Width != 82 || interval.Bounds.Height != 26 {
-		t.Fatalf("interval = %v, want 82x26", interval.Bounds)
+	// Content-sized: 4px padding, the 16px clock, 4px gaps, the 11px chevron,
+	// then the text at its own measured width.
+	intervalText := fmt.Sprintf(state.messages.Monitor.IntervalFmt, 2)
+	wantIntervalWidth := 43 + canvas.TextWidthWeight(intervalText, 12, gfx.WeightMedium)
+	if math.Abs(float64(interval.Bounds.Width-wantIntervalWidth)) > 1 || interval.Bounds.Height != 26 {
+		t.Fatalf("interval = %v, want %vx26", interval.Bounds, wantIntervalWidth)
 	}
 	titleWidth := canvas.TextWidthWeight(state.messages.Monitor.Title, 14, gfx.WeightSemibold)
 	if interval.Bounds.X != b.X+35+titleWidth+12 {
@@ -447,8 +518,9 @@ func TestMonitorHeaderOrderAndWidths(t *testing.T) {
 	if !ok {
 		t.Fatal("pause control is missing")
 	}
-	if pause.Bounds.X != interval.Bounds.X+82+4 || pause.Bounds.Width != 24 {
-		t.Fatalf("pause = %v, want four pixels right of the interval", pause.Bounds)
+	pauseX := interval.Bounds.X + interval.Bounds.Width + 4
+	if pause.Bounds.X != pauseX || pause.Bounds.Width != 24 {
+		t.Fatalf("pause = %v, want %v", pause.Bounds, pauseX)
 	}
 }
 

@@ -213,6 +213,7 @@ type Terminal struct {
 	// waiting for the shell's own redraw; promptSaved holds those rows and the
 	// cursor column as the shell drew them until it does.
 	promptLine   uint64
+	promptStart  int // the column the prompt began at
 	promptActive bool
 	promptStale  bool
 	promptSaved  []*line
@@ -922,8 +923,14 @@ func (t *Terminal) resizeLines(s *screen, rows int, cursorY *int, useHistory boo
 			*cursorY -= drop
 		}
 	case rows > len(s.lines):
+		// New rows go below the screen, which is what a shrink that dropped
+		// blank rows below the cursor left to put back. History comes back only
+		// when the cursor is on the bottom row, where a shrink had pushed the
+		// rows above it into history; pulling it with the cursor anywhere else
+		// would move the live content, such as a screen a shell has cleared,
+		// back under the reader while a side panel toggles.
 		pulled := 0
-		if useHistory && cursorY != nil {
+		if useHistory && cursorY != nil && *cursorY == len(s.lines)-1 {
 			pulled = min(rows-len(s.lines), t.histCount)
 		}
 		next := make([]*line, 0, rows)

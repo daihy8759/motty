@@ -18,6 +18,7 @@ import (
 	"motty/internal/configstore"
 	"motty/internal/i18n"
 	"motty/internal/monitoring"
+	"motty/internal/sshbrowser"
 	"motty/internal/sshconn"
 	layoutcore "motty/internal/workspace"
 )
@@ -43,6 +44,7 @@ type savedState struct {
 	Version                    int                     `json:"version"`
 	Language                   string                  `json:"language,omitempty"`
 	Theme                      string                  `json:"theme,omitempty"`
+	IconColor                  string                  `json:"icon_color,omitempty"`
 	BackgroundOutputAlerts     bool                    `json:"background_output_alerts,omitempty"`
 	TabOrientation             string                  `json:"tab_orientation,omitempty"`
 	TabNumbers                 bool                    `json:"tab_numbers,omitempty"`
@@ -52,6 +54,7 @@ type savedState struct {
 	NetworkProxy               string                  `json:"network_proxy,omitempty"`
 	TerminalOption             string                  `json:"terminalOption,omitempty"`
 	LocalShell                 string                  `json:"local_shell,omitempty"`
+	LocalStartupCommands       map[string]string       `json:"local_startup_commands,omitempty"` // the line each shell types when it starts, by choice path; this computer's own
 	HiddenShells               []string                `json:"hidden_shells,omitempty"`
 	LocalStart                 string                  `json:"local_start,omitempty"`
 	LastLocalDirectory         string                  `json:"last_local_directory,omitempty"`
@@ -136,6 +139,7 @@ type savedState struct {
 	SFTPPanelWidth          float32             `json:"sftp_panel_width,omitempty"`
 	SFTPWindowOrder         string              `json:"sftp_window_order,omitempty"`
 	SFTPOpenMode            string              `json:"sftp_open_mode,omitempty"`
+	FilePreviewMB           int                 `json:"file_preview_mb,omitempty"`
 	SFTPColumns             string              `json:"sftp_columns,omitempty"`
 	SFTPDownloadDirectory   string              `json:"sftp_download_directory,omitempty"`
 	SFTPTransferFilter      int                 `json:"sftp_transfer_filter,omitempty"`
@@ -151,12 +155,14 @@ type savedState struct {
 	SFTPBookmarks           []savedBookmark     `json:"sftp_bookmarks,omitempty"`
 	SFTPLocalBookmarks      []string            `json:"sftp_local_bookmarks,omitempty"`
 	OutboundProxy           *savedOutboundProxy `json:"outbound_proxy,omitempty"`
+	SSHBrowser              string              `json:"ssh_browser,omitempty"` // which Chromium-family browser the SSH tab opens
 	HighlightBuiltin        string              `json:"highlight_builtin,omitempty"`
 	Highlights              []savedHighlight    `json:"highlights,omitempty"`
 	Snippets                []savedSnippet      `json:"snippets,omitempty"`
 	SnippetShortcuts        []savedSnippetKey   `json:"snippet_shortcuts,omitempty"`
 	Autofill                []savedAutofill     `json:"autofill_rules,omitempty"`
 	Credentials             []savedCredential   `json:"credentials,omitempty"`
+	ProxyProfiles           []savedProxyProfile `json:"proxy_profiles,omitempty"`
 	CommandHistory          bool                `json:"command_history,omitempty"`
 	CommandSuggestOff       bool                `json:"command_suggest_off,omitempty"`
 	CommandAcceptHintOff    bool                `json:"command_accept_hint_off,omitempty"`
@@ -316,6 +322,8 @@ type savedForward struct {
 	// again. It is off unless chosen, so a forward saved before it existed
 	// stops on a lost connection as it always did.
 	Resume bool `json:"resume,omitempty"`
+	// AutoStart starts the forward when a tab connects to its host.
+	AutoStart bool `json:"auto_start,omitempty"`
 	// ViaShell and Relay carry each connection through a relay program run in a
 	// shell on the host, for a server that refuses forwarded channels. Both are
 	// absent unless chosen.
@@ -528,6 +536,7 @@ func (state *State) snapshot() savedState {
 		Version:                    stateFileVersion,
 		Language:                   state.savedLanguage(),
 		Theme:                      state.appearanceMode.saved(),
+		IconColor:                  state.iconColor.saved(),
 		BackgroundOutputAlerts:     state.backgroundOutputAlerts,
 		TabOrientation:             state.tabOrientation.String(),
 		TabNumbers:                 state.tabNumbers,
@@ -535,8 +544,10 @@ func (state *State) snapshot() savedState {
 		VerticalTabsAutoHide:       state.verticalTabs.autoHide,
 		VerticalTabsGrouping:       state.verticalTabs.grouping,
 		NetworkProxy:               state.networkProxy.String(),
+		SSHBrowser:                 string(state.sshBrowser),
 		TerminalOption:             state.terminalOption.String(),
 		LocalShell:                 state.localShell,
+		LocalStartupCommands:       maps.Clone(state.localStartupCommands),
 		HiddenShells:               slices.Clone(state.hiddenShells),
 		LocalStart:                 state.localStart.String(),
 		LastLocalDirectory:         state.lastLocalDirectory,
@@ -614,6 +625,7 @@ func (state *State) snapshot() savedState {
 		SFTPPanelWidth:             state.sftpPanelWidth,
 		SFTPWindowOrder:            state.sftpWindowOrder.String(),
 		SFTPOpenMode:               state.sftpOpenMode.String(),
+		FilePreviewMB:              state.filePreviewMB,
 		SFTPColumns:                state.sftpColumns.String(),
 		SFTPDownloadDirectory:      savedSFTPDownloadDirectory(state.sftpDownloadDirectory),
 		SFTPTransferFilter:         state.transfers.filter,
@@ -653,11 +665,12 @@ func (state *State) snapshot() savedState {
 	}
 	for _, rule := range state.highlighting.rules {
 		saved.Highlights = append(saved.Highlights, savedHighlight{
-			Pattern: rule.Pattern, Regex: rule.Regex, CaseSensitive: rule.CaseSensitive, Color: rule.Slot.Name(),
+			Pattern: rule.Pattern, Regex: rule.Regex, CaseSensitive: rule.CaseSensitive, Color: rule.Color.Name(),
 		})
 	}
 	saved.Autofill = state.savedAutofillRules()
 	saved.Credentials = state.savedCredentials()
+	saved.ProxyProfiles = state.savedProxyProfiles()
 	saved.NoteView = state.savedNotesView()
 	saved.NoteSidebars = state.savedNoteSidebars()
 	saved.Notes = append([]savedNote(nil), state.notes.list...)
@@ -725,7 +738,7 @@ func (state *State) snapshot() savedState {
 			HostLabel: forward.HostLabel, HostAddress: forward.HostAddress,
 			HostUser: forward.HostUser, HostPort: forward.HostPort, LocalPort: forward.LocalPort,
 			DestinationHost: forward.DestinationHost, DestinationPort: forward.DestinationPort,
-			Resume: forward.Resume, ViaShell: forward.ViaShell, Relay: forward.Relay,
+			Resume: forward.Resume, AutoStart: forward.AutoStart, ViaShell: forward.ViaShell, Relay: forward.Relay,
 		})
 	}
 	for _, route := range state.proxies {
@@ -1064,6 +1077,7 @@ func (state *State) restoreLocal(saved savedState) {
 	state.terminalToolbarPosition = terminalToolbarPositionFromString(saved.TerminalToolbarPosition)
 	state.terminalToolbarSize = terminalToolbarSizeFromString(saved.TerminalToolbarSize)
 	state.localShell = saved.LocalShell
+	state.localStartupCommands = cleanLocalStartupCommands(saved.LocalStartupCommands)
 	state.hiddenShells = cleanShellPaths(saved.HiddenShells)
 	state.recentConnectSort = saved.RecentConnectSort
 	state.localShellsExpanded = saved.LocalShellsExpanded
@@ -1095,7 +1109,9 @@ func (state *State) restoreLocal(saved savedState) {
 	}
 	state.messages = i18n.For(state.language)
 	state.appearanceMode = appearanceModeFromString(saved.Theme)
+	state.setIconColor(iconColorFromString(saved.IconColor))
 	state.networkProxy = networkProxyModeFromString(saved.NetworkProxy)
+	state.sshBrowser = sshbrowser.ParseFamily(saved.SSHBrowser)
 	state.syncNativeAppearance()
 	// The theme setAppearance builds copies the metrics by value, so the saved
 	// text size must be in effect before it runs.
@@ -1247,6 +1263,7 @@ func (state *State) restoreShared(saved savedState) {
 	state.restoreTerminalTools(saved)
 	state.restoreAutofill(saved)
 	state.restoreCredentials(saved)
+	state.restoreProxyProfiles(saved)
 
 	// A host keeps the number the sessions and the selection know it by.
 	known := make(map[string]uint32, len(state.hosts))
@@ -1406,9 +1423,9 @@ func (state *State) restoreWorkspace(workspace string) {
 	case "snippets":
 		state.activeSection = sectionSnippets
 	case "settings":
-		state.activeSection = sectionSettings
+		state.activeSection, state.settingsTab = sectionSettings, true
 	case "shortcuts":
-		state.activeSection = sectionSettings
+		state.activeSection, state.settingsTab = sectionSettings, true
 		state.settingsCategory = settingsShortcuts
 	default:
 		state.activeSection = sectionHosts
@@ -1458,9 +1475,9 @@ func (state *State) restoreSessions(entries []savedSession, active int) []uint32
 		}
 		title := entry.Label
 		if title == "" {
-			// A file without a label predates saved titles: invent a distinct
-			// one, as opening the host would.
-			title = state.uniqueSessionTitle(host.Label)
+			// A file without a label predates saved titles: name it as opening
+			// the host would.
+			title = cleanSessionTitle(host.Label)
 		} else {
 			title = cleanSessionTitle(title)
 		}
