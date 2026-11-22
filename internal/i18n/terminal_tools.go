@@ -162,11 +162,20 @@ type ToolsMessages struct {
 	// The strip of saved commands under the terminal.
 	CommandsAdd   string
 	CommandsClose string
+	// CommandsResize is the tooltip of the strip along the bar's inner edge that
+	// drags its width.
+	CommandsResize string
 	// CommandsBarShow is the label of the picker's quiet checkbox for that strip;
 	// CommandsBarHidden is that checkbox's tooltip while unticked. Neither names
 	// the strip: the UI uses the language's own word for saved commands.
 	CommandsBarHidden string
 	CommandsBarShow   string
+	// CommandsPlacement labels the picker's dock control, and
+	// CommandsPlaceBottom / CommandsPlaceSide name its two docks: the strip
+	// under the terminal or the sidebar beside it.
+	CommandsPlacement   string
+	CommandsPlaceBottom string
+	CommandsPlaceSide   string
 	// CommandsFilter is the tooltip of the group-filter button at the bar's left
 	// and the heading of the menu it opens.
 	CommandsFilter string
@@ -292,6 +301,10 @@ type ToolsMessages struct {
 	PasswordHintDescription string
 	CloseConfirmRow         string
 	CloseConfirmDescription string
+
+	// Closing a window that still has sessions.
+	CloseWindowConfirmRow         string
+	CloseWindowConfirmDescription string
 
 	// The outbound proxy.
 	ProxyRow                    string
@@ -635,6 +648,15 @@ type ToolsMessages struct {
 	GeneralCloseDescription         string
 	GeneralCloseTray                string
 	GeneralCloseQuit                string
+	GeneralKeepWindows              string
+	GeneralKeepWindowsDescription   string
+	GeneralKeepWindowsKeep          string
+	GeneralKeepWindowsDiscard       string
+	GeneralKeepWindowsAsk           string
+	QuitKeepWindowsTitle            string
+	QuitKeepWindowsDescription      string
+	QuitKeepWindowsKeep             string
+	QuitKeepWindowsDiscard          string
 	GeneralRelaunch                 string
 	GeneralRelaunchDescription      string
 	GeneralRelaunchRaise            string

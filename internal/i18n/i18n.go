@@ -293,6 +293,9 @@ type Messages struct {
 	SettingsOutputAlertsDescription        string
 	SettingsTabOrientation                 string
 	SettingsTabOrientationDescription      string
+	SettingsTabDoubleClick                 string
+	SettingsTabDoubleClickDescription      string
+	SettingsTabDoubleClickNone             string
 	SettingsTabsHorizontal                 string
 	SettingsTabsVertical                   string
 	SettingsTabNumbers                     string
@@ -465,6 +468,8 @@ type Messages struct {
 	ShortcutCopy                         string
 	ShortcutPaste                        string
 	ShortcutNewTab                       string
+	ShortcutDuplicateTerminal            string
+	ShortcutTerminalFolder               string
 	ShortcutLocalTerminal                string
 	ShortcutCloseTab                     string
 	ShortcutNextTab                      string
@@ -741,6 +746,9 @@ type Messages struct {
 	PaneNext            string
 	PaneSplitHorizontal string
 	PaneSplitVertical   string
+	PaneMaximize        string
+	PaneRestore         string
+	PaneMaximizeToggle  string
 	PaneClose           string
 	PaneResize          string
 
@@ -1205,7 +1213,16 @@ type Messages struct {
 	// canceled: what was deleted before it stopped stays deleted.
 	SFTPDeletePartialHint       string
 	SFTPDeleteConfirm           string
+	SFTPDeleteMethodLabel       string
+	SFTPDeleteMethodHint        string
+	SFTPDeleteMethodNormal      string
+	SFTPDeleteMethodForce       string
+	SFTPDeleteForceTitle        string
+	SFTPDeleteForceDescription  string
+	SFTPDeleteForceConfirm      string
+	SFTPDeleteForcePartialFmt   string
 	SFTPDeletingFmt             string
+	SFTPDeletingCountFmt        string
 	SFTPDeletedFmt              string
 	SFTPDeletedCountFmt         string
 	SFTPPermissionsTitle        string
