@@ -92,14 +92,14 @@ type Config struct {
 	MaxHistoryBytes int
 	Temperature     *float64
 
-	// RedactToolResults masks secrets (see Redact) in tool output before it is
-	// sent to the model. The zero value leaves output untouched.
-	RedactToolResults bool
+	// RedactText masks recognizable secrets in conversation text and tool data sent to the model.
+	RedactText bool
 }
 
 const (
 	defaultMaxSteps    = 12
 	defaultStepTimeout = 90 * time.Second
+	modelTurnTimeout   = 5 * time.Minute
 	defaultMaxResult   = 32 << 10
 	defaultMaxHistory  = 256 << 10
 	stuckLimit         = 3
@@ -196,6 +196,10 @@ func Run(ctx context.Context, cfg Config, history []llm.Message, userText string
 	if cfg.MaxHistoryBytes <= 0 {
 		cfg.MaxHistoryBytes = defaultMaxHistory
 	}
+	if cfg.RedactText {
+		cfg.System = Redact(cfg.System)
+		userText = redactModelText(userText)
+	}
 	var specs []llm.ToolSpec
 	offered := map[string]bool{}
 	switch cfg.Mode {
@@ -254,7 +258,7 @@ func Run(ctx context.Context, cfg Config, history []llm.Message, userText string
 		req := llm.Request{
 			Model:           cfg.Model,
 			System:          cfg.System,
-			Messages:        msgs,
+			Messages:        modelMessages(msgs, cfg.RedactText),
 			MaxTokens:       cfg.MaxTokens,
 			Temperature:     cfg.Temperature,
 			ReasoningEffort: cfg.ReasoningEffort,
@@ -351,12 +355,9 @@ func Run(ctx context.Context, cfg Config, history []llm.Message, userText string
 		msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Text: text, ToolCalls: calls, Thinking: thinking})
 
 		stuck := false
-		for _, call := range calls {
+		for index, call := range calls {
 			var res gate.Result
-			switch {
-			case stuck:
-				res = gate.Result{Text: "not executed: the run was stopped", IsError: true}
-			default:
+			if index == 0 {
 				emit(Event{Kind: EventToolStart, Call: call, Step: turn, Usage: usage, UsageIncomplete: usageIncomplete})
 				res = runTool(ctx, cfg, offered, call)
 				if ctx.Err() != nil {
@@ -373,10 +374,12 @@ func Run(ctx context.Context, cfg Config, history []llm.Message, userText string
 					streak, lastKey = 1, key
 				}
 				stuck = streak >= stuckLimit
+			} else {
+				res = gate.Result{Text: "tool call skipped. Review the first tool result before requesting another tool.", IsError: true}
 			}
 			text := res.Text
-			if cfg.RedactToolResults {
-				text = Redact(text)
+			if cfg.RedactText {
+				text = redactModelText(text)
 			}
 			text = truncate(text, cfg.MaxToolResultBytes)
 			if res.IsError {
@@ -400,6 +403,8 @@ func fail(emit func(Event), _ []llm.Message, step int, u llm.Usage, err error) (
 
 // stream runs one model turn. On context cancellation it returns promptly.
 func stream(ctx context.Context, p llm.Provider, req llm.Request, turn int, emit func(Event)) (string, []llm.ToolCall, []llm.ThinkingBlock, llm.Usage, string, error) {
+	ctx, cancel := context.WithTimeoutCause(ctx, modelTurnTimeout, fmt.Errorf("agent: model turn timed out: %w", context.DeadlineExceeded))
+	defer cancel()
 	var (
 		sb       strings.Builder
 		calls    []llm.ToolCall
@@ -407,14 +412,20 @@ func stream(ctx context.Context, p llm.Provider, req llm.Request, turn int, emit
 		usage    llm.Usage
 	)
 	ch, err := p.Stream(ctx, req)
+	if ctx.Err() != nil {
+		return "", nil, nil, usage, "", context.Cause(ctx)
+	}
 	if err != nil {
 		return "", nil, nil, usage, "", err
 	}
 	for {
 		select {
 		case <-ctx.Done():
-			return "", nil, nil, usage, "", ctx.Err()
+			return "", nil, nil, usage, "", context.Cause(ctx)
 		case ev, ok := <-ch:
+			if ctx.Err() != nil {
+				return "", nil, nil, usage, "", context.Cause(ctx)
+			}
 			if !ok {
 				return "", nil, nil, usage, "", errors.New("agent: the model stream ended unexpectedly")
 			}

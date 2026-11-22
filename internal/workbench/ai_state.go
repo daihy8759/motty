@@ -22,6 +22,7 @@ import (
 	"motty/internal/ai/risk"
 	"motty/internal/ai/store"
 	"motty/internal/ai/tools"
+	"motty/internal/shellkind"
 )
 
 // aiItemKind is what one row of the assistant's conversation is.
@@ -602,7 +603,7 @@ func (state *State) aiApprover(ctx context.Context, request gate.Request) (bool,
 		// Opening the panel through its own path also reconciles with an open
 		// monitor: a narrow window shows one panel, not two stacked drawers.
 		s.setAIPanelOpen(true)
-		s.markToolWaiting()
+		s.markToolWaiting(request.Assessment.Level)
 	}) {
 		return false, "", errAIClosed
 	}
@@ -615,10 +616,11 @@ func (state *State) aiApprover(ctx context.Context, request gate.Request) (bool,
 	}
 }
 
-func (state *State) markToolWaiting() {
+func (state *State) markToolWaiting(level risk.Level) {
 	for index := len(state.ai.items) - 1; index >= 0; index-- {
 		if state.ai.items[index].kind == aiTool && state.ai.items[index].status == aiToolRunning {
 			state.ai.items[index].status = aiToolWaiting
+			state.ai.items[index].risk = level
 			return
 		}
 	}
@@ -914,18 +916,18 @@ func (state *State) aiSend() bool {
 	state.aiMessagesToEnd()
 
 	config := agent.Config{
-		Provider:          state.aiProvider(provider),
-		Model:             model,
-		System:            agent.DefaultSystem(state.aiSessionSummary(references...)) + state.aiNoSessionNote(references...),
-		Mode:              ai.mode,
-		UserInHistory:     retry,
-		UserImages:        images,
-		NoTools:           answerOnly,
-		Gate:              state.aiGate(gate.ModeAsk),
-		MaxSteps:          ai.settings.maxSteps,
-		StepTimeout:       15 * time.Minute, // includes the time a person takes to answer
-		RedactToolResults: ai.settings.redact,
-		ReasoningEffort:   state.aiEffectiveReasoningEffort(),
+		Provider:        state.aiProvider(provider),
+		Model:           model,
+		System:          agent.DefaultSystem(state.aiSessionSummary(references...)) + state.aiNoSessionNote(references...),
+		Mode:            ai.mode,
+		UserInHistory:   retry,
+		UserImages:      images,
+		NoTools:         answerOnly,
+		Gate:            state.aiGate(gate.ModeAsk),
+		MaxSteps:        ai.settings.maxSteps,
+		StepTimeout:     15 * time.Minute, // includes the time a person takes to answer
+		RedactText:      ai.settings.redact,
+		ReasoningEffort: state.aiEffectiveReasoningEffort(),
 	}
 	config.Gate.Target = &target
 	config.Gate.NotesEnabled = true
@@ -1095,12 +1097,29 @@ func (state *State) aiEvent(run *aiRun, event agent.Event) {
 		}
 		run.open = -1
 		item := aiItem{kind: aiTool, call: event.Call, status: aiToolRunning, targetLabel: state.aiCallTargetLabel(event.Call, run)}
-		if event.Call.Name == "terminal_exec" || event.Call.Name == "terminal_exec_many" {
+		if event.Call.Name == tools.NameTerminalExec || event.Call.Name == tools.NameTerminalExecMany {
 			var args struct {
-				Command string `json:"command"`
+				Command  string   `json:"command"`
+				Session  string   `json:"session"`
+				Sessions []string `json:"sessions"`
 			}
 			if json.Unmarshal([]byte(event.Call.Arguments), &args) == nil {
-				item.risk = risk.Classify(args.Command).Level
+				handles := args.Sessions
+				if event.Call.Name == tools.NameTerminalExec {
+					handles = []string{args.Session}
+				}
+				kind := shellkind.POSIX
+				for _, handle := range handles {
+					info, _ := run.sessionInfo(handle)
+					kind = info.Shell
+					if kind != shellkind.POSIX {
+						break
+					}
+				}
+				item.risk = risk.ClassifyForShell(args.Command, kind).Level
+				if event.Call.Name == tools.NameTerminalExecMany {
+					item.risk = max(item.risk, risk.Medium)
+				}
 			}
 		}
 		ai.items = append(ai.items, item)
@@ -1437,6 +1456,9 @@ func (state *State) aiOpenConversation(id int64) {
 			for index := len(ai.items) - 1; index >= 0; index-- {
 				if ai.items[index].kind == aiTool && ai.items[index].call.ID == message.ToolCallID {
 					ai.items[index].result = message.Text
+					if strings.HasPrefix(message.Text, "Error: ") {
+						ai.items[index].status = aiToolFailed
+					}
 					break
 				}
 			}

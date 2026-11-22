@@ -225,29 +225,8 @@ func ProbeModel(ctx context.Context, provider store.Provider, modelName string, 
 }
 
 func probeOllama(ctx context.Context, provider store.Provider, modelName string, timeout time.Duration) (time.Duration, error) {
-	start := time.Now()
 	url := ollamaAPIBase(provider.BaseURL) + "/api/show"
-	bodyBytes, _ := json.Marshal(map[string]string{"name": modelName})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if provider.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+provider.APIKey)
-	}
-
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
-	}
-	return time.Since(start), nil
+	return postProbe(ctx, url, provider.APIKey, map[string]string{"name": modelName}, timeout)
 }
 
 // ollamaAPIBase is the server root of an Ollama endpoint. The presets name it
@@ -266,7 +245,6 @@ func ollamaAPIBase(baseURL string) string {
 }
 
 func probeEmbedding(ctx context.Context, provider store.Provider, modelName string, timeout time.Duration) (time.Duration, error) {
-	start := time.Now()
 	base := strings.TrimRight(provider.BaseURL, "/")
 	if base == "" {
 		base = "https://api.openai.com/v1"
@@ -279,31 +257,10 @@ func probeEmbedding(ctx context.Context, provider store.Provider, modelName stri
 		"model": modelName,
 		"input": "ping",
 	}
-	bodyBytes, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if provider.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+provider.APIKey)
-	}
-
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
-	}
-	return time.Since(start), nil
+	return postProbe(ctx, url, provider.APIKey, payload, timeout)
 }
 
 func probeRerank(ctx context.Context, provider store.Provider, modelName string, timeout time.Duration) (time.Duration, error) {
-	start := time.Now()
 	base := strings.TrimRight(provider.BaseURL, "/")
 	if base == "" {
 		base = "https://api.siliconflow.cn/v1"
@@ -314,17 +271,28 @@ func probeRerank(ctx context.Context, provider store.Provider, modelName string,
 		"query":     "test",
 		"documents": []string{"test"},
 	}
-	bodyBytes, _ := json.Marshal(payload)
+	return postProbe(ctx, url, provider.APIKey, payload, timeout)
+}
+
+func postProbe(ctx context.Context, url, apiKey string, payload any, timeout time.Duration) (time.Duration, error) {
+	start := time.Now()
+	if err := llm.ValidateEndpoint(url); err != nil {
+		return 0, err
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return 0, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if provider.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{Timeout: timeout}
+	client := &http.Client{Timeout: timeout, CheckRedirect: llm.CheckEndpointRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err

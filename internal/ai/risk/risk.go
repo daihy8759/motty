@@ -18,7 +18,11 @@
 // is nested too deeply or is longer than 8 KiB is at least High.
 package risk
 
-import "strings"
+import (
+	"strings"
+
+	"motty/internal/shellkind"
+)
 
 // Level is the risk of a command. Levels are ordered: a higher value is riskier.
 type Level uint8
@@ -86,6 +90,19 @@ func Classify(command string) Assessment {
 	}
 	a.merge(st.analyze(src, 0))
 	return a.assessment()
+}
+
+func ClassifyForShell(command string, kind shellkind.Kind) Assessment {
+	assessment := Classify(command)
+	if kind != shellkind.POSIX && assessment.Level < Critical {
+		if assessment.Level < High {
+			assessment.Level = High
+			assessment.Reasons = nil
+		}
+		assessment.Reasons = append(assessment.Reasons, "POSIX risk rules cannot verify commands for "+kind.String())
+		assessment.Safer = ""
+	}
+	return assessment
 }
 
 // Policy decides what the assistant may do without asking.

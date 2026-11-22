@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 	"motty/internal/ai/llm"
 	"motty/internal/ai/risk"
 	"motty/internal/ai/tools"
+	"motty/internal/shellkind"
 )
 
 // turn scripts one model response.
@@ -78,7 +80,7 @@ type fakeBackend struct {
 }
 
 func (b *fakeBackend) Sessions(context.Context) ([]gate.SessionInfo, error) {
-	return []gate.SessionInfo{{ID: "1", Title: "web", Ready: true}}, nil
+	return []gate.SessionInfo{{ID: "1", Title: "web", Ready: true, Shell: shellkind.POSIX}}, nil
 }
 func (b *fakeBackend) ReadTerminal(context.Context, tools.TerminalReadArgs) (string, error) {
 	return "screen", nil
@@ -227,7 +229,7 @@ func TestToolThenAnswerShape(t *testing.T) {
 	}
 }
 
-func TestParallelCallsRunInOrder(t *testing.T) {
+func TestOnlyFirstToolCallRunsInEachTurn(t *testing.T) {
 	p := &fakeProvider{turns: []turn{
 		{events: []llm.Event{call("a", tools.NameTerminalExec, `{"command":"ls one"}`), call("b", tools.NameTerminalExec, `{"command":"ls two"}`), call("c", tools.NameTerminalExec, `{"command":"ls three"}`), done(0, 0)}},
 		{events: []llm.Event{text("ok"), done(0, 0)}},
@@ -237,11 +239,16 @@ func TestParallelCallsRunInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(b.execs, []string{"ls one", "ls two", "ls three"}) {
+	if !reflect.DeepEqual(b.execs, []string{"ls one"}) {
 		t.Fatalf("execs %v", b.execs)
 	}
 	if got[2].ToolCallID != "a" || got[3].ToolCallID != "b" || got[4].ToolCallID != "c" {
 		t.Fatalf("result order %+v", got)
+	}
+	for _, result := range p.reqs[1].Messages[3:] {
+		if !strings.Contains(result.Text, "tool call skipped") {
+			t.Fatalf("the model was not told a call was skipped: %+v", result)
+		}
 	}
 }
 
@@ -295,7 +302,7 @@ func TestUnknownTool(t *testing.T) {
 			starts++
 		}
 	}
-	if starts != 2 {
+	if starts != 1 {
 		t.Fatalf("starts %d", starts)
 	}
 }
@@ -547,7 +554,7 @@ func TestTruncateAndRedactResults(t *testing.T) {
 	}}
 	cfg := newCfg(p, &fakeBackend{out: out}, true)
 	cfg.MaxToolResultBytes = 1001
-	cfg.RedactToolResults = true
+	cfg.RedactText = true
 	got, err := Run(context.Background(), cfg, nil, "x", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -567,11 +574,35 @@ func TestTruncateAndRedactResults(t *testing.T) {
 			{events: []llm.Event{text("k"), done(0, 0)}},
 		}}
 		cfg := newCfg(p, &fakeBackend{out: "db password=hunter2"}, true)
-		cfg.RedactToolResults = redact
+		cfg.RedactText = redact
 		got, _ := Run(context.Background(), cfg, nil, "x", nil)
 		if has := strings.Contains(got[2].Text, "hunter2"); has == redact {
 			t.Fatalf("redact=%v text %q", redact, got[2].Text)
 		}
+	}
+}
+
+func TestRedactUserTextAndReplayedHistory(t *testing.T) {
+	p := &fakeProvider{turns: []turn{{events: []llm.Event{text("ok"), done(0, 0)}}}}
+	cfg := newCfg(p, &fakeBackend{}, true)
+	cfg.RedactText = true
+	args := `{"headers":{"api_key":"historical-field-value"},"command":"login --token example-value"}`
+	history := []llm.Message{
+		{Role: llm.RoleUser, Text: "token=old-user-value"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "old-call", Name: tools.NameTerminalExec, Arguments: args}}},
+		{Role: llm.RoleTool, ToolCallID: "old-call", Text: "secret=old-tool-value"},
+	}
+	got, err := Run(t.Context(), cfg, history, "api_key=new-user-value", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := p.reqs[0].Messages
+	masked := sent[1].ToolCalls[0].Arguments
+	if sent[0].Text != "token=***" || sent[2].Text != "secret=***" || got[0].Text != "api_key=***" || sent[3].Text != got[0].Text {
+		t.Fatalf("unmasked messages: %+v, saved: %+v", sent, got)
+	}
+	if !json.Valid([]byte(masked)) || strings.Contains(masked, "-value") || history[1].ToolCalls[0].Arguments != args || history[0].Text != "token=old-user-value" {
+		t.Fatalf("masked arguments = %s, history = %+v", masked, history)
 	}
 }
 

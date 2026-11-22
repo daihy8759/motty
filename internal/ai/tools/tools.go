@@ -219,7 +219,7 @@ var specs = []Spec{
 	},
 	{
 		Name:        NameSFTPList,
-		Description: "List the entries of a remote directory over SFTP, with type, size and modification time.",
+		Description: "List the entries of a remote directory over SFTP, with type and size.",
 		Schema: json.RawMessage(`{"type":"object","properties":{` +
 			`"session":{"type":"string","maxLength":256,"description":"Session id from list_sessions. Defaults to the active session."},` +
 			`"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Absolute remote directory path."}` +

@@ -25,6 +25,7 @@ import (
 	"motty/internal/ai/store"
 	"motty/internal/ai/tools"
 	"motty/internal/configstore"
+	"motty/internal/shellkind"
 	"motty/internal/vault"
 )
 
@@ -95,6 +96,7 @@ func startAgentServer(t *testing.T) *agentServer {
 func (server *agentServer) handle(raw net.Conn) {
 	defer server.group.Done()
 	config := &ssh.ServerConfig{
+		ServerVersion: "SSH-2.0-OpenSSH_9.6p1 Debian",
 		PasswordCallback: func(_ ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 			if string(password) == server.password {
 				return nil, nil
@@ -193,12 +195,14 @@ func (server *agentServer) session(channel ssh.Channel, requests <-chan *ssh.Req
 }
 
 func (server *agentServer) run(channel ssh.Channel, command string, closed <-chan struct{}) {
-	if server.commandHandler != nil && !strings.HasPrefix(command, "printf 'kernel=") {
+	if server.commandHandler != nil && !strings.HasPrefix(command, "printf 'kernel=") && command != shellkind.Probe {
 		server.commandHandler(channel, command, closed)
 		return
 	}
 	status := uint32(0)
 	switch command {
+	case shellkind.Probe:
+		io.WriteString(channel, "motty-shell:\n")
 	case "echo hello":
 		io.WriteString(channel, "hello\n")
 	case "fail":
@@ -230,7 +234,7 @@ func (server *agentServer) ran() []string {
 	defer server.mu.Unlock()
 	var asked []string
 	for _, command := range server.commands {
-		if !strings.HasPrefix(command, "printf 'kernel=") {
+		if !strings.HasPrefix(command, "printf 'kernel=") && command != shellkind.Probe {
 			asked = append(asked, command)
 		}
 	}

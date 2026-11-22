@@ -24,6 +24,7 @@ import (
 	"motty/internal/configstore"
 	"motty/internal/i18n"
 	"motty/internal/sftpclient"
+	"motty/internal/shellkind"
 	"motty/internal/sshconn"
 	"motty/internal/vault"
 )
@@ -241,6 +242,8 @@ type agentEntry struct {
 	timer  *time.Timer
 }
 
+type agentCommandConnectionKey struct{}
+
 // Close ends every connection and every background job running on one.
 func (b *agentBackend) Close() {
 	b.mu.Lock()
@@ -333,7 +336,11 @@ func (b *agentBackend) acquire(ctx context.Context, handle string) (*agentEntry,
 	}
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
-	if entry.conn == nil || entry.conn.Status().Phase != sshconn.PhaseConnected {
+	if verified, ok := ctx.Value(agentCommandConnectionKey{}).(*sshconn.Conn); ok {
+		if entry.conn != verified || verified.Status().Phase != sshconn.PhaseConnected {
+			return nil, errors.New("the verified host connection closed; retry the command")
+		}
+	} else if entry.conn == nil || entry.conn.Status().Phase != sshconn.PhaseConnected {
 		entry.drop()
 		conn, err := b.dial(ctx, host)
 		if err != nil {
@@ -423,6 +430,37 @@ func (b *agentBackend) Sessions(context.Context) ([]gate.SessionInfo, error) {
 	return sessions, nil
 }
 
+func (b *agentBackend) CommandShell(ctx context.Context, handle string) (context.Context, shellkind.Kind) {
+	host, err := b.resolve(handle)
+	if err != nil || host.InteractiveOnly {
+		return ctx, shellkind.Unknown
+	}
+	entry, err := b.acquire(ctx, host.CatalogID)
+	if err != nil {
+		return ctx, shellkind.Unknown
+	}
+	defer entry.release()
+	conn := entry.connection()
+	if conn == nil || !sshconn.SafeForAuxiliaryChannels(conn.Status().ServerVersion) {
+		return ctx, shellkind.Unknown
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	result, err := conn.Exec(probeCtx, shellkind.Probe, 4096)
+	if err != nil || result.ExitCode != 0 || len(result.Stderr) != 0 || result.Truncated {
+		return ctx, shellkind.Unknown
+	}
+	kind := shellkind.ParseProbe(string(result.Stdout))
+	return context.WithValue(ctx, agentCommandConnectionKey{}, conn), kind
+}
+
+func (entry *agentEntry) commandConnection(ctx context.Context) *sshconn.Conn {
+	if verified, ok := ctx.Value(agentCommandConnectionKey{}).(*sshconn.Conn); ok {
+		return verified
+	}
+	return entry.connection()
+}
+
 func (b *agentBackend) Hosts(context.Context) ([]gate.HostInfo, error) {
 	hosts := make([]gate.HostInfo, 0, len(b.hosts))
 	for _, host := range b.hosts {
@@ -444,9 +482,13 @@ func (b *agentBackend) Exec(ctx context.Context, args tools.TerminalExecArgs) (g
 		return gate.ExecResult{}, err
 	}
 	defer entry.release()
+	conn := entry.commandConnection(ctx)
+	if conn == nil {
+		return gate.ExecResult{}, errors.New("the connection to the host closed")
+	}
 	limited, cancel := context.WithTimeout(ctx, execTimeout(args.TimeoutSeconds))
 	defer cancel()
-	result, err := entry.conn.Exec(limited, args.Command, maxExecOutput)
+	result, err := conn.Exec(limited, args.Command, maxExecOutput)
 	output := strings.ToValidUTF8(string(result.Output), "�")
 	switch {
 	case err == nil:

@@ -21,8 +21,7 @@ type writerFunc func([]byte)
 
 func (f writerFunc) Write(p []byte) (int, error) { f(p); return len(p), nil }
 
-// jobCommands use only echo and sleep, which PowerShell aliases to its own
-// cmdlets, so one text runs in either shell and stays low risk to the policy.
+// jobCommands use echo and sleep, which also work through PowerShell aliases.
 var jobCommands = struct{ progress, waiting string }{
 	progress: "echo JOB_BEGIN; sleep 1; echo JOB_STEP:1; sleep 1; echo JOB_END",
 	waiting:  "echo WAITING; sleep 30; echo NEVER",
@@ -113,7 +112,11 @@ func (c *jobClient) call(tool string, arguments map[string]any) (map[string]any,
 }
 
 func TestHTTPMCPJobReportsProgressWhileTheCommandRuns(t *testing.T) {
-	state, _, address, token := hubFixtureWith(t, "ask", func(state *State, shell *fakeShell) { shellThatStreams(t, state, shell) })
+	mode := AgentModeCommands
+	if runtime.GOOS == "windows" {
+		mode = AgentModeAllowAll
+	}
+	state, _, address, token := hubFixtureWith(t, mode, func(state *State, shell *fakeShell) { shellThatStreams(t, state, shell) })
 	client := newJobClient(t, state, address, token)
 
 	started, failed := client.call("terminal_start", map[string]any{"command": jobCommands.progress})

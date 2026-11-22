@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"motty/internal/ai/risk"
 	"motty/internal/ai/tools"
 )
 
@@ -81,7 +80,8 @@ func (g Gate) runJob(ctx context.Context, name string, raw []byte) Result {
 		if args.Session, err = g.targetSession(args.Session); err != nil {
 			return failure(err)
 		}
-		if denied := g.ask(ctx, name, tools.Exec, args.Session, args.Command, risk.Classify(args.Command)); denied != nil {
+		ctx, assessment := g.assessCommand(ctx, args.Session, args.Command)
+		if denied := g.ask(ctx, name, tools.Exec, args.Session, args.Command, assessment); denied != nil {
 			return *denied
 		}
 		status, err := g.Backend.JobStart(ctx, args)

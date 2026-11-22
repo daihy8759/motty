@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/url"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -17,6 +16,7 @@ import (
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/text"
 	"github.com/vivaui/viva/ui"
+	"motty/internal/ai/llm"
 	"motty/internal/ai/mcp"
 	"motty/internal/ai/probe"
 	"motty/internal/ai/reasoning"
@@ -855,16 +855,6 @@ func newProviderID() string {
 	return "p" + hex.EncodeToString(b[:])
 }
 
-// validBaseURL reports whether raw is an http or https address with a host and
-// no credentials in it.
-func validBaseURL(raw string) bool {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" || parsed.User != nil {
-		return false
-	}
-	return parsed.Scheme == "http" || parsed.Scheme == "https"
-}
-
 func (state *State) aiSubmitProvider() {
 	cfg := &state.ai.cfg
 	m := state.messages.AISettings
@@ -881,11 +871,11 @@ func (state *State) aiSubmitProvider() {
 		cfg.formErr = m.ErrFormName
 		cfg.formFocus = aiFormFocusName
 		return
-	case !cliProvider && base != "" && !validBaseURL(base):
+	case !cliProvider && base != "" && llm.ValidateEndpoint(base) != nil:
 		cfg.formErr = m.ErrFormBaseURL
 		cfg.formFocus = aiFormFocusURL
 		return
-	case !cliProvider && modelsURL != "" && !validBaseURL(modelsURL):
+	case !cliProvider && modelsURL != "" && llm.ValidateEndpoint(modelsURL) != nil:
 		cfg.formErr = m.ErrFormModelsURL
 		cfg.formFocus = aiFormFocusModelsURL
 		return

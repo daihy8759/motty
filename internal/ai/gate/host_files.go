@@ -157,7 +157,8 @@ func (g Gate) runHostTool(ctx context.Context, name string, raw []byte) (Result,
 		if args.Cwd != "" {
 			summary = "cd -- " + shellQuote(args.Cwd) + " && " + args.Command
 		}
-		if denied := g.ask(ctx, name, tools.Exec, args.Session, summary, risk.Classify(summary)); denied != nil {
+		ctx, assessment := g.assessCommand(ctx, args.Session, summary)
+		if denied := g.ask(ctx, name, tools.Exec, args.Session, summary, assessment); denied != nil {
 			return *denied, true
 		}
 		result, runErr := backend.ExecCommand(ctx, args)

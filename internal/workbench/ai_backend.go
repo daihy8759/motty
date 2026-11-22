@@ -53,8 +53,11 @@ func (b *aiBackend) Sessions(ctx context.Context) ([]gate.SessionInfo, error) {
 		if b.scoped {
 			for _, binding := range b.bindings {
 				info := binding.info
-				_, err := b.session(info.ID)
+				session, err := b.session(info.ID)
 				info.Ready, info.Active = err == nil, info.ID == b.defaultID
+				if err == nil {
+					info.Shell = session.term.shellKind()
+				}
 				out = append(out, info)
 			}
 			return out, nil
@@ -110,6 +113,9 @@ func (b *aiBackend) Exec(ctx context.Context, args tools.TerminalExecArgs) (gate
 		if err != nil {
 			return nil, err
 		}
+		if err := gate.CheckCommandShell(ctx, aiSessionInfo(session).Shell); err != nil {
+			return nil, err
+		}
 		args.Session = sessionHandle(session.ID)
 		return b.state.beginExec(args)
 	})
@@ -124,6 +130,9 @@ func (b *aiBackend) JobStart(ctx context.Context, args tools.TerminalStartArgs) 
 	return aiCall(b.state, ctx, func() (gate.JobStatus, error) {
 		session, err := b.session(args.Session)
 		if err != nil {
+			return gate.JobStatus{}, err
+		}
+		if err := gate.CheckCommandShell(ctx, aiSessionInfo(session).Shell); err != nil {
 			return gate.JobStatus{}, err
 		}
 		return b.state.startJob(owner, tools.TerminalExecArgs{Session: sessionHandle(session.ID), Command: args.Command})

@@ -43,8 +43,12 @@ var (
 const maxAITargets = 1 + maxMentions
 
 func aiSessionInfo(session *Session) gate.SessionInfo {
-	return gate.SessionInfo{ID: sessionHandle(session.ID), Title: session.Title, Address: session.Address,
-		Ready: session.term != nil && session.term.shell != nil && session.term.live && !session.term.ended}
+	info := gate.SessionInfo{ID: sessionHandle(session.ID), Title: session.Title, Address: session.Address}
+	if terminal := session.term; terminal != nil {
+		info.Ready = terminal.shell != nil && terminal.live && !terminal.ended
+		info.Shell = terminal.shellKind()
+	}
+	return info
 }
 
 // Resolve identity through the current catalog, never a session alias or address.
@@ -133,30 +137,27 @@ func (state *State) aiCallTargetLabel(call llm.ToolCall, run *aiRun) string {
 		if handle == "" {
 			continue // an omitted session is the default, which the card does not repeat
 		}
-		label, ok := state.aiCallHandleLabel(handle, run)
+		info, ok := run.sessionInfo(handle)
 		if !ok {
 			// The gate refuses a connection this request never named; the card
 			// does not pretend it is one of them.
 			return ""
 		}
-		labels = append(labels, label)
+		labels = append(labels, state.aiTargetLabel(info))
 	}
 	return strings.Join(labels, "; ")
 }
 
-// aiCallHandleLabel resolves one handle of a call in flight to the connection
-// it names. The gate has limited it to the default and the references; a
-// handle outside both is not a connection this request may act on.
-func (state *State) aiCallHandleLabel(handle string, run *aiRun) (string, bool) {
-	if handle == run.target.ID {
-		return state.aiTargetLabel(run.target), true
+func (run *aiRun) sessionInfo(handle string) (gate.SessionInfo, bool) {
+	if handle == "" || handle == run.target.ID {
+		return run.target, run.target.ID != ""
 	}
 	for _, reference := range run.references {
 		if reference.ID == handle {
-			return state.aiTargetLabel(reference), true
+			return reference, true
 		}
 	}
-	return "", false
+	return gate.SessionInfo{}, false
 }
 
 // aiConversationTargetLabel names the connections a question was about: the

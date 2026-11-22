@@ -509,6 +509,7 @@ func TestBaseURLNormalisation(t *testing.T) {
 		{"https://api.openai.com", "https://api.openai.com/v1"},
 		{"https://api.openai.com/", "https://api.openai.com/v1"},
 		{"http://localhost:11434/v1///", "http://localhost:11434/v1"},
+		{"http://[::1]:11434", "http://[::1]:11434/v1"},
 		{"https://api.deepseek.com/v1/chat/completions", "https://api.deepseek.com/v1"},
 		{"https://open.bigmodel.cn/api/paas/v4/", "https://open.bigmodel.cn/api/paas/v4"},
 		{"https://x.test/openai?key=1#f", "https://x.test/openai"},
@@ -550,12 +551,15 @@ func TestBaseURLNormalisation(t *testing.T) {
 			t.Errorf("openAIModelsBase(%q) = %q, %v; want %q", c.in, got, err, c.want)
 		}
 	}
-	for _, bad := range []string{"ftp://x", "not a url", "http://", "://x"} {
+	for _, bad := range []string{"ftp://x", "not a url", "http://", "://x", "http://example.com", "http://192.168.1.10:11434", "https://user@example.com"} {
 		if _, err := openAIBase(bad); err == nil {
 			t.Errorf("openAIBase(%q) should fail", bad)
 		}
 		if _, err := NewAnthropic(Config{BaseURL: bad}).Stream(bg, simpleReq); err == nil {
 			t.Errorf("anthropic Stream with base %q should fail", bad)
+		}
+		if _, err := NewOpenAI(Config{ModelsURL: bad}).Models(bg); err == nil {
+			t.Errorf("OpenAI Models with URL %q should fail", bad)
 		}
 	}
 }

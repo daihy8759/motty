@@ -26,7 +26,7 @@ func (p *nativeTestProvider) RunSession(c context.Context, r llm.Request, call f
 func TestNativeSessionExecutesOnceRedactsAndPersistsCompletedCalls(t *testing.T) {
 	b := &fakeBackend{out: "password=secret"}
 	cfg := newCfg(&fakeProvider{}, b, true)
-	cfg.RedactToolResults = true
+	cfg.RedactText = true
 	cfg.Provider = &nativeTestProvider{run: func(ctx context.Context, r llm.Request, invoke func(context.Context, llm.ToolCall) gate.Result, emit func(llm.Event)) error {
 		c := llm.ToolCall{ID: "one", Name: tools.NameTerminalExec, Arguments: `{"command":"ls"}`}
 		res := invoke(ctx, c)

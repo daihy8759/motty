@@ -234,6 +234,16 @@ func newBase(cfg Config, endpoint string) base {
 	if c == nil {
 		c = defaultClient()
 	}
+	client := *c
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := CheckEndpointRedirect(req, via); err != nil {
+			return err
+		}
+		if c.CheckRedirect != nil {
+			return c.CheckRedirect(req, via)
+		}
+		return nil
+	}
 	m := cfg.MaxResponseBytes
 	if m <= 0 {
 		m = defaultMaxResponse
@@ -242,7 +252,7 @@ func newBase(cfg Config, endpoint string) base {
 	if idle <= 0 {
 		idle = defaultIdle
 	}
-	return base{endpoint: endpoint, key: cfg.APIKey, authStyle: cfg.AuthStyle, client: c, max: m, idle: idle}
+	return base{endpoint: endpoint, key: cfg.APIKey, authStyle: cfg.AuthStyle, client: &client, max: m, idle: idle}
 }
 
 func defaultClient() *http.Client {
@@ -328,14 +338,55 @@ func (b *base) snippet(raw []byte) string {
 	return s
 }
 
+// ValidateEndpoint accepts HTTPS endpoints and HTTP endpoints on the local loopback interface.
+func ValidateEndpoint(raw string) error {
+	_, err := parseEndpoint(raw)
+	return err
+}
+
+func parseEndpoint(raw string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, errors.New("llm: invalid endpoint URL")
+	}
+	if err := validateEndpointURL(u); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+func validateEndpointURL(u *url.URL) error {
+	host := u.Hostname()
+	if host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return errors.New("llm: invalid endpoint URL")
+	}
+	if u.Scheme == "http" && host != "localhost" && !net.ParseIP(host).IsLoopback() {
+		return errors.New("llm: remote endpoints require HTTPS")
+	}
+	return nil
+}
+
+// CheckEndpointRedirect applies the endpoint transport policy to each redirect.
+func CheckEndpointRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("llm: stopped after 10 redirects")
+	}
+	if err := validateEndpointURL(req.URL); err != nil {
+		return err
+	}
+	if len(via) > 0 && via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return errors.New("llm: HTTPS endpoint redirected to HTTP")
+	}
+	return nil
+}
+
 // normalizeBase parses and trims a user supplied base URL.
 func normalizeBase(raw string) (*url.URL, error) {
-	raw = strings.TrimSpace(raw)
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("llm: invalid base URL %q", raw)
+	u, err := parseEndpoint(raw)
+	if err != nil {
+		return nil, err
 	}
-	u.RawQuery, u.Fragment, u.User = "", "", nil
+	u.RawQuery, u.Fragment = "", ""
 	u.Path = strings.TrimRight(u.Path, "/")
 	u.RawPath = ""
 	return u, nil

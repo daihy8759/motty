@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
+
+	"motty/internal/ai/llm"
 )
 
 var (
@@ -63,6 +67,85 @@ func Redact(text string) string {
 		return out.String()
 	}
 	return text
+}
+
+func modelMessages(messages []llm.Message, redact bool) []llm.Message {
+	if !redact {
+		return messages
+	}
+	masked := slices.Clone(messages)
+	for index := range masked {
+		message := &masked[index]
+		message.Text = redactModelText(message.Text)
+		message.ToolCalls = slices.Clone(message.ToolCalls)
+		for call := range message.ToolCalls {
+			message.ToolCalls[call].Arguments = redactJSON(message.ToolCalls[call].Arguments)
+		}
+	}
+	return masked
+}
+
+func redactModelText(text string) string {
+	if isStructuredJSON(text) {
+		return redactJSON(text)
+	}
+	if end := strings.LastIndexByte(text, '\n') + 1; end > 0 && isStructuredJSON(text[end:]) {
+		return Redact(text[:end]) + redactJSON(text[end:])
+	}
+	return Redact(text)
+}
+
+func isStructuredJSON(text string) bool {
+	text = strings.TrimSpace(text)
+	return len(text) > 0 && (text[0] == '{' || text[0] == '[') && json.Valid([]byte(text))
+}
+
+func redactJSON(raw string) string {
+	if !json.Valid([]byte(raw)) {
+		return Redact(raw)
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return "{}"
+	}
+	value, changed := redactJSONValue(value)
+	if !changed {
+		return raw
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
+}
+
+func redactJSONValue(value any) (any, bool) {
+	changed := false
+	switch value := value.(type) {
+	case string:
+		masked := Redact(value)
+		return masked, masked != value
+	case []any:
+		for index, item := range value {
+			masked, edited := redactJSONValue(item)
+			value[index] = masked
+			changed = changed || edited
+		}
+	case map[string]any:
+		for key, item := range value {
+			if item != nil && reAssign.MatchString(key+"=x") {
+				value[key] = mask
+				changed = true
+				continue
+			}
+			masked, edited := redactJSONValue(item)
+			value[key] = masked
+			changed = changed || edited
+		}
+	}
+	return value, changed
 }
 
 // hasFold reports whether s contains the lower-case ASCII word sub, ignoring case.

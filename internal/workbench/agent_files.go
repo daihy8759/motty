@@ -219,13 +219,18 @@ func (b *agentBackend) ExecCommand(ctx context.Context, args tools.HostExecArgs)
 		return result, err
 	}
 	defer entry.release()
+	conn := entry.commandConnection(ctx)
+	if conn == nil {
+		result.DurationMS = time.Since(started).Milliseconds()
+		return result, errors.New("the connection to the host closed")
+	}
 	limited, cancel := context.WithTimeout(ctx, execTimeout(args.TimeoutSeconds))
 	defer cancel()
 	command := args.Command
 	if args.Cwd != "" {
 		command = agentCommandAt(args.Command, args.Cwd)
 	}
-	executed, err := entry.conn.Exec(limited, command, maxExecOutput)
+	executed, err := conn.Exec(limited, command, maxExecOutput)
 	result.Output = strings.ToValidUTF8(string(executed.Output), "�")
 	result.Stdout = strings.ToValidUTF8(string(executed.Stdout), "�")
 	result.Stderr = strings.ToValidUTF8(string(executed.Stderr), "�")

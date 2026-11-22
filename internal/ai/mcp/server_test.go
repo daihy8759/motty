@@ -19,6 +19,7 @@ import (
 	"motty/internal/ai/gate"
 	"motty/internal/ai/risk"
 	"motty/internal/ai/tools"
+	"motty/internal/shellkind"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef"
@@ -32,7 +33,7 @@ type fakeBackend struct {
 }
 
 func (b *fakeBackend) Sessions(context.Context) ([]gate.SessionInfo, error) {
-	return []gate.SessionInfo{{ID: "1", Title: "web", Address: "web:22", Active: true, Ready: true}}, nil
+	return []gate.SessionInfo{{ID: "1", Title: "web", Address: "web:22", Active: true, Ready: true, Shell: shellkind.POSIX}}, nil
 }
 func (b *fakeBackend) ReadTerminal(context.Context, tools.TerminalReadArgs) (string, error) {
 	return "screen", nil

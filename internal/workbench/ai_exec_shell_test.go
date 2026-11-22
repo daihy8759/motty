@@ -12,6 +12,8 @@ import (
 	"motty/internal/shellkind"
 )
 
+func (*fakeShell) Kind() shellkind.Kind { return shellkind.POSIX }
+
 // kindShell is a shell that says which family it is, as real shells do.
 type kindShell struct {
 	*fakeShell

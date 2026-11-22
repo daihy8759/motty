@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"motty/internal/ai/gate"
 	"motty/internal/ai/llm"
 	"motty/internal/ai/tools"
 )
+
+const nativeSessionTimeout = 30 * time.Minute
 
 // SessionProvider runs a native agent loop, but delegates every application
 // tool to Motty. Tool events in its output are diagnostics, not instructions.
@@ -19,12 +22,12 @@ type SessionProvider interface {
 }
 
 func runSession(parent context.Context, cfg Config, provider SessionProvider, msgs []llm.Message, base int, specs []llm.ToolSpec, emit func(Event)) ([]llm.Message, error) {
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithTimeoutCause(parent, nativeSessionTimeout, fmt.Errorf("agent: session timed out: %w", context.DeadlineExceeded))
 	defer cancel()
 	req := llm.Request{
 		Model:           cfg.Model,
 		System:          cfg.System,
-		Messages:        append([]llm.Message(nil), msgs...),
+		Messages:        modelMessages(msgs, cfg.RedactText),
 		Tools:           specs,
 		MaxTokens:       cfg.MaxTokens,
 		Temperature:     cfg.Temperature,
@@ -49,7 +52,9 @@ func runSession(parent context.Context, cfg Config, provider SessionProvider, ms
 	steps, refused := 0, 0
 	inflight := false
 	callback := func(callCtx context.Context, call llm.ToolCall) gate.Result {
-		toolMu.Lock()
+		if !toolMu.TryLock() {
+			return gate.Result{Text: "another tool is running. Review its result before requesting another tool.", IsError: true}
+		}
 		defer toolMu.Unlock()
 		mu.Lock()
 		deny := func(message string) gate.Result {
@@ -99,8 +104,11 @@ func runSession(parent context.Context, cfg Config, provider SessionProvider, ms
 		mu.Lock()
 		defer mu.Unlock()
 		inflight = false
-		if cfg.RedactToolResults {
-			res.Text = Redact(res.Text)
+		if cfg.RedactText {
+			res.Text = redactModelText(res.Text)
+			if len(res.Structured) > 0 {
+				res.Structured = []byte(redactJSON(string(res.Structured)))
+			}
 		}
 		res.Text = truncate(res.Text, cfg.MaxToolResultBytes)
 		// Keep complete audit pairs even when a later model event fails. A
@@ -160,6 +168,8 @@ func runSession(parent context.Context, cfg Config, provider SessionProvider, ms
 	}
 	if protocolErr != nil {
 		err = protocolErr
+	} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		err = context.Cause(ctx)
 	}
 	if err == nil && !done {
 		err = errors.New("agent: native stream ended without completion")

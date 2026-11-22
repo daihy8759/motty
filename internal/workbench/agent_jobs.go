@@ -68,7 +68,7 @@ func (b *agentBackend) startJob(ctx context.Context, args tools.TerminalStartArg
 	if err != nil {
 		return gate.JobStatus{}, err
 	}
-	connect := entry.connection()
+	connect := entry.commandConnection(ctx)
 	if connect == nil {
 		entry.release()
 		return gate.JobStatus{}, errors.New("the connection to the host closed")

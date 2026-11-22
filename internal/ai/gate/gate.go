@@ -17,6 +17,7 @@ import (
 
 	"motty/internal/ai/risk"
 	"motty/internal/ai/tools"
+	"motty/internal/shellkind"
 )
 
 // SessionInfo describes one open session for list_sessions.
@@ -28,6 +29,7 @@ type SessionInfo struct {
 	ID        string // the handle a tool call passes as "session"
 	Title     string
 	Address   string
+	Shell     shellkind.Kind
 	Active    bool
 	Ready     bool // a shell is open and can take commands
 }
@@ -40,6 +42,20 @@ type HostInfo struct {
 
 type HostLister interface {
 	Hosts(context.Context) ([]HostInfo, error)
+}
+
+type commandShellResolver interface {
+	CommandShell(context.Context, string) (context.Context, shellkind.Kind)
+}
+
+type posixCommandKey struct{}
+
+func CheckCommandShell(ctx context.Context, actual shellkind.Kind) error {
+	required, _ := ctx.Value(posixCommandKey{}).(bool)
+	if required && actual != shellkind.POSIX {
+		return errors.New("the target shell changed after risk assessment; submit the command again")
+	}
+	return nil
 }
 
 // ExecResult is what a command printed and how it ended.
@@ -316,7 +332,7 @@ func (g Gate) Run(ctx context.Context, name string, raw []byte) Result {
 		if args.Session, err = g.targetSession(args.Session); err != nil {
 			return failure(err)
 		}
-		assessment := risk.Classify(args.Command)
+		ctx, assessment := g.assessCommand(ctx, args.Session, args.Command)
 		if denied := g.ask(ctx, name, tools.Exec, args.Session, args.Command, assessment); denied != nil {
 			return *denied
 		}
@@ -447,6 +463,33 @@ func (g Gate) readySession(ctx context.Context) (string, error) {
 	return chosen, nil
 }
 
+func (g Gate) assessCommand(ctx context.Context, id, command string) (context.Context, risk.Assessment) {
+	kind := shellkind.Unknown
+	if resolver, ok := g.Backend.(commandShellResolver); ok {
+		if g.Mode != ModeAllowAll && g.Policy.Decide(risk.Classify(command)) == risk.DecisionAuto {
+			ctx, kind = resolver.CommandShell(ctx, id)
+		}
+	} else {
+		sessions, err := g.Backend.Sessions(ctx)
+		if err == nil {
+			for _, session := range sessions {
+				if session.Ready && (session.ID == id || id == "" && len(sessions) == 1) {
+					kind = session.Shell
+					break
+				}
+			}
+		}
+	}
+	return g.commandContext(ctx, kind), risk.ClassifyForShell(command, kind)
+}
+
+func (g Gate) commandContext(ctx context.Context, kind shellkind.Kind) context.Context {
+	if kind == shellkind.POSIX && g.Mode != ModeAllowAll {
+		return context.WithValue(ctx, posixCommandKey{}, true)
+	}
+	return ctx
+}
+
 // execMany runs one command on several sessions. The user is asked once, with
 // every target named, and a command is never run on a host that was not in that
 // list. A batch is always at least medium risk: even a harmless command is a
@@ -457,12 +500,16 @@ func (g Gate) execMany(ctx context.Context, name string, args tools.TerminalExec
 		return failure(err)
 	}
 	labels := make(map[string]string, len(args.Sessions))
+	kind := shellkind.POSIX
 	var problems []string
 	for _, id := range args.Sessions {
 		label, ready := "", false
 		for _, candidate := range sessions {
 			if candidate.ID == id {
 				label, ready = candidate.Title, candidate.Ready
+				if kind == shellkind.POSIX {
+					kind = candidate.Shell
+				}
 			}
 		}
 		switch {
@@ -477,7 +524,7 @@ func (g Gate) execMany(ctx context.Context, name string, args tools.TerminalExec
 		return Result{Text: "nothing was run: " + strings.Join(problems, "; "), IsError: true}
 	}
 
-	assessment := risk.Classify(args.Command)
+	assessment := risk.ClassifyForShell(args.Command, kind)
 	if assessment.Level < risk.Medium {
 		assessment.Level = risk.Medium
 	}
@@ -493,6 +540,7 @@ func (g Gate) execMany(ctx context.Context, name string, args tools.TerminalExec
 	if denied := g.ask(ctx, name, tools.Exec, args.Sessions[0], summary, assessment, args.Sessions[1:]...); denied != nil {
 		return *denied
 	}
+	ctx = g.commandContext(ctx, kind)
 	if g.Target != nil {
 		// Approval can remain open while a tab closes or reconnects. A scoped
 		// backend reports readiness for the bound lifetimes, not replacement

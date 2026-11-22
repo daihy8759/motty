@@ -10,6 +10,7 @@ import (
 
 	"motty/internal/ai/risk"
 	"motty/internal/ai/tools"
+	"motty/internal/shellkind"
 )
 
 type fakeBackend struct {
@@ -45,7 +46,7 @@ func TestListHostsRequiresAnAuthorizedListerAndClosedArguments(t *testing.T) {
 }
 
 func (b *fakeBackend) Sessions(context.Context) ([]SessionInfo, error) {
-	return []SessionInfo{{ID: "1", Title: "web", Address: "web:22", Active: true, Ready: true}}, nil
+	return []SessionInfo{{ID: "1", Title: "web", Address: "web:22", Active: true, Ready: true, Shell: shellkind.POSIX}}, nil
 }
 func (b *fakeBackend) ReadTerminal(context.Context, tools.TerminalReadArgs) (string, error) {
 	return "screen", nil
@@ -270,9 +271,32 @@ type fleetBackend struct {
 
 func (b *fleetBackend) Sessions(context.Context) ([]SessionInfo, error) {
 	return []SessionInfo{
-		{ID: "w1:1", Title: "web", Ready: true}, {ID: "w1:2", Title: "db", Ready: true},
-		{ID: "w1:3", Title: "idle", Ready: false}, {ID: "w1:4", Title: "broken", Ready: true},
+		{ID: "w1:1", Title: "web", Ready: true, Shell: shellkind.POSIX}, {ID: "w1:2", Title: "db", Ready: true, Shell: shellkind.POSIX},
+		{ID: "w1:3", Title: "idle", Ready: false}, {ID: "w1:4", Title: "broken", Ready: true, Shell: shellkind.POSIX},
 	}, nil
+}
+
+type mixedShellBackend struct{ fleetBackend }
+
+func (b *mixedShellBackend) Sessions(ctx context.Context) ([]SessionInfo, error) {
+	sessions, err := b.fleetBackend.Sessions(ctx)
+	sessions[1].Shell = shellkind.PowerShell
+	return sessions, err
+}
+
+func TestPowerShellCommandsNeedApprovalInMediumScope(t *testing.T) {
+	ctx := WithOutputOwner(t.Context(), "owner")
+	backend := &mixedShellBackend{}
+	g := Gate{Backend: backend, Mode: ModeAuto, Policy: risk.Policy{Enabled: true}}
+	for name, args := range map[string]string{
+		tools.NameTerminalExec:     `{"session":"w1:2","command":"ls"}`,
+		tools.NameTerminalStart:    `{"session":"w1:2","command":"ls"}`,
+		tools.NameTerminalExecMany: `{"sessions":["w1:1","w1:2"],"command":"ls"}`,
+	} {
+		if result := g.Run(ctx, name, []byte(args)); !result.Denied {
+			t.Errorf("%s bypassed approval: %+v", name, result)
+		}
+	}
 }
 
 func (b *fleetBackend) Exec(_ context.Context, a tools.TerminalExecArgs) (ExecResult, error) {
