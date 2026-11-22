@@ -370,7 +370,7 @@ var TraditionalMessages = Messages{
 	SettingsStartupDisabled:                "已停用",
 	SettingsStartupDescription:             "開啟軟體時自動開啟的終端機和主機；需要密碼或確認主機金鑰的會照常詢問。",
 	SettingsStartupReuse:                   "已開啟時不再新增",
-	SettingsStartupReuseDescription:        "啟動要開啟的終端機或主機已經開啟時，切換到它而不是再開一個。",
+	SettingsStartupReuseDescription:        "連線主機或在啟動時開啟工作階段時，切換到目前視窗中已有的工作階段。新增分頁、複製和分割畫面仍會開啟獨立工作階段。",
 	SettingsStartupNone:                    "不開啟",
 	SettingsStartupJoiner:                  "、",
 	SettingsStartupHostsCount:              "%d 台主機",
@@ -1865,9 +1865,9 @@ var traditionalTools = ToolsMessages{
 
 	// 底部快速指令。
 	CommandsAdd:         "新增命令",
-	CommandsClose:       "隱藏底部快速指令（可在快速指令面板重新勾選顯示）",
-	CommandsBarHidden:   "底部快速指令已隱藏",
-	CommandsBarShow:     "顯示底部快速指令",
+	CommandsClose:       "隱藏快速指令側欄（可在快速指令面板重新顯示）",
+	CommandsBarHidden:   "快速指令側欄已隱藏",
+	CommandsBarShow:     "顯示快速指令側欄",
 	CommandsFilter:      "按分組篩選",
 	CommandsUngrouped:   "未分組",
 	CommandsShowAll:     "全選",
@@ -2385,6 +2385,10 @@ var traditionalTools = ToolsMessages{
 	ActionSSHFmt:                    "SSH 連線 %s",
 	ActionBrowserFmt:                "在瀏覽器中開啟 %s",
 	ActionFilesFmt:                  "在檔案面板中顯示 %s",
+	ActionRevealFmt:                 "開啟 %s 的所在位置",
+	ActionReveal:                    "開啟所在位置",
+	ActionRevealFailed:              "無法啟動檔案管理器，請稍後重試。",
+	ActionRevealMissing:             "檔案或資料夾已移動或刪除，無法開啟所在位置。",
 	ActionExtractFmt:                "解壓縮 %s",
 	ActionCopyFmt:                   "複製 %s",
 	DiagnosticsRow:                  "診斷報告",
@@ -2477,7 +2481,7 @@ var traditionalTools = ToolsMessages{
 	SyncScopeHosts:                  "主機與群組",
 	SyncScopeHostsDescription:       "主機和群組，以及保存在其下的密碼、驗證碼和代理密碼。",
 	SyncScopeSettings:               "設定",
-	SyncScopeSettingsDescription:    "終端、介面與檔案面板設定，以及全域出站代理。",
+	SyncScopeSettingsDescription:    "終端、工具列與檔案面板設定，以及全域出站代理。",
 	SyncScopeNotes:                  "筆記",
 	SyncScopeNotesDescription:       "筆記庫及其資料夾；連結到檔案的筆記只保存在本機。",
 	SyncScopeSnippets:               "快速指令",
@@ -3232,7 +3236,7 @@ var traditionalMonitor = MonitorMessages{
 	GPU: "GPU", GPUMetricsUnavailable: "未取得到顯示卡指標",
 	Collapse:      "收起",
 	AddressCopied: "位址已複製", AddressCopyFailed: "複製位址失敗", AddressCopy: "複製位址",
-	Logins: "目前登入使用者", LoginsHint: "目前透過終端機或遠端連線登入主機的使用者", NoLogins: "目前沒有終端機登入工作階段", LoginsUnavailable: "無法讀取登入工作階段", LoginsTruncated: "僅顯示前 32 個工作階段",
+	Logins: "目前登入使用者", LoginsHint: "目前透過終端機或遠端連線登入主機的使用者", NoLogins: "目前沒有終端機登入工作階段", LoginsUnavailable: "無法讀取登入工作階段", LoginsTruncated: "僅顯示前 32 個工作階段", CurrentSSHLogin: "目前 SSH 連線",
 }
 
 var traditionalRemoteLogs = RemoteLogMessages{
