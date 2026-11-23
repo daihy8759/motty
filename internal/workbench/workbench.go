@@ -125,6 +125,7 @@ var (
 	hitClipboardAllow          = tree.ID(shellHits, "clipboard-allow")
 	hitClipboardAlways         = tree.ID(shellHits, "clipboard-always")
 	hitShortcutReset           = tree.ID(shellHits, "shortcut-reset")
+	hitShortcutClearAll        = tree.ID(shellHits, "shortcut-clear-all")
 	hitShortcutCaptureDismiss  = tree.ID(shellHits, "shortcut-capture-dismiss")
 	hitShortcutCaptureClose    = tree.ID(shellHits, "shortcut-capture-close")
 	hitShortcutCaptureCancel   = tree.ID(shellHits, "shortcut-capture-cancel")
@@ -2127,6 +2128,9 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		// no such page, so this is never its click.
 	case id == hitSettings || id == hitWindowSettings:
 		state.openSettings()
+	case id == hitShortcutClearAll:
+		state.shortcuts.unbindAll()
+		state.save()
 	case id == hitShortcutReset:
 		state.shortcuts = defaultShortcuts()
 		state.dropSnippetChordsTaken()
@@ -2498,6 +2502,12 @@ func (state *State) openHostDialog() {
 	state.hostDialogID = 0
 	state.dialogError = ""
 	state.modal = modalNewHost
+}
+
+// clearSearch clears the hosts page's search query and restores the visible host list.
+func (state *State) clearSearch() {
+	state.search = text.Editor{}
+	state.syncVisible()
 }
 
 // syncVisible rebuilds the list of hosts the search box lets through when the
@@ -3638,8 +3648,7 @@ func (state *State) hostsKey(event gfx.KeyEvent) (gfx.EventResult, bool) {
 	switch event.Key {
 	case gfx.KeyEscape:
 		if event.Target == hitSearch && state.search.RuneCount() > 0 {
-			state.search = text.Editor{}
-			state.syncVisible()
+			state.clearSearch()
 			return handled, true
 		}
 	case gfx.KeyEnter:

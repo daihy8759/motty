@@ -130,6 +130,7 @@ type Messages struct {
 	NavDebug                  string
 	NavSearch                 string
 	SearchPlaceholder         string
+	SearchClear               string
 	CommandPaletteTitle       string
 	CommandPalettePlaceholder string
 	CommandPaletteEmpty       string
@@ -455,6 +456,7 @@ type Messages struct {
 	SettingsTerminalClipboardAllow       string
 	SettingsShortcuts                    string
 	ShortcutsReset                       string
+	ShortcutsClearAll                    string
 	ShortcutsDelete                      string
 	ShortcutsCaptureTitle                string
 	ShortcutsCaptureDescription          string

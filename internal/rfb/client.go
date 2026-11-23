@@ -66,7 +66,7 @@ const (
 
 // DefaultEncodings is the preference order sent to the server: the most
 // compact first, Raw last as what every server must support.
-var DefaultEncodings = []int32{EncodingZRLE, EncodingHextile, EncodingRRE, EncodingCopyRect, EncodingRaw, encodingDesktopSize}
+var DefaultEncodings = []int32{EncodingZRLE, EncodingHextile, EncodingRRE, EncodingCopyRect, EncodingRaw, encodingDesktopSize, encodingExtendedClipboard}
 
 // PreferEncoding is DefaultEncodings with encoding moved to the front, which is
 // how a client tells the server which one to use when it supports several. The
@@ -188,6 +188,17 @@ type Client struct {
 	// so that the picture is redrawn in the new format.
 	pending *qualityChange
 	refresh bool
+
+	// extClipboard is set when the server has agreed to the extended clipboard,
+	// and clip is the text SendClipboard last sent, in the form the server asks
+	// for (nil before any).
+	extClipboard bool
+	clip         []byte
+	// clipSettled is set once it is known whether the server speaks the extended
+	// clipboard; until then SendClipboard holds the text in clipPending.
+	clipSettled bool
+	clipPending string
+	clipWaiting bool
 
 	// decoder state
 	rowBuf  []byte
@@ -587,10 +598,27 @@ func (client *Client) SendKey(keysym uint32, down bool) error {
 	return client.write(message[:])
 }
 
-// SendClipboard gives the server text for its clipboard. The protocol carries
-// Latin-1 only: other characters are sent as '?'. Text beyond MaxClipboard bytes
-// is cut.
+// SendClipboard gives the server text for its clipboard. A server that speaks
+// the extended clipboard gets UTF-8, handed over when it asks for it; any other
+// gets Latin-1, the only text RFC 6143 carries, with the characters it cannot
+// hold sent as '?'. Text beyond MaxClipboard bytes is cut.
+//
+// Which of the two the server speaks is known once the connection has started:
+// a server that offers the extended clipboard does so before its first update.
+// Text given earlier is held, only the latest of it, and sent then; sending it
+// at once would give a server that speaks UTF-8 a text already cut to Latin-1.
 func (client *Client) SendClipboard(text string) error {
+	client.mu.Lock()
+	if !client.clipSettled {
+		client.clipPending, client.clipWaiting = text, true
+		client.mu.Unlock()
+		return nil
+	}
+	extended := client.extClipboard
+	client.mu.Unlock()
+	if extended {
+		return client.sendExtendedClipboard(text)
+	}
 	data := make([]byte, 0, min(len(text), MaxClipboard))
 	for _, r := range text {
 		if len(data) >= MaxClipboard {
@@ -656,6 +684,10 @@ func (client *Client) cutText(sink Sink) error {
 		return err
 	}
 	length := binary.BigEndian.Uint32(header[3:])
+	if int32(length) < 0 {
+		// A negative length marks an extended clipboard message of -length bytes.
+		return client.extendedCutText(sink, -length)
+	}
 	if length > maxCutText {
 		return fmt.Errorf("%w: a %d byte clipboard", ErrProtocol, length)
 	}
@@ -680,6 +712,9 @@ func (client *Client) cutText(sink Sink) error {
 // update reads one FramebufferUpdate and then, if anyone is looking, asks for the
 // next.
 func (client *Client) update(sink Sink) error {
+	if err := client.settleClipboard(); err != nil {
+		return err
+	}
 	var header [3]byte
 	if _, err := io.ReadFull(client.r, header[:]); err != nil {
 		return err

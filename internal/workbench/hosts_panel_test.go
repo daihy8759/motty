@@ -118,3 +118,75 @@ func TestHostsPanelStateIsSaved(t *testing.T) {
 		t.Fatalf("saved %v at %v, want open at 300", saved.HostsPanelOpen, saved.HostsPanelWidth)
 	}
 }
+
+// The panel offers expand-all and collapse-all beside its search box. Each acts
+// on every group through the state the hosts page shares, and offers itself only
+// while it would change something: a search holds the groups open on its own.
+func TestHostsPanelExpandsAndCollapsesEveryGroup(t *testing.T) {
+	state := hostsPanelFixture(t)
+	offered := func(id gfx.ID) (found, disabled bool) {
+		canvas, _ := paintedTexts(state)
+		hit, found := hitByID(canvas, id)
+		return found, hit.Disabled
+	}
+	state.setHostGroupsExpanded(true)
+	if found, disabled := offered(hitHostsPanelExpand); !found || !disabled {
+		t.Errorf("with every group open expand all: found=%v disabled=%v, want found and disabled", found, disabled)
+	}
+	if found, disabled := offered(hitHostsPanelCollapse); !found || disabled {
+		t.Errorf("with every group open collapse all: found=%v disabled=%v, want enabled", found, disabled)
+	}
+	open := len(state.hostsPanel.rows)
+	state.setHostGroupsExpanded(false)
+	state.Paint(&gfx.Canvas{}, panelWide)
+	if len(state.hostsPanel.rows) >= open {
+		t.Errorf("collapsing left %d rows, was %d", len(state.hostsPanel.rows), open)
+	}
+	if found, disabled := offered(hitHostsPanelExpand); !found || disabled {
+		t.Errorf("with every group closed expand all: found=%v disabled=%v, want enabled", found, disabled)
+	}
+	if _, disabled := offered(hitHostsPanelCollapse); !disabled {
+		t.Error("with every group closed collapse all is still offered")
+	}
+	state.setHostGroupsExpanded(true)
+	state.hostsPanel.search.SetText("alp")
+	state.hostsPanel.stale = true
+	if _, disabled := offered(hitHostsPanelCollapse); !disabled {
+		t.Error("collapse all is offered while a search holds the groups open")
+	}
+}
+
+// The panel's search box offers a clear button when text is present.
+func TestHostsPanelSearchClearButton(t *testing.T) {
+	state := hostsPanelFixture(t)
+	clear := func() (gfx.Hit, bool) {
+		canvas, _ := paintedTexts(state)
+		return hitByLabelAny(canvas, state.messages.SearchClear)
+	}
+	if _, ok := clear(); ok {
+		t.Fatal("clear button visible on empty search")
+	}
+
+	state.hostsPanel.search.SetText("gam")
+	state.hostsPanel.stale = true
+	state.Paint(&gfx.Canvas{}, panelWide)
+	button, ok := clear()
+	if !ok {
+		t.Fatal("clear button missing when search has text")
+	}
+
+	clickInEventPass(t, state, panelWide, button.ID)
+	if state.hostsPanel.search.Text() != "" {
+		t.Fatalf("clear button left text: %q", state.hostsPanel.search.Text())
+	}
+	if _, ok := hostsPanelRowOf(state, "alpha"); !ok {
+		t.Error("clearing panel search did not restore alpha")
+	}
+	if _, ok := hostsPanelRowOf(state, "gamma"); !ok {
+		t.Error("clearing panel search did not keep gamma")
+	}
+
+	if _, ok := clear(); ok {
+		t.Fatal("clear button still present after clearing")
+	}
+}
