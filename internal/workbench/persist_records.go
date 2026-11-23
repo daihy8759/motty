@@ -170,7 +170,7 @@ type recordPayload struct {
 // record format can carry makes the envelope an upper bound rather than a guess.
 func snippetRecordFits(entry snippet, order int) bool {
 	data, err := json.Marshal(savedSnippet{
-		Name: entry.Name, Command: entry.Command, Run: entry.Run, Group: entry.Group, Order: order,
+		Name: entry.Name, Command: entry.Command, Run: entry.Run, Lines: entry.Lines, Group: entry.Group, Order: order,
 	})
 	if err != nil {
 		return false
@@ -309,7 +309,7 @@ var stateVersionFields = map[string]bool{"version": true, "host_catalog_version"
 var windowStateFields = map[string]bool{
 	"sessions": true, "active_session": true, "deck": true, "note_sidebars": true,
 	"workspace": true, "workspace_layouts": true,
-	"window_x": true, "window_y": true, "window_width": true, "window_height": true,
+	"window_x": true, "window_y": true, "window_width": true, "window_height": true, "window_maximized": true,
 }
 
 // windowKey names the local value holding one window's own state. A development

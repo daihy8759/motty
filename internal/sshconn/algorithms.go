@@ -156,36 +156,40 @@ func negotiatedFrom(metadata ssh.ConnMetadata) (Negotiated, bool) {
 
 // hostKeyAlgorithms picks what to offer for the host key. known are the
 // signature algorithms of keys already on file for the host (nil for a new one),
-// wanted the caller's explicit host-key list (nil to keep the defaults). A known
-// key narrows the offer to it, so a server with several key types is checked
-// against the one the user trusted. For an RSA key that list keeps ssh-rsa as
-// its last entry, so an old server that can only sign with SHA-1 stays reachable;
-// a caller's list that leaves ssh-rsa out still forbids it. A caller's list that
-// shares nothing with the trusted key is an error rather than a silent fallback,
-// because returning the trusted key would ignore the restriction while returning
-// nil would hand the choice back to the library defaults.
+// wanted the caller's explicit host-key list (nil for the library's defaults).
+// With defaults, known keys go first and the remaining algorithms stay offered,
+// so a server that no longer has its saved key type can prompt about a new key.
+// An explicit list remains restricted to its intersection with the saved key;
+// a list with no overlap is an error instead of silently widening the request.
 func hostKeyAlgorithms(known, wanted []string) ([]string, error) {
-	if len(wanted) == 0 {
-		return known, nil
-	}
 	if len(known) == 0 {
 		return wanted, nil
 	}
-	var offer []string
-	for _, name := range wanted {
-		if slices.Contains(known, name) {
+	if len(wanted) != 0 {
+		var offer []string
+		for _, name := range wanted {
+			if slices.Contains(known, name) {
+				offer = append(offer, name)
+			}
+		}
+		if len(offer) == 0 {
+			return nil, &HostKeyAlgorithmError{Wanted: append([]string(nil), wanted...), Trusted: append([]string(nil), known...)}
+		}
+		return offer, nil
+	}
+	offer := slices.Clone(known)
+	for _, name := range defaultHostKeys() {
+		if !slices.Contains(offer, name) {
 			offer = append(offer, name)
 		}
 	}
-	// The wanted list names ssh-rsa and the trusted key can also sign with
-	// SHA-2: an old server that can only sign with SHA-1 stays reachable by
-	// keeping ssh-rsa as the last resort.
-	if slices.Contains(wanted, ssh.KeyAlgoRSA) && !slices.Contains(offer, ssh.KeyAlgoRSA) &&
-		(slices.Contains(known, ssh.KeyAlgoRSASHA256) || slices.Contains(known, ssh.KeyAlgoRSASHA512)) {
-		offer = append(offer, ssh.KeyAlgoRSA)
-	}
-	if len(offer) == 0 {
-		return nil, &HostKeyAlgorithmError{Wanted: append([]string(nil), wanted...), Trusted: append([]string(nil), known...)}
-	}
 	return offer, nil
+}
+
+// defaultHostKeys is the set the library offers when no list is given: its
+// supported host-key algorithms and the weak ones it still keeps (ssh-rsa), the
+// same set CompatibleAlgorithms ends with. The library does not export the
+// default list itself.
+func defaultHostKeys() []string {
+	return slices.Concat(ssh.SupportedAlgorithms().HostKeys, ssh.InsecureAlgorithms().HostKeys)
 }

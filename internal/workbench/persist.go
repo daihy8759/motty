@@ -118,6 +118,7 @@ type savedState struct {
 	WindowY                 int                 `json:"window_y,omitempty"`
 	WindowWidth             int                 `json:"window_width,omitempty"`
 	WindowHeight            int                 `json:"window_height,omitempty"`
+	WindowMaximized         bool                `json:"window_maximized,omitempty"`
 	TerminalScheme          string              `json:"terminal_scheme,omitempty"` // read only: before the scheme was kept per look
 	TerminalSchemeDark      string              `json:"terminal_scheme_dark,omitempty"`
 	TerminalSchemeLight     string              `json:"terminal_scheme_light,omitempty"`
@@ -239,7 +240,9 @@ type savedState struct {
 	// also what settings written before the sidebar mean.
 	CommandsSide         bool     `json:"commands_side,omitempty"`
 	CommandsHiddenGroups []string `json:"commands_hidden_groups,omitempty"`
-	CommandsSort         string   `json:"commands_sort,omitempty"`
+	// CommandsCollapsedGroups are the groups folded to their heading in the bar.
+	CommandsCollapsedGroups []string `json:"commands_collapsed_groups,omitempty"`
+	CommandsSort            string   `json:"commands_sort,omitempty"`
 	// CommandsWidth is the width the sidebar was dragged to; zero is the default.
 	CommandsWidth float32 `json:"commands_width,omitempty"`
 }
@@ -265,6 +268,7 @@ type savedSnippet struct {
 	Name    string `json:"name"`
 	Command string `json:"command"`
 	Run     bool   `json:"run,omitempty"`
+	Lines   bool   `json:"lines,omitempty"`
 	Group   string `json:"group,omitempty"`
 	Order   int    `json:"order,omitempty"`
 }
@@ -672,6 +676,7 @@ func (state *State) snapshot() savedState {
 		saved.WindowWidth = int(math.Round(float64(frame.Width)))
 		saved.WindowHeight = int(math.Round(float64(frame.Height)))
 	}
+	saved.WindowMaximized = state.savedWindowMaximized()
 	if state.highlighting.builtinOff {
 		saved.HighlightBuiltin = "off"
 	}
@@ -688,7 +693,7 @@ func (state *State) snapshot() savedState {
 	saved.Notes = append([]savedNote(nil), state.notes.list...)
 	saved.NoteFolders = append([]savedNoteFolder(nil), state.notes.folders...)
 	for index, entry := range state.snippets.list {
-		saved.Snippets = append(saved.Snippets, savedSnippet{Name: entry.Name, Command: entry.Command, Run: entry.Run, Group: entry.Group, Order: index})
+		saved.Snippets = append(saved.Snippets, savedSnippet{Name: entry.Name, Command: entry.Command, Run: entry.Run, Lines: entry.Lines, Group: entry.Group, Order: index})
 		if entry.Shortcut.Valid() {
 			saved.SnippetShortcuts = append(saved.SnippetShortcuts, savedSnippetKey{
 				Name: entry.Name, Key: string([]byte{entry.Shortcut.Char}), Modifiers: uint8(entry.Shortcut.Modifiers),
@@ -702,6 +707,14 @@ func (state *State) snapshot() savedState {
 	for key := range state.commands.hiddenGroups {
 		saved.CommandsHiddenGroups = append(saved.CommandsHiddenGroups, key)
 	}
+	for key, collapsed := range state.commands.collapsedGroups {
+		if collapsed {
+			saved.CommandsCollapsedGroups = append(saved.CommandsCollapsedGroups, key)
+		}
+	}
+	// The map's order is random; a stable list keeps the saved file from
+	// changing when nothing did.
+	slices.Sort(saved.CommandsCollapsedGroups)
 	if state.proxy.kind != sshconn.ProxyNone || state.proxy.bypass != "" {
 		saved.OutboundProxy = &savedOutboundProxy{
 			Kind: proxyKindString(state.proxy.kind), Address: state.proxy.address, User: state.proxy.user, Bypass: state.proxy.bypass,
@@ -1197,6 +1210,7 @@ func (state *State) restoreLocal(saved savedState) {
 			Width: float32(saved.WindowWidth), Height: float32(saved.WindowHeight),
 		})
 	}
+	state.restoreWindowMaximized(saved.WindowMaximized)
 }
 
 // restoreShared applies what every computer of the user shares: the terminal and

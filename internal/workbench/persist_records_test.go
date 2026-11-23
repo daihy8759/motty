@@ -65,14 +65,14 @@ func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 		// Whether the command bar shows, where it docks, which groups it filters
 		// and how it orders them are this computer's own layout, not a
 		// preference to sync.
-		"commands_shown": true, "commands_side": true, "commands_sort": true, "commands_hidden_groups": true, "commands_width": true,
+		"commands_shown": true, "commands_side": true, "commands_sort": true, "commands_hidden_groups": true, "commands_collapsed_groups": true, "commands_width": true,
 		// The shells a computer hides from its pickers name this machine's own
 		// programs and distributions; another device hides its own.
 		"hidden_shells": true,
 		// What a launch opens is chosen per computer: the shells and hosts of
 		// this machine, not a preference to carry across devices.
 		"startup_disabled": true, "startup_local": true, "startup_shell": true, "startup_hosts": true, "startup_no_reuse": true,
-		"window_x": true, "window_y": true, "window_width": true, "window_height": true,
+		"window_x": true, "window_y": true, "window_width": true, "window_height": true, "window_maximized": true,
 		// The session journal switch belongs to this computer: another device
 		// keeps its own choice, and an older build must not silently drop it.
 		"session_logs_off": true, "session_logs_view": true,

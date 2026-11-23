@@ -74,18 +74,36 @@ func TestAlgorithmsForKeepsSSHRSAAsTheLastResortForRSAKeys(t *testing.T) {
 	}
 }
 
-func TestHostKeyAlgorithmsKeepTheKnownKeyInCharge(t *testing.T) {
-	known := []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
+func TestHostKeyAlgorithmsPreferKnownKeysAndKeepDefaultAlternatives(t *testing.T) {
+	known := algorithmsFor(ssh.KeyAlgoRSA)
 	if got, err := hostKeyAlgorithms(nil, nil); got != nil || err != nil {
 		t.Fatalf("new host, defaults: %v, %v", got, err)
-	}
-	if got, err := hostKeyAlgorithms(known, nil); err != nil || !slices.Equal(got, known) {
-		t.Fatalf("known host, defaults: %v, %v", got, err)
 	}
 	wanted := []string{ssh.KeyAlgoED25519, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
 	if got, err := hostKeyAlgorithms(nil, wanted); err != nil || !slices.Equal(got, wanted) {
 		t.Fatalf("new host, wanted: %v, %v", got, err)
 	}
+	defaults, err := hostKeyAlgorithms(known, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaults) < len(known) || !slices.Equal(defaults[:len(known)], known) {
+		t.Fatalf("known algorithms should be preferred: %v", defaults)
+	}
+	for _, algorithm := range defaultHostKeys() {
+		if !slices.Contains(defaults, algorithm) {
+			t.Fatalf("default algorithm %q was dropped: %v", algorithm, defaults)
+		}
+	}
+	if !slices.Contains(defaults, ssh.KeyAlgoED25519) {
+		t.Fatalf("a server without the saved key type is unreachable: %v", defaults)
+	}
+	for index, algorithm := range defaults {
+		if slices.Contains(defaults[:index], algorithm) {
+			t.Fatalf("%q is offered twice: %v", algorithm, defaults)
+		}
+	}
+
 	// The trusted RSA key is checked, and an old server that signs with SHA-1 is
 	// still allowed because ssh-rsa was asked for.
 	if got, err := hostKeyAlgorithms(known, wanted); err != nil || !slices.Equal(got, []string{ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}) {
@@ -104,10 +122,14 @@ func TestHostKeyAlgorithmsKeepTheKnownKeyInCharge(t *testing.T) {
 // set -- must not fall back to it.
 func TestHostKeyAlgorithmsKeepSSHRSAReachableForAKnownRSAKey(t *testing.T) {
 	known := algorithmsFor(ssh.KeyAlgoRSA)
-	if got, err := hostKeyAlgorithms(known, nil); err != nil || !slices.Equal(got, known) {
-		t.Fatalf("default offer for a known RSA key = %v, %v, want %v", got, err, known)
+	got, err := hostKeyAlgorithms(known, nil)
+	if err != nil || len(got) < len(known) || !slices.Equal(got[:len(known)], known) {
+		t.Fatalf("default offer for a known RSA key = %v, %v, want prefix %v", got, err, known)
 	}
-	if got, err := hostKeyAlgorithms(known, []string{ssh.KeyAlgoRSASHA256}); err != nil || slices.Contains(got, ssh.KeyAlgoRSA) {
+	if !slices.Contains(got, ssh.KeyAlgoRSA) {
+		t.Fatalf("default offer leaves out ssh-rsa: %v", got)
+	}
+	if got, err := hostKeyAlgorithms(known, []string{ssh.KeyAlgoRSASHA256}); err != nil || !slices.Equal(got, []string{ssh.KeyAlgoRSASHA256}) {
 		t.Fatalf("a custom list without ssh-rsa offered it: %v, %v", got, err)
 	}
 	if got, err := hostKeyAlgorithms(known, []string{ssh.KeyAlgoED25519}); !errors.As(err, new(*HostKeyAlgorithmError)) || got != nil {
