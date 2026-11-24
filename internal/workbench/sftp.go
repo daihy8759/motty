@@ -268,6 +268,7 @@ type sftpView struct {
 	moveAfterRename       bool
 	transfers             []sftpclient.TransferSnapshot
 	refreshAfterTransfers bool
+	transferTargetDirs    []string
 	// remoteCopies names the source of each server-to-server copy this view
 	// owns, so the transfer center can describe both ends.
 	remoteCopies map[uint64]remoteCopyOrigin
@@ -1294,6 +1295,7 @@ func (state *State) updateSFTPRows(view *sftpView, entries []sftpclient.Entry) {
 		}
 	}
 	view.allRows = prepareSFTPRows(view.allRows, entries)
+	state.loadTypeIcons(view, view.allRows)
 	if view.detached != nil {
 		view.detached.observeDirectoryTreeListing(false, view.path, entries)
 	}
@@ -1638,6 +1640,59 @@ func (state *State) queueSFTPUploadTo(view *sftpView, localPath string, recursiv
 func (state *State) refreshSFTPTransfers(view *sftpView) {
 	view.transfers = view.worker.Transfers(view.transfers)
 	state.syncTransfers(view)
+}
+
+func (view *sftpView) recordTransferTargetDir(dir string) {
+	clean := path.Clean(dir)
+	if clean == "" || clean == "." {
+		return
+	}
+	if !slices.Contains(view.transferTargetDirs, clean) {
+		view.transferTargetDirs = append(view.transferTargetDirs, clean)
+	}
+}
+
+func (state *State) refreshSFTPViewsAfterTransfers(view *sftpView) {
+	view.refreshAfterTransfers = false
+	targetDirs := view.transferTargetDirs
+	view.transferTargetDirs = nil
+
+	session, _ := state.sftpSession(view)
+	var views []*sftpView
+	if session != nil {
+		if mainSession, ok := state.sessionByIDPointer(session.ID); ok && mainSession.files != nil {
+			views = append(views, mainSession.files)
+		}
+		if w := state.sftpWindows[session.ID]; w != nil && !w.closed && w.view != nil {
+			if !slices.Contains(views, w.view) {
+				views = append(views, w.view)
+			}
+		}
+	}
+	if !slices.Contains(views, view) {
+		views = append(views, view)
+	}
+
+	for _, v := range views {
+		v.forgetListings()
+		if v.worker != nil {
+			if !v.busy && v.path != "" {
+				state.listSFTP(v, v.path)
+			} else if v.busy {
+				v.refreshAfterListing = v.path
+			}
+			for _, dir := range targetDirs {
+				if dir != v.path && dir != "" {
+					state.refreshSFTPDirectory(v, dir)
+				}
+			}
+		}
+		if v.detached != nil {
+			v.detached.invalidateDirectoryTree(false)
+			v.detached.loadExpandedDirectoryTree(false)
+			v.detached.invalidate()
+		}
+	}
 }
 
 // remoteCopyOrigin is where one server-to-server copy reads from. source is
@@ -2662,10 +2717,16 @@ func (state *State) pumpSFTP(session *Session) {
 					view.refreshAfterTransfers = true
 					view.refreshStatus = fmt.Sprintf(state.messages.SFTPUploadedFmt, formatBytes(result.Bytes), result.Path)
 					view.status = view.refreshStatus
+					if result.Path != "" {
+						view.recordTransferTargetDir(path.Dir(result.Path))
+					}
 				} else if result.Operation == sftpclient.OperationRemoteCopy {
 					view.refreshAfterTransfers = true
 					view.refreshStatus = fmt.Sprintf(state.messages.SFTPCopiedFmt, formatBytes(result.Bytes), result.Path)
 					view.status = view.refreshStatus
+					if result.Path != "" {
+						view.recordTransferTargetDir(path.Dir(result.Path))
+					}
 				} else {
 					view.status = fmt.Sprintf(state.messages.SFTPDownloadedFmt, formatBytes(result.Bytes), result.LocalPath)
 				}
@@ -2717,7 +2778,9 @@ func (state *State) pumpSFTP(session *Session) {
 				view.abandonedPath = ""
 				continue
 			}
+			locateMissing := false
 			if result.Operation == sftpclient.OperationList && result.Err != nil && result.Path == view.terminalPath {
+				locateMissing = view.terminalLocate && sftpclient.IsPathNotFound(result.Err)
 				view.terminalPath, view.terminalLocate = "", false
 			}
 			if result.Operation == sftpclient.OperationList && result.Err != nil && view.detached != nil && view.detached.browseListingFailed(false, result.Path, result.Err) {
@@ -2754,6 +2817,14 @@ func (state *State) pumpSFTP(session *Session) {
 				} else if errors.Is(result.Err, sftpclient.ErrRemoteChanged) {
 					view.dialog = sftpDialogRemoteChanged
 					view.errorText = state.messages.SFTPEditConflict
+				} else if locateMissing {
+					// The folder the explicit locate was about to validate has gone.
+					// Say so, leave the panel on the server side, and send no cd.
+					view.errorText = state.messages.Tools.FilesLocateTerminalMissing
+					if view.status == view.listingStatus {
+						view.status = ""
+					}
+					view.listingStatus = ""
 				} else {
 					view.errorText = state.formatSFTPError(result.Err)
 				}
@@ -2790,9 +2861,11 @@ func (state *State) pumpSFTP(session *Session) {
 			case sftpclient.OperationDownload:
 				view.status = fmt.Sprintf(state.messages.SFTPDownloadedFmt, formatBytes(result.Bytes), result.LocalPath)
 			case sftpclient.OperationUpload:
-				view.forgetListings()
 				view.refreshStatus = fmt.Sprintf(state.messages.SFTPUploadedFmt, formatBytes(result.Bytes), result.Path)
-				state.listSFTP(view, view.path)
+				if result.Path != "" {
+					view.recordTransferTargetDir(path.Dir(result.Path))
+				}
+				state.refreshSFTPViewsAfterTransfers(view)
 			case sftpclient.OperationCreateDirectory:
 				view.forgetListings()
 				view.refreshStatus = fmt.Sprintf(state.messages.SFTPDirectoryCreatedFmt, result.Path)
@@ -2841,9 +2914,7 @@ func (state *State) pumpSFTP(session *Session) {
 		default:
 			state.refreshSFTPTransfers(view)
 			if view.refreshAfterTransfers && !view.busy && !sftpTransfersActive(view.transfers) {
-				view.refreshAfterTransfers = false
-				view.forgetListings()
-				state.listSFTP(view, view.path)
+				state.refreshSFTPViewsAfterTransfers(view)
 			}
 			return
 		}

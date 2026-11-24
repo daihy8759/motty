@@ -956,6 +956,7 @@ func TestConnectionOutcomesBecomeTerminalLines(t *testing.T) {
 func TestOpeningTheSameHostAgainReusesItsWorkspace(t *testing.T) {
 	world, options := newWorld(t)
 	state := newTestState(t, options)
+	state.startupReuse = true
 	connect(t, state, world)
 	firstID := state.activeSessionID
 	firstWorkspace := state.deck.ActiveWorkspace()
@@ -1024,6 +1025,7 @@ func TestOpeningAHostReusesOnlyItsDialedRoute(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			world, options := newSharingWorld(t)
 			state := newTestState(t, options)
+			state.startupReuse = true
 			if test.setup != nil {
 				test.setup(state)
 			}
@@ -1048,6 +1050,7 @@ func TestOpeningTheSameHostAgainPrefersTheActiveLiveSession(t *testing.T) {
 		t.Run(map[bool]string{false: "active live session", true: "active failed session"}[ended], func(t *testing.T) {
 			world, options := newWorld(t)
 			state := newTestState(t, options)
+			state.startupReuse = true
 			connect(t, state, world)
 			firstID := state.activeSessionID
 			second := state.newHostSession(state.hosts[0])
@@ -1069,6 +1072,7 @@ func TestOpeningTheSameHostAgainPrefersTheActiveLiveSession(t *testing.T) {
 func TestOpeningAHostAfterItsAddressChangesRetriesTheExistingSession(t *testing.T) {
 	world, options := newWorld(t)
 	state := newTestState(t, options)
+	state.startupReuse = true
 	connect(t, state, world)
 	firstID := state.activeSessionID
 	previous := state.hosts[0]
@@ -1111,6 +1115,7 @@ func TestOpeningANewAdHocAddressDoesNotReuseAFailedTarget(t *testing.T) {
 func TestOpeningAHostAfterAddingAnUnrelatedIdentityReusesItsSession(t *testing.T) {
 	world, options := newWorld(t)
 	state := newTestState(t, options)
+	state.startupReuse = true
 	connect(t, state, world)
 	firstID := state.activeSessionID
 	state.identities = append(state.identities, identityRecord{ID: 99, Path: filepath.Join(t.TempDir(), "unrelated-key")})
@@ -1143,9 +1148,6 @@ func TestOpeningAHostAfterProtocolEditUsesItsNewProtocol(t *testing.T) {
 func TestOpeningTheSameHostAgainCreatesAnotherTabWithReuseOff(t *testing.T) {
 	world, options := newWorld(t)
 	state := newTestState(t, options)
-	state.Click(hitSettings)
-	state.selectSettingsCategory(settingsConnection)
-	state.Click(hitSettingsStartupReuse)
 	state.Click(hitHosts)
 	first := connect(t, state, world)
 	firstSessionID := state.sessions[0].ID

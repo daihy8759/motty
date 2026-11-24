@@ -305,8 +305,10 @@ func sameSavedHost(left, right savedHost) bool {
 		left.Authentication == right.Authentication && left.Identity == right.Identity && left.Credential == right.Credential &&
 		left.SSHOptions.Equal(right.SSHOptions) && left.IdentitiesOnly == right.IdentitiesOnly &&
 		left.ForwardX11 == right.ForwardX11 && left.AgentForward == right.AgentForward &&
-		left.InteractiveOnly == right.InteractiveOnly && left.SendLocale == right.SendLocale &&
-		left.NoHistory == right.NoHistory && left.LoginCommand == right.LoginCommand && left.Transfer == right.Transfer &&
+		left.InteractiveOnly == right.InteractiveOnly &&
+		left.SendLocale == right.SendLocale &&
+		left.NoHistory == right.NoHistory && left.LoginCommand == right.LoginCommand &&
+		left.LoginCommandPolicy == right.LoginCommandPolicy && left.Transfer == right.Transfer &&
 		left.IdleKeepAliveSeconds == right.IdleKeepAliveSeconds && left.IdleInput == right.IdleInput &&
 		left.IdleInputCustom == right.IdleInputCustom &&
 		slices.Equal(left.RemoteLogPaths, right.RemoteLogPaths) &&
