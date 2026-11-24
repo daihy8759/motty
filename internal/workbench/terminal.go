@@ -856,6 +856,9 @@ func (t *terminal) sendLogicalInput(p, logical []byte, drain, typing, unknown bo
 	if !feed && t.completionFeed != nil {
 		feed = t.completionFeed()
 	}
+	if feed {
+		t.recorder.SetPromptOwned(t.inputGuard.active)
+	}
 	if feed && unknown {
 		t.recorder.UnknownInput(cmdhistory.TermScreen{Term: t.screen}, t.recordingNow())
 	} else if feed && len(logical) > 0 {
@@ -2221,7 +2224,12 @@ func (state *State) terminalKey(session *Session, event gfx.KeyEvent) gfx.EventR
 			return handled
 		}
 		scrolled := t.screen.ViewOffset() > 0
-		predictionChanged := t.prediction.reset()
+		var predictionChanged bool
+		if !win32Key && len(bytes) == 1 && bytes[0] == '\t' {
+			predictionChanged = t.prediction.tab()
+		} else {
+			predictionChanged = t.prediction.reset()
+		}
 		if win32Key {
 			state.typedWin32Key(session, bytes, term.Win32LogicalKey(event), true)
 		} else {

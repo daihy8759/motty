@@ -58,6 +58,13 @@ func CheckCommandShell(ctx context.Context, actual shellkind.Kind) error {
 	return nil
 }
 
+// PermissionsRefresher is a backend that reads the hosts open to agents from
+// the saved state. A named interface makes the contract visible: a backend that
+// stops matching it fails at the assertion site, not in silence.
+type PermissionsRefresher interface {
+	RefreshPermissions(context.Context) error
+}
+
 // ExecResult is what a command printed and how it ended.
 type ExecResult struct {
 	Output     string
@@ -197,6 +204,16 @@ func (g Gate) Run(ctx context.Context, name string, raw []byte) Result {
 	}
 	if name == tools.NameNoteQuery || name == tools.NameNoteEdit {
 		return g.runNotesTool(ctx, name, raw)
+	}
+	// A backend whose view of the world comes from the saved state refreshes it
+	// once per call, so every lookup within this call sees one consistent read.
+	// Notes never touch a host, so they skip the read.
+	if refresher, ok := g.Backend.(PermissionsRefresher); ok {
+		if err := refresher.RefreshPermissions(ctx); err != nil {
+			// Without a fresh permission set the gate cannot tell which hosts
+			// are open, so it refuses rather than run on a stale one.
+			return Result{Text: "the hosts open to agents could not be read: " + err.Error(), IsError: true}
+		}
 	}
 	if result, handled := g.runHostTool(ctx, name, raw); handled {
 		return result

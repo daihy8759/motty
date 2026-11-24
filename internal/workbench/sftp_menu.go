@@ -1,9 +1,12 @@
 package workbench
 
 import (
+	"path"
+
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/ui"
+	"motty/internal/sftpclient"
 )
 
 // sftpMenuHits is the place of the controls this file paints.
@@ -32,6 +35,7 @@ var (
 	hitSFTPMenuSudo         = tree.ID(sftpMenuHits, "sftp-menu-sudo")
 	hitSFTPMenuCopyFiles    = tree.ID(sftpMenuHits, "sftp-menu-copy-files")
 	hitSFTPMenuPasteFiles   = tree.ID(sftpMenuHits, "sftp-menu-paste-files")
+	hitSFTPMenuGoToLink     = tree.ID(sftpMenuHits, "sftp-menu-go-to-link")
 )
 
 // sftpMenuAction is the button of the bar that a menu row stands for.
@@ -53,6 +57,8 @@ func sftpMenuAction(id gfx.ID) (gfx.ID, bool) {
 		return hitSFTPReveal, true
 	case hitSFTPMenuOpenFolder:
 		return hitSFTPOpenFolder, true
+	case hitSFTPMenuGoToLink:
+		return hitSFTPGoToLink, true
 	case hitSFTPMenuRename:
 		return hitSFTPRename, true
 	case hitSFTPMenuMove:
@@ -73,7 +79,7 @@ func sftpMenuAction(id gfx.ID) (gfx.ID, bool) {
 		return hitSFTPCopyFiles, true
 	case hitSFTPMenuPasteFiles:
 		return hitSFTPPasteFiles, true
-	case hitSFTPNewDirectory, hitSFTPUpload, hitSFTPUploadDirectory, hitSFTPNewLink,
+	case hitSFTPNewFile, hitSFTPNewDirectory, hitSFTPUpload, hitSFTPUploadDirectory, hitSFTPNewLink,
 		hitSFTPCopyPath, hitSFTPProperties, hitSFTPCopyFiles, hitSFTPPasteFiles:
 		return id, true
 	}
@@ -180,6 +186,9 @@ func (state *State) sftpMenuRows(session *Session, view *sftpView) menuRows {
 		if local && validLocalDirectory(view.lfolder.path) {
 			rows.add(components.ContextMenuItem{ID: hitSFTPMenuReveal, Label: messages.Tools.ActionReveal, Icon: icon(iconFolderOpen), Disabled: busy || state.revealBusy})
 		}
+		if !local && sftpLinkJumpable(selected) {
+			rows.add(components.ContextMenuItem{ID: hitSFTPMenuGoToLink, Label: messages.Tools.GoToLinkTarget, Icon: icon(iconLink), Disabled: busy})
+		}
 		rows.separate()
 	} else if count == 0 && local && validLocalDirectory(view.lfolder.path) {
 		rows.add(components.ContextMenuItem{ID: hitSFTPMenuOpenFolder, Label: messages.ShortcutTerminalFolder, Icon: icon(iconFolderOpen), Disabled: busy || state.revealBusy})
@@ -226,6 +235,7 @@ func (state *State) sftpMenuRows(session *Session, view *sftpView) menuRows {
 		rows.add(components.ContextMenuItem{ID: hitSFTPMenuDelete, Label: messages.SFTPDelete, Icon: icon(iconTrash), Variant: components.ContextMenuItemDestructive, Disabled: busy})
 	}
 	rows.separate()
+	rows.add(components.ContextMenuItem{ID: hitSFTPNewFile, Label: messages.SFTPNewFile, Icon: icon(iconFile), Disabled: busy})
 	rows.add(components.ContextMenuItem{ID: hitSFTPNewDirectory, Label: messages.SFTPNewDirectory, Icon: icon(iconFolderPlus), Disabled: busy})
 	if !local {
 		rows.add(components.ContextMenuItem{ID: hitSFTPUpload, Label: messages.SFTPUpload, Icon: icon(iconUpload), Disabled: busy})
@@ -266,4 +276,25 @@ func (state *State) chooseSFTPMenu(id gfx.ID) {
 	if action, ok := sftpMenuAction(id); ok {
 		state.clickSFTP(action)
 	}
+}
+
+// sftpLinkJumpable reports whether an entry is a symbolic link whose target is
+// known and exists, so the menu can offer to leave the link for its target.
+func sftpLinkJumpable(entry sftpclient.Entry) bool {
+	return entry.IsLink() && !entry.LinkBroken && entry.LinkTarget != ""
+}
+
+// sftpLinkDestination is the folder to show for a link in directory: the
+// target itself when it is a folder, else the folder that holds it. A relative
+// target is relative to the folder of the link.
+func sftpLinkDestination(directory string, entry sftpclient.Entry) string {
+	target := entry.LinkTarget
+	if !path.IsAbs(target) {
+		target = path.Join(directory, target)
+	}
+	target = path.Clean(target)
+	if entry.LinkDir {
+		return target
+	}
+	return path.Dir(target)
 }

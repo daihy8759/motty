@@ -199,6 +199,7 @@ type ToolsMessages struct {
 	CommandsSortGroup   string
 
 	// The categories of the settings page, and what each holds.
+	CatAppearance string
 	CatGeneral    string
 	CatTerminal   string
 	CatConnection string
@@ -738,6 +739,7 @@ type ToolsMessages struct {
 	ActionReveal                    string
 	ActionRevealFailed              string
 	ActionRevealMissing             string
+	GoToLinkTarget                  string
 	ActionExtractFmt                string
 	ActionCopyFmt                   string
 	DiagnosticsRow                  string
@@ -1066,6 +1068,7 @@ type ToolsMessages struct {
 	ExtEditGoneFmt                    string
 	ExtEditSendFailedFmt              string
 	ExtEditBadFmt                     string
+	ExtEditTooLargeFmt                string
 	ExtEditRefused                    string
 	ExtEditOpenFailedFmt              string
 	ExtEditConflictTitle              string

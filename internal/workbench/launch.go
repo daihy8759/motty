@@ -13,8 +13,8 @@ import (
 
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/gfx"
-	"motty/internal/localshell"
 	"github.com/vivaui/viva/ui"
+	"motty/internal/localshell"
 	"motty/internal/update"
 )
 

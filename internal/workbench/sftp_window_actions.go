@@ -5,7 +5,7 @@ import (
 	"motty/internal/sshconn"
 )
 
-var sftpWindowActionIDs = [...]gfx.ID{hitSFTPOpenEntry, hitSFTPDownload, hitSFTPDownloadHere, hitSFTPSend, hitSFTPEditExternal, hitSFTPReveal, hitSFTPOpenFolder, hitSFTPRename, hitSFTPMove, hitSFTPChmod, hitSFTPChown, hitSFTPExtract, hitSFTPCompress, hitSFTPDelete, hitSFTPNewDirectory, hitSFTPUpload, hitSFTPUploadDirectory, hitSFTPNewLink, hitSFTPProperties, hitSFTPCalculateDirectorySize}
+var sftpWindowActionIDs = [...]gfx.ID{hitSFTPOpenEntry, hitSFTPDownload, hitSFTPDownloadHere, hitSFTPSend, hitSFTPEditExternal, hitSFTPReveal, hitSFTPOpenFolder, hitSFTPGoToLink, hitSFTPRename, hitSFTPMove, hitSFTPChmod, hitSFTPChown, hitSFTPExtract, hitSFTPCompress, hitSFTPDelete, hitSFTPNewFile, hitSFTPNewDirectory, hitSFTPUpload, hitSFTPUploadDirectory, hitSFTPNewLink, hitSFTPProperties, hitSFTPCalculateDirectorySize}
 
 func sftpWindowActionIndex(id gfx.ID) int {
 	for i, action := range sftpWindowActionIDs {
@@ -140,6 +140,8 @@ func (w *sftpWindow) fileAction(local bool, id gfx.ID) {
 		if !local {
 			w.owner.uploadSFTPDirectory(w.view)
 		}
+	case hitSFTPNewFile:
+		w.owner.openSFTPDialog(w.view, sftpDialogCreateFile)
 	case hitSFTPNewDirectory:
 		w.owner.openSFTPDialog(w.view, sftpDialogCreateDirectory)
 	case hitSFTPNewLink:
@@ -159,6 +161,15 @@ func (w *sftpWindow) fileAction(local bool, id gfx.ID) {
 	case hitSFTPOpenFolder:
 		if local && validLocalDirectory(w.view.lfolder.path) {
 			w.owner.openLocalFolder(w.view.lfolder.path)
+		}
+	case hitSFTPGoToLink:
+		if !local {
+			for _, row := range w.folder(false).rows {
+				if row.selected && sftpLinkJumpable(row.entry) {
+					w.navigate(false, sftpLinkDestination(w.folder(false).path, row.entry))
+					break
+				}
+			}
 		}
 	case hitSFTPRename:
 		if !local {

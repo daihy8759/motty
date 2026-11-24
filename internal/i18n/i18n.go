@@ -92,9 +92,9 @@ type Messages struct {
 	// paste_review.go.
 	PasteReview PasteReviewMessages
 	// Autofill holds the autofill rules' texts; see autofill.go.
-	Autofill       AutofillMessages
+	Autofill AutofillMessages
 	// LoginExpect holds a host's Expect/Send rules' texts; see login_expect.go.
-	LoginExpect LoginExpectMessages
+	LoginExpect    LoginExpectMessages
 	RuleManagement RuleManagementMessages
 	// Credentials holds the saved passwords' texts; see credentials.go.
 	Credentials CredentialMessages
@@ -277,6 +277,9 @@ type Messages struct {
 	SettingsAppearanceSystem               string
 	SettingsAppearanceDark                 string
 	SettingsAppearanceLight                string
+	SettingsCorners                        string
+	SettingsCornersRounded                 string
+	SettingsCornersSquare                  string
 	SettingsIconColor                      string
 	SettingsIconColorDescription           string
 	SettingsIconMint                       string
@@ -528,35 +531,36 @@ type Messages struct {
 	SSHConfigWarningProxyCommandFmt string
 
 	// New Host dialog.
-	DialogTitle                 string
-	EditHostTitle               string
-	CopyHostTitle               string
-	FieldLabel                  string
-	FieldLabelPlaceholder       string
-	FieldAddress                string
-	FieldAddressPlaceholder     string
-	FieldUser                   string
-	FieldUserPlaceholder        string
-	FieldPassword               string
-	FieldPasswordHint           string
-	FieldPasswordKeepHint       string
-	FieldPasswordCopyHint       string
-	FieldAuthentication         string
-	AuthAutomatic               string
-	AuthPassword                string
-	AuthPrivateKey              string
-	AuthAgent                   string
-	AuthKerberos                string
-	FieldIdentity               string
-	AuthAllKeys                 string
-	AuthKeyUnavailable          string
-	AuthImportKey               string
-	FieldVNCPassword            string
-	HostPasswordShared          string
-	HostPasswordNotCarried      string
-	HostOTPShared               string
-	FieldGroup                  string
-	FieldGroupPlaceholder       string
+	DialogTitle             string
+	EditHostTitle           string
+	CopyHostTitle           string
+	FieldLabel              string
+	FieldLabelPlaceholder   string
+	FieldAddress            string
+	FieldAddressPlaceholder string
+	FieldUser               string
+	FieldUserPlaceholder    string
+	FieldUserDefaultFmt     string
+	FieldPassword           string
+	FieldPasswordHint       string
+	FieldPasswordKeepHint   string
+	FieldPasswordCopyHint   string
+	FieldAuthentication     string
+	AuthAutomatic           string
+	AuthPassword            string
+	AuthPrivateKey          string
+	AuthAgent               string
+	AuthKerberos            string
+	FieldIdentity           string
+	AuthAllKeys             string
+	AuthKeyUnavailable      string
+	AuthImportKey           string
+	FieldVNCPassword        string
+	HostPasswordShared      string
+	HostPasswordNotCarried  string
+	HostOTPShared           string
+	FieldGroup              string
+	FieldGroupPlaceholder   string
 	// Encoding is the remote charset of a connection's shell; see the searchable
 	// picker in the New/Edit Host dialog.
 	FieldEncoding               string
@@ -854,9 +858,9 @@ type Messages struct {
 	KnownHostsFilteredCountFmt      string
 	KnownHostsSelectedFmt           string
 	KnownHostsPageFmt               string
+	KnownHostsPerPage               string
 	KnownHostsPrevious              string
 	KnownHostsNext                  string
-	KnownHostsLoadedFmt             string
 	KnownHostsLoadFailedFmt         string
 	KnownHostsDeleteTitle           string
 	KnownHostsDeleteDescriptionFmt  string
@@ -1126,6 +1130,7 @@ type Messages struct {
 	SFTPDownload         string
 	SFTPUpload           string
 	SFTPUploadDirectory  string
+	SFTPNewFile          string
 	SFTPNewDirectory     string
 	SFTPSudoEnable       string
 	SFTPSudoDisable      string
@@ -1179,6 +1184,12 @@ type Messages struct {
 	SFTPOverwriteTitle          string
 	SFTPOverwriteDescriptionFmt string
 	SFTPOverwriteConfirm        string
+	SFTPNewFileTitle            string
+	SFTPFileName                string
+	SFTPCreateFile              string
+	SFTPErrFileRequired         string
+	SFTPCreatingFileFmt         string
+	SFTPFileCreatedFmt          string
 	SFTPNewDirectoryTitle       string
 	SFTPDirectoryName           string
 	SFTPCreateDirectory         string

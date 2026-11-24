@@ -163,7 +163,7 @@ var (
 	hitLoginExpectStepCancel       = tree.ID(shellHits, "login-expect-step-cancel")
 	hitLoginExpectStepClose        = tree.ID(shellHits, "login-expect-step-close")
 	hitLoginExpectStepDismiss      = tree.ID(shellHits, "login-expect-step-dismiss")
-	hitStateNoticeReveal       = tree.ID(shellHits, "state-notice-reveal")
+	hitStateNoticeReveal           = tree.ID(shellHits, "state-notice-reveal")
 )
 
 // Lists whose items are numbered by a database or session number: a host row, a
@@ -324,6 +324,7 @@ var (
 	hitSFTPDownload        = tree.ID(sftpHits, "sftp-download")
 	hitSFTPUpload          = tree.ID(sftpHits, "sftp-upload")
 	hitSFTPUploadDirectory = tree.ID(sftpHits, "sftp-upload-directory")
+	hitSFTPNewFile         = tree.ID(sftpHits, "sftp-new-file")
 	hitSFTPNewDirectory    = tree.ID(sftpHits, "sftp-new-directory")
 	hitSFTPOpenEntry       = tree.ID(sftpHits, "sftp-open-entry")
 	hitSFTPRename          = tree.ID(sftpHits, "sftp-rename")
@@ -616,6 +617,7 @@ type State struct {
 	hostActionIDs      []uint32
 	hostGroups         []hostGroup
 	hostSide           hostCatalogSide
+	systemUserHint     systemUserHintCache
 	hostsPanel         hostsPanel
 	hostSideRows       []hostSideRow
 	hostTreeRows       []hostTreeRow
@@ -623,12 +625,16 @@ type State struct {
 	hostGridDrag       hostGridDrag
 	hostsScroll        float32
 	tabDrag            tabDrag
-	tabPreview         tabPreview
-	foreign            tabDrag // another window's tab being dragged over this one
-	frame              func() (gfx.Rect, bool)
-	windowVisible      func() bool
-	systemKeys         systemKeyCapture
-	winChrome          windowChrome
+	// tabGhost is where the dragged tab was last drawn, and tabLanding the tab
+	// just dropped, which slides from there to its slot on the next paint.
+	tabGhost      gfx.Point
+	tabLanding    gfx.ID
+	tabPreview    tabPreview
+	foreign       tabDrag // another window's tab being dragged over this one
+	frame         func() (gfx.Rect, bool)
+	windowVisible func() bool
+	systemKeys    systemKeyCapture
+	winChrome     windowChrome
 	// desktopBar is a fullscreen remote desktop's floating bar: whether its pin
 	// keeps it visible, and where the pointer is in the band at the top edge
 	// that reveals it. See desktop_fullscreen.go.
@@ -748,6 +754,7 @@ type State struct {
 	menuBarSig      string
 	appearance      appearance
 	appearanceMode  appearanceMode
+	cornerStyle     cornerStyle
 	iconColor       iconColor
 	iconColorChoice iconColor // the unconfirmed selection in the icon picker
 	networkProxy    networkProxyMode

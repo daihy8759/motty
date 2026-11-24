@@ -36,26 +36,26 @@ type fakeConn struct {
 	shellErr          error
 	// shellHold, when set, keeps every shell request unanswered until it is
 	// closed: a gateway that silently drops the channel request.
-	shellHold         chan struct{}
-	configs           []sshconn.ShellConfig
-	sftp              sftpclient.Remote
-	sftpErr           error
-	sftpOpens         int
+	shellHold chan struct{}
+	configs   []sshconn.ShellConfig
+	sftp      sftpclient.Remote
+	sftpErr   error
+	sftpOpens int
 	// extraChannels, when set, decides PermitsExtraChannels; nil keeps the old
 	// default of allowing a second channel (non-SSH adaptors and most tests).
-	extraChannels *bool
-	scp               sftpclient.Remote
-	scpOpens          int
-	dial              func(context.Context, string, string) (net.Conn, error)
-	dialCalls         []fakeDialCall
-	shellDial         func(context.Context, string, string) (net.Conn, error)
-	shellDialCalls    []fakeShellDialCall
-	listen            func(string, string) (net.Listener, error)
-	listenCalls       []fakeListenCall
-	runCommand        func(context.Context, string, int) ([]byte, error)
-	exec              func(context.Context, string, int) (sshconn.ExecResult, error)
-	streamCommand     func(context.Context, string, int, func([]byte) bool) error
-	commandCalls      []string
+	extraChannels  *bool
+	scp            sftpclient.Remote
+	scpOpens       int
+	dial           func(context.Context, string, string) (net.Conn, error)
+	dialCalls      []fakeDialCall
+	shellDial      func(context.Context, string, string) (net.Conn, error)
+	shellDialCalls []fakeShellDialCall
+	listen         func(string, string) (net.Listener, error)
+	listenCalls    []fakeListenCall
+	runCommand     func(context.Context, string, int) ([]byte, error)
+	exec           func(context.Context, string, int) (sshconn.ExecResult, error)
+	streamCommand  func(context.Context, string, int, func([]byte) bool) error
+	commandCalls   []string
 	// verifies counts link checks, and verifyErr is what they answer. A link
 	// change asks every established connection; the fake lets a test see that.
 	verifies  int

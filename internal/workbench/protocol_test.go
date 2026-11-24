@@ -269,7 +269,7 @@ func TestHostDialogAddsATelnetHostAndTheSameAddressForSSHIsAnotherHost(t *testin
 		t.Fatalf("second Telnet host is not an independent entry: %+v", second)
 	}
 	state.Click(hitAddHost)
-	state.Click(hitDialogProtocolTelnet)
+	clickHostChoice(t, state, state.messages.Tools.ProtocolTelnet)
 	typeInto(state, hitDialogLabel, second.Label)
 	typeInto(state, hitDialogAddress, second.Address)
 	state.Click(hitDialogSubmit)

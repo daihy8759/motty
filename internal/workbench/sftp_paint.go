@@ -114,6 +114,7 @@ func (state *State) paintSFTPPanelDetails(canvas *gfx.Canvas) {
 	state.paintSFTPList(canvas, s, session, view)
 	state.paintSFTPPanelColumnDividers(canvas)
 	view.places.anchors[sideIndex(local)] = s.crumbs.Rect()
+	state.paintSFTPPanelDrag(canvas, s, view)
 }
 
 // declareSFTPPanel declares the files panel into its page: a title line with
@@ -164,10 +165,12 @@ func (state *State) declareSFTPPanel(c ui.C) {
 		headerTools = append(headerTools, barTool{id: id, icon: glyph, hint: hint, disabled: disabled, style: toolStyle})
 	}
 	if local {
+		addHeader(hitSFTPNewFile, iconFile, messages.SFTPNewFile, view.localBusy)
 		addHeader(hitSFTPNewDirectory, iconFolderPlus, messages.SFTPNewDirectory, view.localBusy)
 	} else {
 		addHeader(hitSFTPUpload, iconUpload, messages.SFTPUpload, view.busy)
 		addHeader(hitSFTPUploadDirectory, iconFolderUp, messages.SFTPUploadDirectory, view.busy)
+		addHeader(hitSFTPNewFile, iconFile, messages.SFTPNewFile, view.busy)
 		addHeader(hitSFTPNewDirectory, iconFolderPlus, messages.SFTPNewDirectory, view.busy)
 		addHeader(hitSFTPNewLink, iconLink, messages.Tools.TipNewLink, view.busy)
 	}
@@ -262,7 +265,11 @@ func (state *State) declareSFTPPanel(c ui.C) {
 			// sit inside that room and the overspill is where the last crumb
 			// goes.
 			addressWidth := max(s.bounds.Width-3*sftpButton-6, 80)
-			s.crumbs = state.declareSFTPAddress(c, folder, hitSFTPPath, hitSFTPPathEdit, hitSFTPBreadcrumbList, addressWidth, !local && view.busy, messages.Tools.FilesPathPlaceholder).Height(height).Grow(1)
+			var panelDrag *sftpPanelDrag
+			if state.sftpPanelCanDrag(view, folder) {
+				panelDrag = state.ensureSFTPPanelDrag(view)
+			}
+			s.crumbs = state.declareSFTPAddressWithDrag(c, folder, hitSFTPPath, hitSFTPPathEdit, hitSFTPBreadcrumbList, addressWidth, !local && view.busy, messages.Tools.FilesPathPlaceholder, panelDrag).Height(height).Grow(1)
 			listID, starID, hint := hitSFTPBookmarkList, hitSFTPBookmarkToggle, messages.SFTPWindow.DirectoryFavorites
 			if local {
 				listID, starID, hint = hitSFTPLocalPlaces, hitSFTPLocalStar, messages.SFTPWindow.LocalPlaces
@@ -719,6 +726,13 @@ func (state *State) declareSFTPListRow(row ui.ListRow, folder *sftpFolder, view 
 		}
 	}
 	box := row.Element.Height(sftpRowHeight).Shrink(0).Width(rowWidth).Items(ui.Center)
+	if !result && state.sftpPanelCanDrag(view, folder) {
+		drag := state.ensureSFTPPanelDrag(view)
+		box = box.DragSource(&drag.state)
+		if entry.entry.IsDir() && !entry.entry.LinkBroken {
+			box = box.DropTarget(&drag.state, drag.accept, drag.drop)
+		}
+	}
 	if background.Alpha == 0 && !focused {
 		// Most rows have nothing behind them: their parts go straight in the row.
 		box = box.PadX(8)
@@ -797,7 +811,12 @@ func elideSFTPFolder(dir string, fits func(string) bool) string {
 // while the path is being edited, else the folders of the path as links. width is
 // the room the row has, for folding the leading folders away.
 func (state *State) declareSFTPAddress(c ui.C, folder *sftpFolder, fieldID, editID gfx.ID, links gfx.Scope, width float32, readOnly bool, placeholder string) ui.Box {
+	return state.declareSFTPAddressWithDrag(c, folder, fieldID, editID, links, width, readOnly, placeholder, nil)
+}
+
+func (state *State) declareSFTPAddressWithDrag(c ui.C, folder *sftpFolder, fieldID, editID gfx.ID, links gfx.Scope, width float32, readOnly bool, placeholder string, drag *sftpPanelDrag) ui.Box {
 	if state.sftpPathVisible(folder) {
+		folder.crumbBoxes = folder.crumbBoxes[:0]
 		editor := folder.pathInput()
 		label := state.messages.Tools.FilesPathLabel
 		if readOnly {
@@ -810,19 +829,33 @@ func (state *State) declareSFTPAddress(c ui.C, folder *sftpFolder, fieldID, edit
 				Border(1, theme.Input).Radius(theme.Metrics.RadiusControl).
 				HitWith(fieldID, label, gfx.HitOptions{Role: gfx.RoleTextField})
 		}
-		if folder.pathUIEditor != editor {
-			folder.pathUI.Bind(editor)
-			folder.pathUIEditor = editor
-		}
-		return ui.TextFieldID(c, fieldID, &folder.pathUI, label, placeholder).Height(32).Grow(1)
+		// Paint with PlatformEditing so long directory paths scroll horizontally
+		// with the caret and native pointer hit-testing stays aligned with the
+		// visible text.
+		value := editor.String()
+		theme := state.Theme()
+		return ui.Slot(c).Height(32).Grow(1).Draw(func(d *ui.DrawContext) {
+			focused := d.Canvas.Focused() == fieldID
+			components.PaintInput(d.Canvas, theme, d.Rect, components.InputSnapshot{
+				ID:              fieldID,
+				Label:           label,
+				Value:           value,
+				Placeholder:     placeholder,
+				Hint:            placeholder,
+				Focused:         focused,
+				PlatformEditing: focused && value != "",
+			})
+		})
 	}
-	return state.declareSFTPBreadcrumbs(c, folder.crumbs, editID, links, width, placeholder)
+	return state.declareSFTPBreadcrumbs(c, folder, editID, links, width, placeholder, drag)
 }
 
 // declareSFTPBreadcrumbs declares the path as links, keeping the folders nearest
 // the current one and folding the rest into an ellipsis when the path is wider
 // than width.
-func (state *State) declareSFTPBreadcrumbs(c ui.C, crumbs []sftpCrumb, edit gfx.ID, links gfx.Scope, width float32, placeholder string) ui.Box {
+func (state *State) declareSFTPBreadcrumbs(c ui.C, folder *sftpFolder, edit gfx.ID, links gfx.Scope, width float32, placeholder string, drag *sftpPanelDrag) ui.Box {
+	crumbs := folder.crumbs
+	folder.crumbBoxes = folder.crumbBoxes[:0]
 	// The path reads at the size of the list under it, not the theme's caption.
 	// A separator is a chevron the size of the text with gap-2.5 (10) on each side.
 	const size, separator = float32(13), float32(33)
@@ -854,10 +887,15 @@ func (state *State) declareSFTPBreadcrumbs(c ui.C, crumbs []sftpCrumb, edit gfx.
 				ui.Text(c, label).FontSize(size).Color(theme.Foreground).Ellipsis()
 				continue
 			}
-			ui.Text(c, label).FontSize(size).Color(theme.MutedForeground).Ellipsis().
-				HitWith(links.At(index), label, gfx.HitOptions{Role: gfx.RoleLink}).
+			crumbID := links.At(index)
+			box := ui.Text(c, label).FontSize(size).Color(theme.MutedForeground).Ellipsis().
+				HitWith(crumbID, label, gfx.HitOptions{Role: gfx.RoleLink}).
 				Hover(ui.Look{}.Color(theme.Foreground)).
 				Pressed(ui.Look{}.Color(theme.Foreground))
+			if drag != nil {
+				box = box.HitOutset(3, 3, 3, 3).DropTarget(&drag.state, drag.accept, drag.drop)
+			}
+			folder.crumbBoxes = append(folder.crumbBoxes, sftpCrumbBox{path: crumbs[index].path, box: box})
 		}
 	})
 	return row
@@ -978,6 +1016,10 @@ func (state *State) declareSFTPDialog(c ui.C, viewport gfx.Rect, view *sftpView)
 			}
 			description = fmt.Sprintf(m.BrowseCreateDescriptionFmt, side, request.paths[request.side])
 		}
+	case sftpDialogCreateFile:
+		title = messages.SFTPNewFileTitle
+		fieldLabel = messages.SFTPFileName
+		submitLabel = messages.SFTPCreateFile
 	case sftpDialogCreateDirectory:
 		title = messages.SFTPNewDirectoryTitle
 		fieldLabel = messages.SFTPDirectoryName
@@ -1143,7 +1185,7 @@ func (state *State) declareSFTPChmodBit(c ui.C, id gfx.ID, label string, checked
 			border.Alpha *= .4
 			ink.Alpha *= .4
 		}
-		d.Canvas.Rounded(box, 3, fill)
+		d.Canvas.Rounded(box, cornerPx(3), fill)
 		d.Canvas.RoundedOutline(box, 3, 1, border)
 		if checked {
 			d.Canvas.DrawIcon(lucideIcons[iconCheck], gfx.Rect{X: box.X + 2, Y: box.Y + 2, Width: 12, Height: 12}, ink)

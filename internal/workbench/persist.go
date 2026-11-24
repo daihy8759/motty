@@ -45,6 +45,7 @@ type savedState struct {
 	Language                   string                  `json:"language,omitempty"`
 	Theme                      string                  `json:"theme,omitempty"`
 	IconColor                  string                  `json:"icon_color,omitempty"`
+	Corners                    string                  `json:"corners,omitempty"`
 	BackgroundOutputAlerts     bool                    `json:"background_output_alerts,omitempty"`
 	TabOrientation             string                  `json:"tab_orientation,omitempty"`
 	TabDoubleClick             string                  `json:"tab_double_click,omitempty"`
@@ -559,6 +560,7 @@ func (state *State) snapshot() savedState {
 		Language:                   state.savedLanguage(),
 		Theme:                      state.appearanceMode.saved(),
 		IconColor:                  state.iconColor.saved(),
+		Corners:                    state.cornerStyle.saved(),
 		BackgroundOutputAlerts:     state.backgroundOutputAlerts,
 		TabOrientation:             state.tabOrientation.String(),
 		TabDoubleClick:             state.tabDoubleClick.String(),
@@ -823,7 +825,7 @@ func (state *State) snapshot() savedState {
 			CustomTitle: savedCustomSessionTitle(session.customTitle), Label: session.Title, Mention: session.Mention, Address: session.host.Address, User: session.host.User,
 			Port: session.host.Port, System: session.host.System.String(), SavedHost: session.HostID != 0,
 			CatalogID: session.savedCatalogID(), HostID: session.savedCatalogID(),
-			RemoteDirectory: session.startDirectory,
+			RemoteDirectory:  session.startDirectory,
 			WorkspaceCommand: session.workspaceCommand,
 			savedTransport:   session.host.transport(),
 		})
@@ -1175,7 +1177,8 @@ func (state *State) restoreLocal(saved savedState) {
 			state.interfaceTextSize = legacy
 		}
 	}
-	applyTextMetrics(state.interfaceTextSize.factor())
+	state.cornerStyle = cornerStyleFromString(saved.Corners)
+	applyMetrics(state.interfaceTextSize.factor(), state.cornerStyle)
 	state.setAppearance(state.resolveAppearance())
 	state.setTerminalFontSize(float32(saved.TerminalFontSize))
 	// Only the choice: what is in effect is decided once the window starts, when

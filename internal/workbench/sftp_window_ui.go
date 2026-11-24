@@ -43,6 +43,7 @@ var (
 	sftpWindowMenuActions        = tree.Sub(sftpWindowHits, tree.Name("menu-actions"))
 	sftpWindowUp                 = [2]gfx.ID{tree.ID(sftpWindowLocal, "up"), tree.ID(sftpWindowRemote, "up")}
 	sftpWindowRefresh            = [2]gfx.ID{tree.ID(sftpWindowLocal, "refresh"), tree.ID(sftpWindowRemote, "refresh")}
+	sftpWindowNewFile            = [2]gfx.ID{tree.ID(sftpWindowLocal, "new-file"), tree.ID(sftpWindowRemote, "new-file")}
 	sftpWindowNewFolder          = [2]gfx.ID{tree.ID(sftpWindowLocal, "new-folder"), tree.ID(sftpWindowRemote, "new-folder")}
 	hitSFTPWindowSplit           = tree.ID(sftpWindowHits, "split")
 	hitSFTPWindowUpload          = tree.ID(sftpWindowHits, "upload")
@@ -452,6 +453,21 @@ func (w *sftpWindow) paintPaneDetails(canvas *gfx.Canvas, s *sftpWindowScratch, 
 	w.ui.list[side] = listBounds
 	if !s.treeSet {
 		w.directoryTree[side].visible = w.directoryTree[side].visible[:0]
+		w.directoryTree[side].bounds = gfx.Rect{}
+		w.directoryTree[side].scrollOffset = 0
+	} else {
+		tree := &w.directoryTree[side]
+		if tree.treeBox.Valid() {
+			tree.bounds = tree.treeBox.Rect()
+			if scroll := tree.treeBox.ScrollState(); scroll != nil {
+				tree.scrollOffset = scroll.Offset
+			} else {
+				tree.scrollOffset = 0
+			}
+		} else {
+			tree.bounds = s.tree.Rect()
+			tree.scrollOffset = 0
+		}
 	}
 	area := s.list.ScrollState()
 	if area != nil {
@@ -671,7 +687,7 @@ func (w *sftpWindow) declarePane(c ui.C, s *sftpWindowScratch) {
 			// The frame around the rows, as the panel has always drawn it: the
 			// List sits two pixels in so its rows and scrollbar stay clear of
 			// the rounded edge.
-			frame := ui.Column(c).Grow(1).Pad(1).Background(theme.Background).Radius(6).Border(1, theme.Border.Mix(theme.MutedForeground, .4))
+			frame := ui.Column(c).Grow(1).Pad(1).Background(theme.Background).Radius(cornerPx(6)).Border(1, theme.Border.Mix(theme.MutedForeground, .4))
 			frame.Children(func() {
 				folder.prepareSFTPList()
 				folder.seedSFTPListChoice()
@@ -776,7 +792,7 @@ func (w *sftpWindow) declareListRow(row ui.ListRow, side int, paneWidth, rowWidt
 	if entry.mono {
 		tint = pal.muted
 	}
-	box := row.Element.Height(sftpRowHeight).Shrink(0).Width(rowWidth).Gap(8).PadX(8).Items(ui.Center).Background(background).Radius(4)
+	box := row.Element.Height(sftpRowHeight).Shrink(0).Width(rowWidth).Gap(8).PadX(8).Items(ui.Center).Background(background).Radius(cornerPx(4))
 	if row.Focused() {
 		box = box.Border(1, pal.accent)
 	}
@@ -887,21 +903,33 @@ func (w *sftpWindow) declareWindowMenu(c ui.C) {
 
 func (w *sftpWindow) paintDrag(canvas *gfx.Canvas) {
 	local, target, row, valid := w.dropTarget(w.drag.at.X, w.drag.at.Y, w.drag.fromLocal)
-	if !valid {
+	if valid {
+		bounds := w.ui.list[sideIndex(local)]
+		if row >= 0 {
+			bounds.Y += float32(row)*sftpRowHeight - w.ui.offset[sideIndex(local)]
+			bounds.Height = sftpRowHeight
+		}
+		canvas.Clip(w.ui.list[sideIndex(local)])
+		defer canvas.Unclip()
+		label, glyph := w.owner.messages.SFTPWindow.DropDownloadHint, uint8(iconDownload)
+		if w.drag.fromLocal {
+			label, glyph = w.owner.messages.SFTPWindow.DropUploadHint, iconUpload
+		}
+		w.owner.paintSFTPTransferDrop(canvas, bounds, label, target, glyph)
 		return
 	}
-	bounds := w.ui.list[sideIndex(local)]
-	if row >= 0 {
-		bounds.Y += float32(row)*sftpRowHeight - w.ui.offset[sideIndex(local)]
-		bounds.Height = sftpRowHeight
+	move := w.sameSideMoveTarget(w.drag.at.X, w.drag.at.Y)
+	switch move.kind {
+	case sftpMoveTargetRow, sftpMoveTargetTree:
+		canvas.Clip(move.clip)
+		w.owner.paintSFTPTransferDrop(canvas, move.rect, w.owner.messages.SFTPWindow.DropMoveHint, move.dir, iconFolderOpen)
+		canvas.Unclip()
+	case sftpMoveTargetCrumb:
+		paintSFTPBreadcrumbDropHighlight(canvas, move.rect, w.pal)
 	}
-	canvas.Clip(w.ui.list[sideIndex(local)])
-	defer canvas.Unclip()
-	label, glyph := w.owner.messages.SFTPWindow.DropDownloadHint, uint8(iconDownload)
-	if w.drag.fromLocal {
-		label, glyph = w.owner.messages.SFTPWindow.DropUploadHint, iconUpload
+	if !w.drag.outside && len(w.drag.entries) > 0 {
+		paintSFTPDragBadge(canvas, w.drag.at, w.drag.entries, w.pal)
 	}
-	w.owner.paintSFTPTransferDrop(canvas, bounds, label, target, glyph)
 }
 
 // paintForeignDrag paints the pane another window's file drag would land in.

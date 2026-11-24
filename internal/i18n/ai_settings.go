@@ -145,24 +145,26 @@ type AISettingsMessages struct {
 	DeleteConfirm string
 
 	// Models.
-	ModelsTitle      string
-	ModelsNoProvider string
-	ModelsOfFmt      string
-	ModelsDescFmt    string
-	ModelsFetch      string
-	ModelsFetching   string
-	ModelsCancel     string
-	ModelsFetchedFmt string
-	ModelsFailedFmt  string
-	ModelsEmpty      string
-	ModelDefault     string
-	ModelUse         string
-	ModelEnabled     string // accessible name of a model's switch
-	ModelAddPH       string
-	ModelAdd         string
-	ModelPageFmt     string
-	ModelPrev        string
-	ModelNext        string
+	ModelsTitle       string
+	ModelsNoProvider  string
+	ModelsOfFmt       string
+	ModelsDescFmt     string
+	ModelsFetch       string
+	ModelsFetching    string
+	ModelsCancel      string
+	ModelsFetchedFmt  string
+	ModelsFailedFmt   string
+	ModelsEmpty       string
+	ModelDefault      string
+	ModelUse          string
+	ModelEnabled      string // accessible name of a model's switch
+	ModelAddPH        string
+	ModelAdd          string
+	ModelPageFmt      string
+	ModelPrev         string
+	ModelNext         string
+	ModelSearchPH     string
+	ModelsSearchEmpty string
 
 	// Model filtering and sorting
 	ModelFilterAll       string
@@ -294,6 +296,12 @@ type AISettingsMessages struct {
 	AgentModeDesc            string
 	AgentModeObserve         string
 	AgentModeRun             string
+	AgentTransfer            string
+	AgentTransferNoneDesc    string
+	AgentTransferDesc        string
+	AgentTransferAdd         string
+	AgentTransferRemove      string
+	AgentTransferChoose      string
 	AgentHosts               string
 	AgentHostsNone           string
 	AgentHostsFollow         string

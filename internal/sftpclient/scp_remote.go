@@ -144,7 +144,15 @@ func (r *scpRemote) Getwd() (string, error) {
 	}
 	directory := strings.TrimSpace(string(out))
 	if !path.IsAbs(directory) {
-		return "", fmt.Errorf("scp: the server did not report a working directory")
+		if directory == "" {
+			return "", fmt.Errorf("scp: the server did not report a working directory")
+		}
+		// pwd answered, so whatever else came first is text the server wrote.
+		sample := directory
+		if len(sample) > 80 {
+			sample = sample[:80]
+		}
+		return "", fmt.Errorf("scp: the server did not report a working directory: %w: %q", ErrChannelNoise, sample)
 	}
 	return directory, nil
 }
@@ -211,6 +219,13 @@ func (r *scpRemote) run(format string, args ...string) error {
 }
 
 func (r *scpRemote) Mkdir(name string) error { return r.run("mkdir -p -- {}", name) }
+
+// CreateFile creates an empty file and fails if the path already exists. The
+// redirection runs under sh with noclobber, whatever the login shell is, so a
+// file created in the meantime is never truncated.
+func (r *scpRemote) CreateFile(name string) error {
+	return r.run(`sh -c 'set -C; : > "$1"' sh {}`, name)
+}
 
 // Remove and RemoveDirectory run under the C locale like the listing commands:
 // their errors are matched by message, and a localized server would not say the
