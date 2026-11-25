@@ -130,6 +130,7 @@ func (state *State) declareSFTPPanel(c ui.C) {
 	pal, messages := state.pal, state.messages
 	folder, local := view.active(), view.local
 	session := s.session
+	view.reconcileSFTPRename(c.Canvas(), !local && state.modal == modalNone)
 
 	// What the page shows decides its parts. The selection bar and the file
 	// actions are as tall as what they hold; the list takes what they leave.
@@ -165,13 +166,13 @@ func (state *State) declareSFTPPanel(c ui.C) {
 		headerTools = append(headerTools, barTool{id: id, icon: glyph, hint: hint, disabled: disabled, style: toolStyle})
 	}
 	if local {
-		addHeader(hitSFTPNewFile, iconFile, messages.SFTPNewFile, view.localBusy)
-		addHeader(hitSFTPNewDirectory, iconFolderPlus, messages.SFTPNewDirectory, view.localBusy)
+		addHeader(hitSFTPNewFile, iconSFTPNewFile, messages.SFTPNewFile, view.localBusy)
+		addHeader(hitSFTPNewDirectory, iconSFTPNewDirectory, messages.SFTPNewDirectory, view.localBusy)
 	} else {
-		addHeader(hitSFTPUpload, iconUpload, messages.SFTPUpload, view.busy)
-		addHeader(hitSFTPUploadDirectory, iconFolderUp, messages.SFTPUploadDirectory, view.busy)
-		addHeader(hitSFTPNewFile, iconFile, messages.SFTPNewFile, view.busy)
-		addHeader(hitSFTPNewDirectory, iconFolderPlus, messages.SFTPNewDirectory, view.busy)
+		addHeader(hitSFTPUpload, iconSFTPUpload, messages.SFTPUpload, view.busy)
+		addHeader(hitSFTPUploadDirectory, iconSFTPUploadDirectory, messages.SFTPUploadDirectory, view.busy)
+		addHeader(hitSFTPNewFile, iconSFTPNewFile, messages.SFTPNewFile, view.busy)
+		addHeader(hitSFTPNewDirectory, iconSFTPNewDirectory, messages.SFTPNewDirectory, view.busy)
 		addHeader(hitSFTPNewLink, iconLink, messages.Tools.TipNewLink, view.busy)
 	}
 	if !view.localOnly {
@@ -252,7 +253,7 @@ func (state *State) declareSFTPPanel(c ui.C) {
 		// fit. The bookmark controls close the row on the right: the list of the
 		// folders kept, and a star for this one.
 		ui.Row(c).Height(sftpButton).Shrink(0).Gap(4).Items(ui.Center).MarginSides(6, 0, 0, 0).Children(func() {
-			icon(sftpButton, hitSFTPUp, iconArrowUp, messages.SFTPUp, !local && view.busy || folder.path == "/" || folder.path == "", iconButtonQuiet)
+			icon(sftpButton, hitSFTPUp, iconSFTPUp, messages.SFTPUp, !local && view.busy || folder.path == "/" || folder.path == "", iconButtonQuiet)
 			height := float32(24)
 			if state.sftpPathVisible(folder) {
 				height = sftpButton
@@ -382,7 +383,7 @@ func (state *State) declareSFTPPanel(c ui.C) {
 					if view.localOnly {
 						add(hitSFTPInsertPath, iconTerminal, messages.SFTPInsertPath, session.term == nil || session.term.shell == nil)
 					} else if local {
-						add(hitSFTPSend, iconUpload, messages.Tools.SendToServer, false)
+						add(hitSFTPSend, iconSFTPUpload, messages.Tools.SendToServer, false)
 					} else {
 						add(hitSFTPDownload, iconDownload, messages.SFTPDownload, false)
 						if view.lfolder.path != "" {
@@ -673,6 +674,9 @@ func (state *State) declareSFTPListRow(row ui.ListRow, folder *sftpFolder, view 
 		state.declareSFTPRowIcon(c, entry, tint)
 		label := ui.Row(c).Grow(1).Clip().Items(ui.Center).MarginSides(0, 0, 0, 8)
 		label.Children(func() {
+			if !view.local && !result && state.declareSFTPRename(c, view, row.ID, entry.entry) {
+				return
+			}
 			if result {
 				state.declareSFTPResultLabel(c, entry, nameColor, rowWidth)
 				return
@@ -726,7 +730,7 @@ func (state *State) declareSFTPListRow(row ui.ListRow, folder *sftpFolder, view 
 		}
 	}
 	box := row.Element.Height(sftpRowHeight).Shrink(0).Width(rowWidth).Items(ui.Center)
-	if !result && state.sftpPanelCanDrag(view, folder) {
+	if view.rename == nil && !result && state.sftpPanelCanDrag(view, folder) {
 		drag := state.ensureSFTPPanelDrag(view)
 		box = box.DragSource(&drag.state)
 		if entry.entry.IsDir() && !entry.entry.LinkBroken {
@@ -1024,11 +1028,6 @@ func (state *State) declareSFTPDialog(c ui.C, viewport gfx.Rect, view *sftpView)
 		title = messages.SFTPNewDirectoryTitle
 		fieldLabel = messages.SFTPDirectoryName
 		submitLabel = messages.SFTPCreateDirectory
-	case sftpDialogRename:
-		title = messages.SFTPRenameTitle
-		description = messages.SFTPRenameDescription
-		fieldLabel = messages.SFTPNewName
-		submitLabel = messages.SFTPRenameSubmit
 	case sftpDialogMove:
 		title = messages.SFTPMoveTitle
 		description = messages.SFTPMoveDescription

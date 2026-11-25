@@ -75,6 +75,7 @@ var (
 	hitDialogClose             = tree.ID(shellHits, "dialog-close")
 	hitDialogCancel            = tree.ID(shellHits, "dialog-cancel")
 	hitDialogSubmit            = tree.ID(shellHits, "dialog-submit")
+	hitDialogVaultForget       = tree.ID(shellHits, "dialog-vault-forget")
 	hitDialogLabel             = tree.ID(shellHits, "dialog-label")
 	hitDialogAddress           = tree.ID(shellHits, "dialog-address")
 	hitDialogUser              = tree.ID(shellHits, "dialog-user")
@@ -1028,7 +1029,10 @@ type State struct {
 	syncEpoch     uint32
 	closeAsked    bool
 	trayHintShown bool
-	sync          syncState
+	// trayIconOff hides the application's status-area icon, a choice of this
+	// computer's General settings. Unset keeps the icon up.
+	trayIconOff bool
+	sync        syncState
 	// syncScope is what this computer lets cloud sync exchange. It belongs to
 	// this device, so two computers may sync different sets of content.
 	syncScope syncScope
@@ -1068,6 +1072,11 @@ type State struct {
 	completion       completionUI
 	// broadcast is the tab whose panes type together, or zero.
 	broadcast layoutcore.WorkspaceID
+	// broadcastAll sends typing to every connected pane of every tab.
+	broadcastAll bool
+	// broadcastTabs narrows broadcastAll to some tabs; nil is every tab.
+	broadcastTabs []layoutcore.WorkspaceID
+	broadcastMenu broadcastMenu
 
 	// wrapped is scratch for text broken into lines while painting.
 	wrapped [failureLines]string
@@ -2505,6 +2514,8 @@ func (state *State) clickHostDialog(id gfx.ID) {
 		state.restoreAfterHostDialog()
 	case hitDialogSubmit:
 		state.submitHostDialog()
+	case hitDialogVaultForget:
+		state.openVaultForgetFromHostDialog()
 	case hitDialogTest:
 		state.startHostTest()
 	case hitHostProxyConfigure:
@@ -3522,7 +3533,7 @@ func (state *State) openHostSession(host Host) *Session {
 		return state.createHostSession(host, address)
 	}
 	if state.deck.ActiveWorkspace() != previous {
-		state.clearBroadcast()
+		state.clearTabBroadcast()
 	}
 	if state.canReconnect(existing) {
 		state.startConnection(existing, host)

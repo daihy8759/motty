@@ -423,6 +423,13 @@ type ToolsMessages struct {
 	// Broadcast input.
 	BroadcastStart            string
 	BroadcastStop             string
+	BroadcastScopeAll         string
+	BroadcastScopeTab         string
+	BroadcastGo               string
+	BroadcastEnd              string
+	BroadcastTip              string
+	BroadcastAllStart         string
+	StatusBroadcastAllOnFmt   string
 	StatusBroadcastOnFmt      string
 	StatusBroadcastOff        string
 	StatusBroadcastNeedsSplit string
@@ -669,6 +676,8 @@ type ToolsMessages struct {
 	LaunchXshellEmptyFmt            string // base name
 	GeneralLogin                    string
 	GeneralLoginDescription         string
+	GeneralTrayIcon                 string
+	GeneralTrayIconDescription      string
 	GeneralClose                    string
 	GeneralCloseDescription         string
 	GeneralCloseTray                string
