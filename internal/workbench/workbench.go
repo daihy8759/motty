@@ -22,6 +22,7 @@ import (
 	"motty/internal/configstore"
 	"motty/internal/highlight"
 	"motty/internal/i18n"
+	"motty/internal/localshell"
 	"motty/internal/sessionlog"
 	"motty/internal/sshbrowser"
 	"motty/internal/sshconn"
@@ -768,6 +769,8 @@ type State struct {
 	appearanceMode       appearanceMode
 	cornerStyle          cornerStyle
 	terminalTransparency ui.SliderState
+	// playback is the recording being played, while its dialog is open.
+	playback *recordingPlayback
 	// windowComposited is whether the desktop really shows through the window,
 	// as the platform reported when it opened: the setting means nothing without it.
 	windowComposited atomic.Bool
@@ -1248,6 +1251,7 @@ func (state *State) Close() {
 	// The window's save above already carried any applied font size, so a wheel
 	// save still waiting is dropped rather than fired after the store closes.
 	state.stopTerminalZoomSave()
+	state.stopInlineSnippetSave()
 	state.closeAI()
 	state.closeHistory()
 	state.stopSyncTimer()
@@ -1337,6 +1341,8 @@ func New(options Options) *State {
 		update:                updateState{firstDelay: updateFirstDelayDefault, every: updateIntervalDefault},
 		winChrome:             windowChrome{remember: options.RememberWindowFrame},
 	}
+	state.localShellMenu.defaultWSLDistro = localshell.DefaultWSLDistro()
+	state.fonts.symbol = state.options.TerminalSymbolFont
 	state.refreshEditMenu()
 	// The command drawer shows by default; a saved state may close it.
 	// The reference cell stands in until the first paint measures the font on the
@@ -1581,6 +1587,13 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 		if editor := state.sftpEditor(hit); editor != nil {
 			return editor
 		}
+		if hit == hitRemoteLogPath && state.terminalPage() {
+			if session, ok := state.sessionByIDPointer(state.activeSessionID); ok {
+				if view := session.remoteLogs; view != nil && (view.formMode == remoteLogFormAdd || view.formMode == remoteLogFormEdit) {
+					return &view.path
+				}
+			}
+		}
 		if hit == hitSearch && state.activeSection == sectionHosts && !state.hostSort.enabled {
 			return &state.search
 		}
@@ -1598,6 +1611,18 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 		}
 		if hit == hitSessionLogsSearch && state.activeSection == sectionSessionLogs {
 			return &state.sessionLogs.view.search
+		}
+		if state.activeSection == sectionSnippets {
+			switch hit {
+			case hitSnippetTreeSearch:
+				return &state.snippets.treeSearch
+			case hitSnippetInlineName:
+				return &state.snippets.inline.name
+			case hitSnippetInlineCommand:
+				return &state.snippets.inline.command
+			case hitSnippetInlineGroup:
+				return &state.snippets.inline.groupPicker.Query
+			}
 		}
 	case modalNewHost:
 		if hit == hitDialogTags {
@@ -1617,6 +1642,16 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 		}
 		if hit == hitDialogOTP && state.editor.protocol == protocolSSH {
 			return &state.editor.otp
+		}
+		if state.editor.protocol == protocolWSL {
+			switch hit {
+			case hitDialogWSLUser:
+				return &state.editor.wslUser
+			case hitDialogWSLDirectory:
+				return &state.editor.wslDirectory
+			case hitDialogWSLCommand:
+				return &state.editor.wslCommand
+			}
 		}
 	case modalMoveHostGroup:
 		if hit == hitMoveGroupField && state.groupActions.op != hostGroupRelocate && state.groupActions.op != hostGroupDelete {
@@ -1745,15 +1780,6 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 	case modalHighlightRule:
 		if hit == hitHighlightPattern {
 			return &state.highlighting.pattern
-		}
-	case modalSnippet:
-		switch hit {
-		case hitSnippetName:
-			return &state.snippets.name
-		case hitSnippetCommand:
-			return &state.snippets.command
-		case hitSnippetGroup:
-			return &state.snippets.groupPicker.Query
 		}
 	case modalSnippetGroupRename:
 		if hit == hitSnippetGroupRenameField {
@@ -1960,6 +1986,9 @@ func (state *State) click(id gfx.ID, feedback bool) {
 	case modalHostImportResult:
 		state.clickHostImportResult(id)
 		return
+	case modalRecordingPlayback:
+		state.clickRecordingPlayback(id)
+		return
 	case modalSessionImportPreview:
 		state.clickSessionImportPreview(id)
 		return
@@ -2007,9 +2036,6 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		return
 	case modalDeleteRule:
 		state.clickDeleteRuleDialog(id)
-		return
-	case modalSnippet:
-		state.clickSnippetDialog(id)
 		return
 	case modalSnippetDelete:
 		state.clickSnippetDeleteDialog(id)
@@ -2186,17 +2212,21 @@ func (state *State) click(id gfx.ID, feedback bool) {
 			state.releaseIdleSFTP(session)
 		}
 		state.clearBroadcast()
-		state.activeSection = sectionHosts
+		state.setActiveSection(sectionHosts)
 		state.save()
 	case id == hitWorkspaces:
 		if session, ok := state.sessionByIDPointer(state.activeSessionID); ok {
 			state.releaseIdleSFTP(session)
 		}
 		state.clearBroadcast()
-		state.activeSection = sectionWorkspaces
+		state.setActiveSection(sectionWorkspaces)
 		state.save()
 	case id == hitNewTab || id == hitVerticalTabsNew:
 		state.openConnectPicker()
+	case id == hitWindowBarTabsPrevious:
+		state.scrollWindowBarTabs(-1)
+	case id == hitWindowBarTabsNext:
+		state.scrollWindowBarTabs(1)
 	case id == hitVerticalTabsPin:
 		state.setVerticalTabsAutoHide(!state.verticalTabs.autoHide)
 		state.save()
@@ -2206,20 +2236,20 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		// Pressing the box only focuses it; the runtime already did.
 	case id == hitKeychain:
 		state.clearBroadcast()
-		state.activeSection = sectionKeys
+		state.setActiveSection(sectionKeys)
 		state.save()
 	case id == hitProxies:
 		state.clearBroadcast()
-		state.activeSection = sectionProxies
+		state.setActiveSection(sectionProxies)
 		state.save()
 	case id == hitPortForwarding:
 		state.clearBroadcast()
-		state.activeSection = sectionForwards
+		state.setActiveSection(sectionForwards)
 		state.save()
 	case state.clickNotes(id):
 	case id == hitSnippets:
 		state.clearBroadcast()
-		state.activeSection = sectionSnippets
+		state.setActiveSection(sectionSnippets)
 		state.save()
 	case id == hitKnownHosts:
 		state.openKnownHosts()
@@ -2267,6 +2297,8 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		state.save()
 	case id == hitCompletionUpdate:
 		state.updateCompletions()
+	case id == hitCompletionUpdateDirectRetry:
+		state.updateCompletionsDirect()
 	case id == hitSettingsHistoryClear:
 		state.askClearHistory()
 	case id == hitPanePrevious:
@@ -2445,7 +2477,7 @@ func (state *State) closeSession(id uint32) {
 	state.sessions = slices.Delete(state.sessions, index, index+1)
 	state.syncActiveSession()
 	if state.deck.ActiveWorkspace() == 0 {
-		state.activeSection = sectionHosts
+		state.setActiveSection(sectionHosts)
 	}
 	state.fitTerminals()
 	state.fitSFTP(state.viewport)
@@ -2455,7 +2487,7 @@ func (state *State) closeSession(id uint32) {
 	}
 	if len(state.sessions) == 0 {
 		state.activeSessionID = 0
-		state.activeSection = sectionHosts
+		state.setActiveSection(sectionHosts)
 		return
 	}
 	state.activeSessionID = state.sessions[min(index, len(state.sessions)-1)].ID
@@ -2537,9 +2569,9 @@ func (state *State) closeWorkspaceNow(id layoutcore.WorkspaceID) {
 	state.syncActiveSession()
 	state.rebuildTabOptions()
 	if state.deck.ActiveWorkspace() == 0 {
-		state.activeSection = sectionHosts
+		state.setActiveSection(sectionHosts)
 	} else {
-		state.activeSection = sectionTerminal
+		state.setActiveSection(sectionTerminal)
 	}
 	state.save()
 }
@@ -2585,7 +2617,7 @@ func (state *State) clickHostDialog(id gfx.ID) {
 	case hitDialogTest:
 		state.startHostTest()
 	case hitHostProxyConfigure:
-		if state.editor.protocol != protocolSerial {
+		if state.editor.protocol != protocolSerial && state.editor.protocol != protocolWSL {
 			state.openHostProxyDialog()
 		}
 	case hitHostJumpConfigure:
@@ -3015,18 +3047,14 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 }
 
 func (state *State) pointer(event gfx.PointerEvent) gfx.EventResult {
-	if state.modal == modalSnippet && event.Kind == gfx.PointerDown {
-		state.snippets.abandonOther(event.Target)
+	if state.modal == modalNone && state.activeSection == sectionSnippets && event.Kind == gfx.PointerDown {
+		state.snippets.inline.abandonOther(event.Target)
 	}
 	if result, handled := state.snippetGroupPointer(event); handled {
 		return result
 	}
-	if state.modal == modalSnippet && event.Kind == gfx.PointerDown && (event.Button == gfx.PointerButtonPrimary || event.Button == gfx.PointerButtonNone) && event.Target == hitSnippetSubmit {
-		if target := state.snippets.composingTarget(); !target.IsZero() {
-			// Keep the composition and its field focused; swallowing this press
-			// prevents the focus change from committing the preedit before Save.
-			return gfx.EventResult{Handled: true, Repaint: true, Focus: target}
-		}
+	if result, handled := state.snippetBlankPointer(event); handled {
+		return result
 	}
 	if result, handled := state.updateDialogPointer(event); handled {
 		return result
@@ -3369,9 +3397,13 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 	if result, handled := state.restoredPageKey(event); handled {
 		return result
 	}
-	if state.modal == modalSnippet && state.snippets.capturing && event.Key == gfx.KeyEscape && !event.Repeat {
-		state.snippets.capturing = false
+	if state.modal == modalNone && state.activeSection == sectionSnippets && state.snippets.inline.capturing && event.Key == gfx.KeyEscape && !event.Repeat {
+		state.snippets.inline.capturing = false
+		state.refreshInlineShortcutLabel()
 		return gfx.EventResult{Handled: true, Repaint: true}
+	}
+	if result, handled := state.snippetTreeKeyEvent(event); handled {
+		return result
 	}
 	if result, handled := state.aiKey(event); handled {
 		return result
@@ -3511,12 +3543,6 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		state.submitHighlightRule()
 		return gfx.EventResult{Handled: true, Repaint: true}
 	}
-	if state.modal == modalSnippet && event.Key == gfx.KeyEnter && (event.Target == hitSnippetName || event.Target == hitSnippetGroup) && !event.Repeat {
-		// submitSnippet refuses while either field is composing: that Enter
-		// belongs to the input method, and the preedit is not the text to save.
-		state.submitSnippet()
-		return gfx.EventResult{Handled: true, Repaint: true}
-	}
 	if state.modal == modalSnippetGroupRename && event.Key == gfx.KeyEnter && event.Target == hitSnippetGroupRenameField && !event.Repeat {
 		state.submitSnippetGroupRename()
 		return gfx.EventResult{Handled: true, Repaint: true}
@@ -3577,6 +3603,11 @@ func (state *State) openHostSession(host Host) *Session {
 		return state.createHostSession(host, address)
 	}
 	route, routeValid := state.reuseRouteFor(host)
+	if host.isWSL() && host.Address == "" {
+		if distro := localshell.DefaultWSLDistro(); distro != "" {
+			address = host.wslTarget(distro)
+		}
+	}
 	var existing *Session
 	for index := range state.sessions {
 		session := &state.sessions[index]
@@ -3681,7 +3712,7 @@ func (state *State) createHostSessionWithDirectory(host Host, address string, co
 	}
 	session.setStartDirectory(directory)
 	state.activeSessionID = session.ID
-	state.activeSection = sectionTerminal
+	state.setActiveSection(sectionTerminal)
 	state.status = state.messages.StatusOpened + session.Title
 	if conn == nil {
 		state.startConnection(session, host)
@@ -3710,7 +3741,7 @@ func (state *State) bindWorkspaceSession(workspaceID layoutcore.WorkspaceID, pan
 		return nil
 	}
 	state.activeSessionID = session.ID
-	state.activeSection = sectionTerminal
+	state.setActiveSection(sectionTerminal)
 	state.status = state.messages.StatusOpened + session.Title
 	return session
 }

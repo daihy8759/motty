@@ -143,3 +143,50 @@ var chineseLoginExpect = LoginExpectMessages{
 	ErrDelay:   "延迟必须是大于等于 0 的整数毫秒。",
 	ErrEmpty:   "规则需要等待文本、回复或运行时回复中的至少一项。",
 }
+
+var traditionalLoginExpect = LoginExpectMessages{
+	SectionTitle: "登入指令碼",
+	SectionHint:  "等待終端機輸出指定文字後自動回覆。連線 shell 後按順序執行；逾時會停止後續規則並把終端機交還給使用者。",
+	Enabled:      "shell 開啟時執行這些規則",
+	Empty:        "還沒有規則。",
+	StepFmt:      "第 %d 步",
+
+	WaitLabel:            "等待文字",
+	WaitPlaceholder:      "要等待的文字（可用 \\r、\\n、\\xNN）",
+	SendLabel:            "回覆",
+	SendPlaceholder:      "要傳送的回覆",
+	SensitivePlaceholder: "執行時詢問",
+	TimeoutLabel:         "逾時（秒）",
+	DelayLabel:           "回覆延遲（毫秒）",
+	DelayPlaceholder:     "0",
+	AppendEnter:          "回覆後按 Enter",
+	Sensitive:            "執行時詢問回覆（不儲存）",
+	CommandMode:          "先按「:」進入指令模式（選單式堡壘機）",
+
+	Add:      "新增規則",
+	Edit:     "編輯",
+	Delete:   "刪除",
+	MoveUp:   "上移",
+	MoveDown: "下移",
+	Save:     "儲存",
+
+	StepTitleAdd:    "新增登入規則",
+	StepTitleEdit:   "編輯登入規則",
+	StepSummaryFmt:  "等待 %s → %s · %d 秒",
+	DelaySummaryFmt: " · +%d 毫秒",
+	AskedSummary:    "執行時詢問",
+	EnterSummary:    " ⏎",
+
+	DialogTitle: "需要登入回覆",
+	DialogHint:  "該規則需要在執行時輸入回覆。回覆只傳送一次，不會儲存或記錄。",
+	ResponseFmt: "登入回覆 %d",
+
+	Timeout:     "登入指令碼已停止：等待的提示未在逾時內出現。終端機已交還給你。",
+	WriteFailed: "登入指令碼已停止：shell 拒絕了回覆。終端機已交還給你。",
+	Cancelled:   "登入指令碼已取消，請手動繼續。",
+	FailedFmt:   "登入指令碼已停止：%v",
+
+	ErrTimeout: "逾時必須是整數秒。",
+	ErrDelay:   "延遲必須是大於等於 0 的整數毫秒。",
+	ErrEmpty:   "規則需要等待文字、回覆或執行時回覆中的至少一項。",
+}

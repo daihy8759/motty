@@ -224,9 +224,16 @@ func ProbeModel(ctx context.Context, provider store.Provider, modelName string, 
 	}
 }
 
+func probeHTTPClient(provider store.Provider, timeout time.Duration) *http.Client {
+	client := llm.NewHTTPClient(llm.Config{ProxyURL: provider.ProxyURL, ProxyPassword: provider.ProxyPassword})
+	client.Timeout = timeout
+	client.CheckRedirect = llm.CheckEndpointRedirect
+	return client
+}
+
 func probeOllama(ctx context.Context, provider store.Provider, modelName string, timeout time.Duration) (time.Duration, error) {
 	url := ollamaAPIBase(provider.BaseURL) + "/api/show"
-	return postProbe(ctx, url, provider.APIKey, map[string]string{"name": modelName}, timeout)
+	return postProbe(ctx, provider, url, provider.APIKey, map[string]string{"name": modelName}, timeout)
 }
 
 // ollamaAPIBase is the server root of an Ollama endpoint. The presets name it
@@ -257,7 +264,7 @@ func probeEmbedding(ctx context.Context, provider store.Provider, modelName stri
 		"model": modelName,
 		"input": "ping",
 	}
-	return postProbe(ctx, url, provider.APIKey, payload, timeout)
+	return postProbe(ctx, provider, url, provider.APIKey, payload, timeout)
 }
 
 func probeRerank(ctx context.Context, provider store.Provider, modelName string, timeout time.Duration) (time.Duration, error) {
@@ -271,10 +278,10 @@ func probeRerank(ctx context.Context, provider store.Provider, modelName string,
 		"query":     "test",
 		"documents": []string{"test"},
 	}
-	return postProbe(ctx, url, provider.APIKey, payload, timeout)
+	return postProbe(ctx, provider, url, provider.APIKey, payload, timeout)
 }
 
-func postProbe(ctx context.Context, url, apiKey string, payload any, timeout time.Duration) (time.Duration, error) {
+func postProbe(ctx context.Context, provider store.Provider, url, apiKey string, payload any, timeout time.Duration) (time.Duration, error) {
 	start := time.Now()
 	if err := llm.ValidateEndpoint(url); err != nil {
 		return 0, err
@@ -292,7 +299,7 @@ func postProbe(ctx context.Context, url, apiKey string, payload any, timeout tim
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{Timeout: timeout, CheckRedirect: llm.CheckEndpointRedirect}
+	client := probeHTTPClient(provider, timeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err

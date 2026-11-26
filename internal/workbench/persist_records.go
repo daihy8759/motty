@@ -215,6 +215,7 @@ var entityFields = []entityField{
 	}},
 	{field: "proxies", kind: "proxy", key: proxyRecordKey},
 	{field: "snippets", kind: "snippet", key: func(fields map[string]json.RawMessage) string { return fieldText(fields, "name") }},
+	{field: "snippet_groups", kind: "snippet-group", key: func(fields map[string]json.RawMessage) string { return fieldText(fields, "name") }},
 	{field: "highlights", kind: "highlight", key: func(fields map[string]json.RawMessage) string {
 		return joinKey(fieldText(fields, "pattern"), fieldText(fields, "regex"), fieldText(fields, "case_sensitive"))
 	}},
@@ -292,6 +293,10 @@ var syncedSettings = map[string]bool{
 	"sftp_path_input":              true,
 	"sftp_panel_auto_open":         true,
 	"sftp_panel_side":              true,
+	"sftp_window_order":            true,
+	"sftp_open_mode":               true,
+	"sftp_directory_tree":          true,
+	"sftp_columns":                 true,
 	"command_history":              true,
 	"command_completion_mode":      true,
 	"command_suggest_off":          true,

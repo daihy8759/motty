@@ -130,6 +130,7 @@ type PointerUpdate struct {
 	Width      uint16 // Cursor width
 	Height     uint16 // Cursor height
 	Data       []byte // Top-down RGBA pixel data (only for PointerShape)
+	Invert     []bool // Pixels that show the inverse of the screen, if any
 }
 
 // Client is an RDP client connection
@@ -159,7 +160,7 @@ type Client struct {
 	tlsMinVersion    uint16 // override for TLS version probing; 0 = default
 	tlsMaxVersion    uint16 // override for TLS version probing; 0 = default
 	credsspVersion   int    // CredSSP version to advertise; 0 = use MaxCredSSPVersion
-	rawNTLM          bool   // learned before credentials are sent; retained across version probes
+	rawNTLM          bool   // raw NTLM fallback for the current CredSSP attempt
 
 	// MCS/GCC parameters
 	userChannelID    uint16
@@ -439,6 +440,7 @@ func (c *Client) Connect() error {
 						break // this TLS version not supported, try next
 					}
 					c.credsspVersion = csvVer
+					c.rawNTLM = false
 					credsspErr = c.tryCredSSP()
 					if credsspErr == nil {
 						break probeLoop
@@ -449,6 +451,7 @@ func (c *Client) Connect() error {
 				}
 			}
 			c.credsspVersion = 0 // reset
+			c.rawNTLM = false
 		}
 		if credsspErr != nil && !canRetryCredSSP(credsspErr) {
 			// Do not repeat a logon attempt, bypass NLA after submitting
@@ -4525,6 +4528,10 @@ func (c *Client) cacheAndNotifyPointer(pu *pointer.PointerUpdate) {
 		Data:       make([]byte, len(pu.Data)),
 	}
 	copy(update.Data, pu.Data)
+	if len(pu.Invert) > 0 {
+		update.Invert = make([]bool, len(pu.Invert))
+		copy(update.Invert, pu.Invert)
+	}
 
 	if int(pu.CacheIndex) < len(c.pointerCache) {
 		c.pointerCache[pu.CacheIndex] = update

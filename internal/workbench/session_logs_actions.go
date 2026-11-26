@@ -33,13 +33,13 @@ func (state *State) reopenSessionLogRecord(id string) {
 	if state.jumpToLogSession(id) {
 		return
 	}
-	if record.Protocol == sessionlog.ProtocolLocal && record.TargetKind != sessionlog.TargetShared {
+	if record.Protocol == sessionlog.ProtocolLocal && record.TargetKind == sessionlog.TargetLocal {
 		state.openLocalTerminal()
 		return
 	}
 	host, ok := state.sessionLogHost(record)
 	if !ok {
-		state.activeSection = sectionHosts
+		state.setActiveSection(sectionHosts)
 		state.save()
 		return
 	}
@@ -88,7 +88,7 @@ func (state *State) locateSessionLogHost(id string) {
 		state.setHostFilter(false, "")
 		state.hostRevealID = host.ID
 	}
-	state.activeSection = sectionHosts
+	state.setActiveSection(sectionHosts)
 	state.save()
 }
 

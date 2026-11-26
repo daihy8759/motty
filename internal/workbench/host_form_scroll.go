@@ -36,6 +36,10 @@ type hostFormScroll struct {
 	fieldIdleInterval, fieldIdleCustomInput                         dialogField
 	fieldAlgoCustom, fieldLoginCommand, fieldOTP                    dialogField
 	fieldResolution                                                 dialogField
+	wslUserField, wslDirectoryField, wslCommandField                dialogField
+	wslDistroField                                                  ui.FormFieldState
+	wslDistroBox                                                    ui.Box
+	wslDistroChoices                                                []string
 	// authField and portsField are the page form fields of the authentication
 	// choice and the detected serial ports; authBox is the choice itself, kept
 	// for the form's tab ring.
@@ -110,7 +114,7 @@ type hostFormScroll struct {
 
 // hostFormChoiceIDs is the chosen option hit of each Choice of the host form.
 type hostFormChoiceIDs struct {
-	protocol, flow, algo, transfer, loginPolicy gfx.ID
+	protocol, flow, backspace, algo, transfer, loginPolicy gfx.ID
 }
 
 // hostFormBody is where the host form's body put each control: the slots it
@@ -120,6 +124,7 @@ type hostFormBody struct {
 	iconField, colorField, transfer, proxy, jump, advanced ui.Box
 	loginExpect, vncRows                                   ui.Box
 	flow, algo                                             ui.Box
+	backspace                                              ui.Box
 	// proxyRow and jumpRow are the controls the proxy and jump fields place,
 	// and proxyAction and jumpAction the slots their buttons are painted in.
 	proxyRow, jumpRow       ui.Box

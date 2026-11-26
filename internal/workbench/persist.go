@@ -172,6 +172,7 @@ type savedState struct {
 	HighlightBuiltin        string              `json:"highlight_builtin,omitempty"`
 	Highlights              []savedHighlight    `json:"highlights,omitempty"`
 	Snippets                []savedSnippet      `json:"snippets,omitempty"`
+	SnippetGroups           []savedSnippetGroup `json:"snippet_groups,omitempty"`
 	SnippetShortcuts        []savedSnippetKey   `json:"snippet_shortcuts,omitempty"`
 	Autofill                []savedAutofill     `json:"autofill_rules,omitempty"`
 	Credentials             []savedCredential   `json:"credentials,omitempty"`
@@ -285,6 +286,12 @@ type savedSnippet struct {
 	Lines   bool   `json:"lines,omitempty"`
 	Group   string `json:"group,omitempty"`
 	Order   int    `json:"order,omitempty"`
+}
+
+// savedSnippetGroup is an explicit snippet folder kept even while it has no
+// snippets, so empty folders travel across devices with the snippets category.
+type savedSnippetGroup struct {
+	Name string `json:"name"`
 }
 
 // savedSnippetKey is the shortcut of the snippet of that name. It lives apart
@@ -722,6 +729,9 @@ func (state *State) snapshot() savedState {
 			})
 		}
 	}
+	for _, group := range state.snippets.customGroups {
+		saved.SnippetGroups = append(saved.SnippetGroups, savedSnippetGroup{Name: group})
+	}
 	saved.CommandsShown = state.commands.shown
 	saved.CommandsSide = state.commands.placement == commandsPlacementSide
 	saved.CommandsSort = state.commands.sort.String()
@@ -824,7 +834,7 @@ func (state *State) snapshot() savedState {
 		if session.containerCommand != "" {
 			continue
 		}
-		if session.isLocal() {
+		if session.HostID == localHostID {
 			saved.Sessions = append(saved.Sessions, savedSession{CustomTitle: savedCustomSessionTitle(session.customTitle), Label: session.Title, Mention: session.Mention, Local: true, LocalDirectory: session.localDirectory, LocalShell: session.host.localShell})
 			if session.ID == state.activeSessionID {
 				saved.ActiveSession = len(saved.Sessions)
@@ -835,7 +845,7 @@ func (state *State) snapshot() savedState {
 			CustomTitle: savedCustomSessionTitle(session.customTitle), Label: session.Title, Mention: session.Mention, Address: session.host.Address, User: session.host.User,
 			Port: session.host.Port, System: session.host.System.String(), SavedHost: session.HostID != 0,
 			CatalogID: session.savedCatalogID(), HostID: session.savedCatalogID(),
-			RemoteDirectory:  session.startDirectory,
+			RemoteDirectory: session.startDirectory, LocalDirectory: session.localDirectory,
 			WorkspaceCommand: session.workspaceCommand,
 			savedTransport:   session.host.transport(),
 		})
@@ -939,6 +949,9 @@ func (state *State) saveWithResultModeRecovery(flushSync, refreshConflict, notif
 		}
 	}()
 	defer func() {
+		if saveErr == nil && state.config != nil && state.pauseSave == 0 {
+			state.stopInlineSnippetSave()
+		}
 		if flushSync && saveErr == nil {
 			state.sshSyncFlush()
 		}
@@ -1582,7 +1595,7 @@ func (state *State) restoreSessions(entries []savedSession, active int) []uint32
 		if session.Mention == "" {
 			session.Mention = state.uniqueMentionName(session.Title, session.ID)
 		}
-		if entry.Local {
+		if session.isLocal() {
 			session.setStartDirectory(entry.LocalDirectory)
 		} else {
 			session.setStartDirectory(entry.RemoteDirectory)
@@ -1617,14 +1630,14 @@ func (state *State) restoreSessionHost(entry savedSession) (Host, bool) {
 		}
 		return host, true
 	}
-	if entry.Address == "" {
+	if entry.Address == "" && entry.Protocol != "wsl" {
 		return Host{}, false
 	}
 	if entry.Label == "" {
 		entry.Label = entry.Address
 	}
 	host := Host{Label: entry.Label, Address: entry.Address, User: entry.User, Port: entry.Port, System: sshconn.ParseRemoteSystem(entry.System)}
-	if !host.applyTransport(entry.savedTransport) {
+	if !host.applyTransport(entry.savedTransport) || !validWSLEndpoint(host) {
 		return Host{}, false
 	}
 	host.normalizeEndpoint()

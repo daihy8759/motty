@@ -297,8 +297,9 @@ func sameSavedHost(left, right savedHost) bool {
 		left.System == right.System &&
 		sameSavedLoginExpect(left.LoginExpect, right.LoginExpect) &&
 		left.Protocol == right.Protocol && left.Encoding == right.Encoding &&
+		left.WSLDirectory == right.WSLDirectory && left.WSLNoGUI == right.WSLNoGUI &&
 		left.Terminal == right.Terminal &&
-		left.Line == right.Line && left.Flow == right.Flow &&
+		left.Line == right.Line && left.Flow == right.Flow && left.Backspace == right.Backspace &&
 		sameSavedProxy(left.Proxy, right.Proxy) &&
 		left.ProxyProfile == right.ProxyProfile && left.ProxyBypass == right.ProxyBypass &&
 		left.Algorithms == right.Algorithms && left.AlgorithmList == right.AlgorithmList &&

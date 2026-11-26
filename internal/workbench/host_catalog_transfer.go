@@ -202,6 +202,9 @@ func (state *State) hostFromCatalogEntry(entry savedHost) (Host, bool) {
 	host.Color = color
 	host.Address, host.User, host.Port, host.System = entry.Address, entry.User, entry.Port, sshconn.ParseRemoteSystem(entry.System)
 	host.LoginExpect = decodeLoginExpect(entry.LoginExpect)
+	if !validWSLEndpoint(host) {
+		return Host{}, false
+	}
 	host.normalizeEndpoint()
 	setHostTags(&host, tags)
 	host.finish()

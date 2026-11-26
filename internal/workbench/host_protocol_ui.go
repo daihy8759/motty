@@ -1,6 +1,8 @@
 package workbench
 
 import (
+	"runtime"
+
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/text"
 	"github.com/vivaui/viva/ui"
@@ -71,6 +73,7 @@ const (
 	connectionSerial
 	connectionVNC
 	connectionRDP
+	connectionWSL
 )
 
 func (kind hostConnectionType) protocol() hostProtocol {
@@ -85,6 +88,8 @@ func (kind hostConnectionType) protocol() hostProtocol {
 		return protocolVNC
 	case connectionRDP:
 		return protocolRDP
+	case connectionWSL:
+		return protocolWSL
 	}
 	return protocolSSH
 }
@@ -113,6 +118,8 @@ func (editor *hostEditor) connectionType() hostConnectionType {
 		return connectionVNC
 	case protocolRDP:
 		return connectionRDP
+	case protocolWSL:
+		return connectionWSL
 	}
 	return connectionSSH
 }
@@ -120,8 +127,9 @@ func (editor *hostEditor) connectionType() hostConnectionType {
 // The segmented choices of the host form. Each is a Choice of the form's own
 // page, declared at the row its layout reserved.
 var (
-	hostConnectionChoices  = [...]hostConnectionType{connectionSSH, connectionTelnet, connectionSerial, connectionVNC, connectionRDP, connectionMosh}
+	hostConnectionChoices  = [...]hostConnectionType{connectionSSH, connectionTelnet, connectionSerial, connectionVNC, connectionRDP, connectionMosh, connectionWSL}
 	hostFlowChoices        = [...]serial.Flow{serial.FlowNone, serial.FlowHardware, serial.FlowSoftware}
+	hostBackspaceChoices   = [...]backspaceKey{backspaceDEL, backspaceCtrlH}
 	hostAlgoChoices        = [...]algoMode{algoDefault, algoCompatible, algoCustom}
 	hostLoginPolicyChoices = [...]loginFailurePolicy{loginFailureStop, loginFailureContinue}
 )
@@ -146,6 +154,8 @@ func (state *State) hostProtocolChoiceLabel(protocol hostProtocol) string {
 		return state.messages.Desktop.ProtocolVNC
 	case protocolRDP:
 		return state.messages.Desktop.ProtocolRDP
+	case protocolWSL:
+		return "WSL"
 	default:
 		return state.messages.Tools.ProtocolSSH
 	}
@@ -161,6 +171,15 @@ func (state *State) hostFlowChoiceLabel(flow serial.Flow) string {
 	default:
 		return state.messages.Tools.FlowNone
 	}
+}
+
+// hostBackspaceChoiceLabel names one byte the Backspace key sends as the form's
+// choice shows it.
+func (state *State) hostBackspaceChoiceLabel(key backspaceKey) string {
+	if key == backspaceCtrlH {
+		return state.messages.Tools.BackspaceCtrlH
+	}
+	return state.messages.Tools.BackspaceDEL
 }
 
 // hostAlgoChoiceLabel names one algorithm mode as the form's choice shows it.
@@ -193,9 +212,16 @@ func (state *State) declareHostProtocolChoice(c ui.C) ui.Box {
 	editor := &state.editor
 	editor.connectionBefore = editor.connectionType()
 	editor.connection = editor.connectionBefore
-	choice := ui.Choice(c, &editor.connection, hostConnectionChoices[:], state.hostConnectionChoiceLabel).Fill()
+	choices := hostConnectionChoices[:]
+	if runtime.GOOS != "windows" && editor.protocol != protocolWSL {
+		choices = choices[:len(choices)-1]
+	}
+	choice := ui.Choice(c, &editor.connection, choices, state.hostConnectionChoiceLabel).Fill()
 	if choice.Changed() {
 		editor.applyConnection(editor.connectionBefore)
+		if editor.protocol == protocolWSL {
+			c.After(state.listWSLDistros)
+		}
 		state.dialogError = ""
 	}
 	return choice
@@ -206,6 +232,16 @@ func (state *State) declareHostProtocolChoice(c ui.C) ui.Box {
 // clear.
 func (state *State) declareHostFlowChoice(c ui.C) ui.Box {
 	choice := hostFormChoice(c, state.messages.Tools.FieldFlow, hostFormRowHeight, &state.editor.flow, hostFlowChoices[:], state.hostFlowChoiceLabel)
+	if choice.Changed() {
+		state.dialogError = ""
+	}
+	return choice
+}
+
+// declareHostBackspaceChoice declares the Backspace key choice of a serial or
+// Telnet host in the form's page, like the flow control.
+func (state *State) declareHostBackspaceChoice(c ui.C) ui.Box {
+	choice := hostFormChoice(c, state.messages.Tools.FieldBackspace, hostFormRowHeight, &state.editor.backspace, hostBackspaceChoices[:], state.hostBackspaceChoiceLabel)
 	if choice.Changed() {
 		state.dialogError = ""
 	}
@@ -234,6 +270,8 @@ func (state *State) declareHostEndpointSlots(c ui.C, parent ui.Box, rowHeight fl
 	m, tools := state.messages, state.messages.Tools
 	parent.Children(func() {
 		switch editor.protocol {
+		case protocolWSL:
+			state.declareWSLEndpoint(c, slots, rowHeight)
 		case protocolSerial:
 			ui.Row(c).Height(rowHeight).Gap(8).Children(func() {
 				slots.address = ui.Slot(c).Grow(1)
@@ -493,6 +531,10 @@ func (state *State) clickHostProtocol(id gfx.ID) bool {
 		editor.legacyTLS = !editor.legacyTLS
 	case state.clickDesktopQuality(id):
 		// An RDP effect switch flipped its own setting.
+	case id == hitDialogWSLUseUser:
+		editor.wslUseUser = !editor.wslUseUser
+	case id == hitDialogWSLGraphics:
+		editor.wslNoGUI = !editor.wslNoGUI
 	case id == hitDialogAdvanced:
 		editor.advancedOpen = !editor.advancedOpen
 	case id == hitDialogForwardX11:
@@ -543,14 +585,15 @@ const hostPortWidth = 84
 
 // hostEndpointRows is how many labelled rows the endpoint block of the form
 // takes: the address with the port and, under it, the credentials. A serial
-// port takes three (its device, its line, and the flow control) and Telnet one
-// (Telnet has no credentials in the form).
+// port takes three (its device, its line, and the flow control beside the
+// Backspace key) and Telnet two: it has no credentials in the form, only the
+// Backspace key under its address.
 func (state *State) hostEndpointRows() int {
 	switch state.editor.protocol {
 	case protocolSerial:
 		return 3
 	case protocolTelnet:
-		return 1
+		return 2
 	case protocolSSH:
 		if state.hostAsksKeyPassphrase() {
 			return 3
@@ -584,7 +627,7 @@ func (state *State) hostPassphraseHint() string {
 // file transfer mode and, on a protocol with a shell, the encoding.
 func (state *State) hostFormHeight() float32 {
 	height := float32(2+44+(3+state.hostEndpointRows())*hostFormRowHeight) + state.hostDialogExtra()
-	if state.editor.protocol != protocolSerial {
+	if state.editor.protocol != protocolSerial && state.editor.protocol != protocolWSL {
 		height += hostFormRowHeight
 	}
 	if state.editor.protocol != protocolVNC && state.editor.protocol != protocolRDP {
@@ -666,6 +709,9 @@ func (state *State) sshAdvancedRowsHeight() float32 {
 	if state.editor.algoMode == algoCustom {
 		rows++
 	}
+	if !state.editor.moshTerminal() {
+		rows++
+	}
 	return rows*hostFormRowHeight + loginCommandAreaHeight + hostFormRowHeight + otpFieldHeight + otpButtonsRow + state.sshSwitchRowsHeight()
 }
 
@@ -695,6 +741,9 @@ func (state *State) advancedSectionHeight() float32 {
 	if !state.editor.advancedOpen {
 		return advancedHeaderHeight
 	}
+	if state.editor.protocol == protocolWSL {
+		return advancedHeaderHeight + 2*hostFormRowHeight + 64
+	}
 	return advancedHeaderHeight + state.sshAdvancedRowsHeight() + state.idleAdvancedRowsHeight()
 }
 
@@ -703,7 +752,7 @@ func (state *State) hostDialogExtra() float32 {
 	if state.editor.protocol == protocolVNC || state.editor.protocol == protocolRDP {
 		return state.desktopRowsHeight()
 	}
-	if !idleKeepAliveProtocol(state.editor.protocol) {
+	if !idleKeepAliveProtocol(state.editor.protocol) && state.editor.protocol != protocolWSL {
 		return 0
 	}
 	return state.advancedSectionHeight()
@@ -762,8 +811,8 @@ type hostVNCRowsBody struct {
 
 // hostAlgoRowsBody is where the SSH algorithm rows put each control.
 type hostAlgoRowsBody struct {
-	algo, custom, login, loginPolicy, otp, scan, paste, remove ui.Box
-	identitiesOnlyHelp, agentHelp                              ui.Box
+	algo, custom, login, loginPolicy, backspace, otp, scan, paste, remove ui.Box
+	identitiesOnlyHelp, agentHelp                                         ui.Box
 }
 
 // paintAlgorithmRows draws the SSH algorithm choice and, for a custom one, the
@@ -835,6 +884,12 @@ func (state *State) declareHostAlgoRows(c ui.C) {
 			})
 		}
 		heading(m.AdvancedSession)
+		if !editor.moshTerminal() {
+			b.backspace = hostFormChoice(c, m.FieldBackspace, rowHeight, &editor.backspace, hostBackspaceChoices[:], state.hostBackspaceChoiceLabel)
+			if b.backspace.Changed() {
+				state.dialogError = ""
+			}
+		}
 		state.declareDialogCheck(c, hitDialogForwardX11, m.X11Forward, editor.forwardX11, 4, 0)
 		state.declareDialogCheck(c, hitDialogAgentForward, m.AgentForward, editor.agentForward, 12, 0)
 		state.declareDialogCheck(c, hitDialogNoHistory, state.messages.History.HostNoRecord, editor.noHistory, 12, 0)

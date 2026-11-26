@@ -4,9 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/vivaui/viva/gfx"
-	"motty/internal/diag"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,11 +13,13 @@ import (
 	"time"
 
 	"github.com/vivaui/viva/app"
+	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/text"
 	"motty/internal/ai/llm"
 	"motty/internal/ai/store"
 	"motty/internal/aiproviderimport"
 	"motty/internal/buildinfo"
+	"motty/internal/diag"
 	"motty/internal/linkwatch"
 	"motty/internal/localshell"
 	"motty/internal/sftpclient"
@@ -274,8 +275,8 @@ type Options struct {
 	// SetTrayIcon shows or hides the application's status-area icon, the choice
 	// the General settings offer beside starting at login. Nil hides the setting.
 	SetTrayIcon func(visible bool)
-	// CheckUpdate asks the release feed for the newest version. Nil asks GitHub.
-	CheckUpdate func() (update.Release, error)
+	// CheckUpdate asks the release feed for the newest version using the given HTTP client (or default when nil).
+	CheckUpdate func(*http.Client) (update.Release, error)
 	// Updater installs a newer release over the running program. Nil, or a nil
 	// Quit, offers only the download page.
 	Updater Updater
@@ -368,9 +369,9 @@ type Options struct {
 	// ClipboardText reads the system clipboard for an explicit paste shortcut.
 	// Nil uses app.ClipboardText.
 	ClipboardText func() (string, error)
-	// ClipboardFiles reads the paths of the files the system clipboard holds,
-	// which a desktop session offers to the remote system. Nil uses
-	// app.ClipboardFiles.
+	// ClipboardFiles reads the paths of the files the system clipboard holds: a
+	// desktop session offers them to the remote system, and a paste in the
+	// assistant's message box attaches them. Nil uses app.ClipboardFiles.
 	ClipboardFiles func() ([]string, error)
 	// SetClipboardFiles puts files on the system clipboard, as a file manager
 	// does after a copy. Nil uses app.SetClipboardFiles.
@@ -413,6 +414,10 @@ type Options struct {
 	// MonoFamilies lists the installed fixed-pitch font families. Nil uses
 	// app.MonospaceFamilies.
 	MonoFamilies func() []string
+	// TerminalSymbolFont is the family of an icon-only font the application
+	// registered at run time, or "". Every terminal face puts it last, for the
+	// private-use glyphs the chosen font and the fallbacks lack.
+	TerminalSymbolFont string
 	// SetTerminalFontWeights names the weights the terminal's text is drawn at,
 	// main for its regular text and bold for its bold runs (0 for the platform's
 	// own), and reports whether the platform has the choice. Nil uses the
@@ -573,7 +578,6 @@ const (
 	modalVaultForget
 	modalHighlightRule
 	modalRuleManager
-	modalSnippet
 	modalSnippetDelete
 	modalSnippetGroups
 	modalSnippetGroupRename
@@ -620,6 +624,7 @@ const (
 	modalIconColorPicker
 	modalAgentHosts
 	modalAppLock
+	modalRecordingPlayback
 )
 
 // tone colors a session's headline.
@@ -685,7 +690,7 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	}
 	session.established = false
 	session.disconnected = false
-	if session.restored && session.isLocal() && state.localStart == localStartHome {
+	if session.restored && session.HostID == localHostID && state.localStart == localStartHome {
 		// The folder a restored tab was left in is what the home choice
 		// forgets; a tab that ends and starts again in this run keeps its own.
 		session.localDirectory = ""
@@ -704,17 +709,9 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	session.role = sshconn.EndpointTarget
 	session.jumpPath = ""
 	session.desktopTunnel = false
-	if host.ID == localHostID {
+	if host.isLocal() {
 		// A shell on this machine: nothing to dial, so it is connected at once.
-		conn := newLocalConn(state.resolveLocalShell(host), state.networkProxy)
-		if _, wsl := localshell.WSLDistro(conn.shell); wsl {
-			// A distribution is the Linux system the shell runs in, not the
-			// Windows that hosts it. The monitor and the tooling that reads the
-			// session's system follow the distribution.
-			session.host.System = sshconn.SystemLinux
-		}
-		conn.dir = localStartupDirectory(session.localDirectory, conn.shell)
-		session.conn = conn
+		session.conn = state.localConnection(session, host)
 		state.finishStartingConnection(session, automatic)
 		// There is no goroutine to report that it is connected, so say so now:
 		// the shell starts here instead of on a wake nobody would send.
@@ -803,7 +800,7 @@ func (state *State) sshConfigFor(session *Session, host Host) (config sshconn.Co
 }
 
 func (state *State) reuseRouteFor(host Host) (connectionRoute, bool) {
-	if host.ID == localHostID || host.Protocol == protocolSerial {
+	if host.isLocal() || host.Protocol == protocolSerial {
 		return connectionRoute{}, true
 	}
 	config, route, valid := state.hostCatalog.sshConfigFor(host, host, state.connectionEnv(nil))
@@ -1529,7 +1526,6 @@ func (state *State) closeModal() {
 	}
 	returnToRules := state.ruleManager.returning && (state.modal == modalHighlightRule || state.modal == modalAutofillRule || state.modal == modalDeleteRule)
 	returnToSnippetGroups := state.snippetGroups.returning && (state.modal == modalSnippetGroupRename || state.modal == modalSnippetGroupDelete)
-	returnToSnippet := state.modal == modalSnippetGroups && state.snippetGroups.returnToSnippet
 	returnToHost := state.modal == modalCredential && state.credentialReturn != modalNone
 	returnToHostFromVault := state.modal == modalVaultForget && state.secrets.forgetReturn != modalNone
 	if state.modal == modalRuleManager {
@@ -1591,6 +1587,9 @@ func (state *State) closeModal() {
 	if state.modal == modalLocalProxy {
 		state.localProxyUI = localProxyUI{}
 	}
+	if state.modal == modalRecordingPlayback {
+		state.playback = nil
+	}
 	if state.modal == modalUpdate {
 		if state.update.checking {
 			state.update.checkSerial++
@@ -1606,10 +1605,6 @@ func (state *State) closeModal() {
 	if returnToSnippetGroups {
 		state.modal = modalSnippetGroups
 		state.snippetGroups.returning = false
-	}
-	if returnToSnippet {
-		state.modal = modalSnippet
-		state.refreshSnippetGroupPicker()
 	}
 	if returnToHost {
 		state.modal = state.credentialReturn

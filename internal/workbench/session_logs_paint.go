@@ -42,6 +42,7 @@ var (
 	hitSessionLogsDelete         = tree.ID(sessionLogHits, "delete")
 	hitSessionLogsClearFavorite  = tree.ID(sessionLogHits, "clear-unfavorited")
 	hitSessionLogsClearAll       = tree.ID(sessionLogHits, "clear-all")
+	hitSessionLogsOpenRecording  = tree.ID(sessionLogHits, "open-recording")
 	hitSessionLogsClearFilters   = tree.ID(sessionLogHits, "clear-filters")
 	hitSessionLogsLoadMore       = tree.ID(sessionLogHits, "load-more")
 	hitSessionLogsRowFavorite    = tree.Sub(sessionLogHits, tree.Name("row-favorite"))
@@ -363,7 +364,7 @@ func (state *State) prepareSessionLogDetail() {
 	switch {
 	case detail.live:
 		detail.actionLabel = m.OpenSession
-	case record.Protocol == sessionlog.ProtocolLocal && record.TargetKind != sessionlog.TargetShared:
+	case record.Protocol == sessionlog.ProtocolLocal && record.TargetKind == sessionlog.TargetLocal:
 		detail.actionLabel = m.NewLocal
 	case detail.hasHost:
 		detail.actionLabel = m.Reopen
@@ -972,6 +973,8 @@ func (state *State) declareSessionLogMoreMenu(c ui.C, anchor ui.Box) {
 	}
 	m := &state.messages.SessionLogs
 	var rows menuRows
+	rows.add(components.ContextMenuItem{ID: hitSessionLogsOpenRecording, Label: state.messages.RecordingOpen, Icon: lucideIcons[iconFilm]})
+	rows.separate()
 	rows.add(components.ContextMenuItem{ID: hitSessionLogsClearFavorite, Label: m.ClearUnfavorited, Icon: lucideIcons[iconEraser], Disabled: !state.sessionLogsCanClear(), Variant: components.ContextMenuItemDestructive})
 	rows.add(components.ContextMenuItem{ID: hitSessionLogsClearAll, Label: m.ClearAll, Icon: lucideIcons[iconTrash], Disabled: !state.sessionLogsCanClear(), Variant: components.ContextMenuItemDestructive})
 	ui.Menu(c, anchor, &state.sessionLogs.view.moreMenu, func(menu *ui.MenuItems) {

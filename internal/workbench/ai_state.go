@@ -61,6 +61,9 @@ type aiItem struct {
 	risk        risk.Level
 	// attachments are the files a user message was sent with, by name.
 	attachments []aiAttachmentRef
+	// pending says a message sent while a request ran has not reached the
+	// model yet; see ai_interject.go.
+	pending aiPendingKind
 }
 
 // aiApproval is a question to the user from a tool call that needs a yes.
@@ -106,6 +109,10 @@ type aiRun struct {
 	// cancel, the run is finished locally so the assistant cannot sit on
 	// "Stopping..." forever. Nil until the user stops.
 	stopTimer *time.Timer
+	// steers hands interjections to the agent; steerable says the run's
+	// provider takes them (a native agent loop in Agent mode).
+	steers    aiSteers
+	steerable bool
 }
 
 // aiSettings are the assistant's choices, kept in the AI database.
@@ -433,15 +440,19 @@ func (state *State) aiAdoptKeys() {
 	}
 }
 
-// aiKeyedProvider returns provider with its API key in memory. When the key is
-// in a vault that is locked it asks for the master password, runs retry once it
-// has been given, and reports false: nothing may be sent without the key.
+// aiKeyedProvider returns provider with its API key and proxy password in
+// memory. When a secret is in a vault that is locked it asks for the master
+// password, runs retry once it has been given, and reports false: nothing may be
+// sent without the credentials.
 func (state *State) aiKeyedProvider(provider store.Provider, retry func()) (store.Provider, bool) {
 	if store.IsCLIKind(provider.Kind) {
 		provider.APIKey, provider.HasKey = "", false
+		provider.ProxyPassword, provider.HasProxyPassword = "", false
 		return provider, true
 	}
-	if provider.APIKey != "" || !provider.HasKey {
+	needKey := provider.APIKey == "" && provider.HasKey
+	needProxyPassword := provider.ProxyURL != "" && provider.HasProxyPassword
+	if !needKey && !needProxyPassword {
 		return provider, true
 	}
 	opened := state.secrets.vault
@@ -455,8 +466,15 @@ func (state *State) aiKeyedProvider(provider store.Provider, retry func()) (stor
 		})
 		return provider, false
 	}
-	if key, found, err := opened.Get(aiKeySecretName(provider.ID)); err == nil && found {
-		provider.APIKey = key
+	if needKey {
+		if key, found, err := opened.Get(aiKeySecretName(provider.ID)); err == nil && found {
+			provider.APIKey = key
+		}
+	}
+	if needProxyPassword {
+		if password, found, err := opened.Get(aiProxyPasswordSecretName(provider.ID)); err == nil && found {
+			provider.ProxyPassword = password
+		}
 	}
 	return provider, true
 }
@@ -551,7 +569,11 @@ func (state *State) aiProvider(provider store.Provider) llm.Provider {
 	if store.IsCLIKind(provider.Kind) || !store.ValidProviderKind(provider.Kind) {
 		return cli.New(provider.Kind, provider.CLIPath)
 	}
-	config := llm.Config{BaseURL: provider.BaseURL, ModelsURL: provider.ModelsURL, APIKey: provider.APIKey, AuthStyle: provider.AuthStyle}
+	config := llm.Config{
+		BaseURL: provider.BaseURL, ModelsURL: provider.ModelsURL,
+		APIKey: provider.APIKey, AuthStyle: provider.AuthStyle,
+		ProxyURL: provider.ProxyURL, ProxyPassword: provider.ProxyPassword,
+	}
 	if provider.Kind == store.KindAnthropic {
 		return llm.NewAnthropic(config)
 	}
@@ -834,11 +856,12 @@ func (state *State) dropEscalationApprovals() {
 	}
 }
 
-// aiSend starts a request with the text in the input box.
+// aiSend starts a request with the text in the input box. While a request runs
+// the box is an interjection instead; see aiInterject.
 func (state *State) aiSend() bool {
 	ai := &state.ai
 	if ai.run != nil {
-		return false
+		return state.aiInterject()
 	}
 	question := strings.TrimSpace(ai.input.String())
 	if (question == "" && len(ai.attachments) == 0) || ai.attaching > 0 && !ai.retry {
@@ -981,8 +1004,9 @@ func (state *State) aiSend() bool {
 	run := &aiRun{
 		stats: stats, usageBase: usageBase, cancel: cancel, open: -1, providerID: provider.ID,
 		target: target, extras: extras, references: references, targetKey: targetKey, attachments: refs,
-		backend: backend,
+		backend: backend, steerable: ai.mode == agent.ModeAgent && agent.Steerable(config.Provider),
 	}
+	config.Steer = run.steers.take
 	ai.run = run
 	ai.requestNoteReferences = append([]aiNoteReference(nil), noteRefs...)
 	for _, ref := range noteRefs {
@@ -1183,6 +1207,8 @@ func (state *State) aiEvent(run *aiRun, event agent.Event) {
 			// Half an answer must not look like the whole of it.
 			ai.items = append(ai.items, aiItem{kind: aiNotice, text: state.messages.AIPanel.AnswerTruncated})
 		}
+	case agent.EventSteer:
+		state.aiDeliverSteer(run)
 	case agent.EventError:
 		ai.items = append(ai.items, aiItem{kind: aiNotice, text: errorText(event.Text)})
 	}
@@ -1229,6 +1255,9 @@ func (state *State) aiFinished(run *aiRun, messages []llm.Message, err error) {
 	if ai.run != run {
 		return
 	}
+	// Messages still waiting never reached the model; they are settled after
+	// this run's own messages are in the history.
+	pending := state.aiTakePending()
 	if run.stopTimer != nil {
 		run.stopTimer.Stop()
 	}
@@ -1287,6 +1316,7 @@ func (state *State) aiFinished(run *aiRun, messages []llm.Message, err error) {
 	}
 	ai.history = append(ai.history, messages...)
 	state.aiPersist(messages, run.target, run.extras, run.targetKey, run.attachments)
+	state.aiFinishPending(pending, err == nil && !pendingApproval)
 }
 
 func (state *State) aiPersist(messages []llm.Message, target gate.SessionInfo, extras []gate.SessionInfo, key string, attachments []aiAttachmentRef) {
@@ -1313,6 +1343,7 @@ func (state *State) aiPersist(messages []llm.Message, target gate.SessionInfo, e
 		}
 		ai.conv = conversation.ID
 	}
+	asked := false
 	for _, message := range messages {
 		stored := toStored(message)
 		if message.Role == llm.RoleUser || len(message.ToolCalls) > 0 {
@@ -1330,7 +1361,10 @@ func (state *State) aiPersist(messages []llm.Message, target gate.SessionInfo, e
 					}
 				}
 			}
-			if message.Role == llm.RoleUser {
+			if message.Role == llm.RoleUser && !asked {
+				// Only the question the run answers carries its files and
+				// references; interjections that followed it do not.
+				asked = true
 				metadata.Attachments = attachments
 				metadata.NoteReferences = append([]aiNoteReference(nil), ai.requestNoteReferences...)
 			}

@@ -58,13 +58,12 @@ func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 		"desktop_fullscreen_bar_x":         true,
 		"desktop_fullscreen_bar_y":         true,
 
-		"tab_double_click":       true,
-		"tab_numbers":            true,
-		"vertical_tabs_grouping": true,
-		"workspace_layouts":      true,
-		"sftp_local_bookmarks":   true,
-		"sftp_columns":           true, "sftp_download_directory": true, "default_editor": true,
-		"sftp_window_order": true, "sftp_open_mode": true, "sftp_directory_tree": true, "custom_editor_path": true,
+		"tab_double_click":        true,
+		"tab_numbers":             true,
+		"vertical_tabs_grouping":  true,
+		"workspace_layouts":       true,
+		"sftp_local_bookmarks":    true,
+		"sftp_download_directory": true, "default_editor": true, "custom_editor_path": true,
 		"sftp_transfer_filter":   true,
 		"forward_bind_addresses": true,
 		// Whether the new-tab picker lists its shells expanded is this
@@ -128,6 +127,7 @@ func richState() savedState {
 		},
 		HostGroups:           []savedHostGroup{{Name: "prod", Collapsed: true}, {Name: "dev"}},
 		Snippets:             []savedSnippet{{Name: "update", Command: "apt update"}, {Name: "update", Command: "brew update"}, {Name: "zzz", Command: "ls"}},
+		SnippetGroups:        []savedSnippetGroup{{Name: "ops/empty"}},
 		Highlights:           []savedHighlight{{Pattern: "ERROR", Color: "red"}, {Pattern: "warn", CaseSensitive: true, Color: "amber"}},
 		Forwards:             []savedForward{{Label: "db", HostAddress: "b.example.com", HostUser: "me", HostPort: 22, LocalPort: 5432, DestinationHost: "localhost", DestinationPort: 5432}},
 		ForwardBindAddresses: map[string]string{"web": "0.0.0.0"},
@@ -544,6 +544,49 @@ func TestChangedSavedFieldsRecognizesOneFieldChanges(t *testing.T) {
 	current.Language = "en"
 	if changes = changedSavedFields(previous, current); len(changes) != 2 {
 		t.Fatalf("mixed change = %+v", changes)
+	}
+}
+
+func TestEmptySnippetGroupSurvivesSaveAndReload(t *testing.T) {
+	options := freshOptions(t)
+	options.StatePath = filepath.Join(t.TempDir(), "config.db")
+	state := newTestState(t, options)
+	if !state.createSnippetGroup("Ops/Deploy") {
+		t.Fatal("createSnippetGroup failed")
+	}
+
+	// Verify it is stored as a shared snippet-group record synced with snippets.
+	store, err := configstore.Open(options.StatePath, configFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.Records()
+	store.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRecord := false
+	for _, record := range records {
+		if record.Kind == "snippet-group" && record.ID == "Ops/Deploy" {
+			foundRecord = true
+			if cat, ok := recordSyncCategory(record.Kind); !ok || cat != syncCategorySnippets {
+				t.Fatalf("snippet-group sync category = (%q, %v), want (%q, true)", cat, ok, syncCategorySnippets)
+			}
+		}
+	}
+	if !foundRecord {
+		t.Fatalf("empty snippet group was not persisted as a shared snippet-group record: %+v", records)
+	}
+
+	reloaded := newTestState(t, options)
+	if len(reloaded.snippets.list) != 0 {
+		t.Fatalf("unexpected snippets after reload: %+v", reloaded.snippets.list)
+	}
+	if !reflect.DeepEqual(reloaded.snippets.customGroups, []string{"Ops/Deploy"}) {
+		t.Fatalf("reloaded customGroups = %v, want [Ops/Deploy]", reloaded.snippets.customGroups)
+	}
+	if !reflect.DeepEqual(reloaded.snippets.groups, []string{"Ops", "Ops/Deploy"}) {
+		t.Fatalf("reloaded groups = %v, want [Ops Ops/Deploy]", reloaded.snippets.groups)
 	}
 }
 

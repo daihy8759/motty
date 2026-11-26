@@ -79,6 +79,13 @@ type ToolsMessages struct {
 	SnippetFilterAll          string
 	SnippetFilterNone         string
 	SnippetGroupsManage       string
+	SnippetTreeToggle         string
+	SnippetTreeResize         string
+	SnippetTreeExpandAll      string
+	SnippetTreeCollapseAll    string
+	SnippetTreeSearch         string
+	SnippetFolderAdd          string
+	SnippetFolderMore         string
 	SnippetGroupsTitle        string
 	SnippetGroupsDescription  string
 	SnippetGroupCountFmt      string
@@ -458,6 +465,9 @@ type ToolsMessages struct {
 	FlowNone               string
 	FlowHardware           string
 	FlowSoftware           string
+	FieldBackspace         string
+	BackspaceDEL           string
+	BackspaceCtrlH         string
 	PortsPicker            string
 	PortsNone              string
 	ErrSerialLine          string
@@ -698,6 +708,8 @@ type ToolsMessages struct {
 	GeneralUpdate                   string
 	GeneralUpdateDescription        string
 	GeneralUpdateCheck              string
+	GeneralUpdateDirectRetry        string
+	GeneralUpdateDirectRetryNote    string
 	GeneralUpdateDownload           string
 	GeneralUpdateSource             string
 	GeneralUpdateSourceDescription  string
