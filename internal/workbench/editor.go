@@ -149,6 +149,10 @@ type hostEditor struct {
 	colorDepth      int
 	desktopEncoding desktop.Encoding
 	effects         desktop.Effects
+	// resolution is the remote resolution choice of an RDP host, and
+	// resolutionCustom the size typed when the choice is a custom one.
+	resolution       desktopSize
+	resolutionCustom text.Editor
 	// ports are the serial ports found when the picker was last opened.
 	ports []serial.Port
 }
@@ -170,6 +174,7 @@ const (
 	fieldLoginCommand
 	fieldIdleInterval
 	fieldIdleInputCustom
+	fieldResolution
 	fieldCount
 )
 
@@ -200,6 +205,8 @@ func (editor *hostEditor) field(field hostField) *text.Editor {
 		return &editor.loginCommand
 	case fieldIdleInterval:
 		return &editor.idleInterval
+	case fieldResolution:
+		return &editor.resolutionCustom
 	case fieldIdleInputCustom:
 		return &editor.idleInputCustom
 	default:
@@ -264,6 +271,11 @@ func (editor *hostEditor) validate(hosts []Host, ignoreID uint32, messages i18n.
 	}
 	if editor.protocol == protocolRDP && editor.value(fieldUser) == "" {
 		return messages.Desktop.ErrRDPUser
+	}
+	if editor.protocol == protocolRDP {
+		if _, ok := editor.resolutionSize(); !ok {
+			return messages.Desktop.ErrResolution
+		}
 	}
 	if editor.protocol == protocolSSH && editor.value(fieldOTP) != "" {
 		if _, err := otp.Parse(editor.value(fieldOTP)); err != nil {
@@ -397,11 +409,18 @@ func (editor *hostEditor) load(host Host) {
 	editor.standardSecurity = host.Protocol == protocolRDP && host.StandardSecurity
 	editor.legacyTLS = host.Protocol == protocolRDP && host.LegacyTLS
 	editor.colorDepth, editor.desktopEncoding, editor.effects = 0, desktop.EncodingAuto, desktop.DefaultEffects()
+	editor.resolution, editor.resolutionCustom = desktopSize{}, text.Editor{}
 	switch host.Protocol {
 	case protocolVNC:
 		editor.colorDepth, editor.desktopEncoding = host.ColorDepth, host.PreferredEncoding
 	case protocolRDP:
 		editor.colorDepth, editor.effects = host.ColorDepth, host.desktopEffects()
+		if size, fixed := host.fixedDesktopSize(); fixed {
+			editor.resolution = desktopSizeChoice(size)
+			if editor.resolution == customDesktopSize {
+				editor.resolutionCustom.Insert(size.String())
+			}
+		}
 	}
 	if host.Protocol == protocolSerial {
 		editor.port.Insert(host.Line.String())
@@ -440,6 +459,9 @@ func (editor *hostEditor) host(id uint32) Host {
 		host.StandardSecurity = editor.standardSecurity
 		host.LegacyTLS = editor.legacyTLS
 		host.ColorDepth = rdpColorDepth(editor.colorDepth)
+		if size, ok := editor.resolutionSize(); ok {
+			host.DesktopWidth, host.DesktopHeight = savedDesktopSize(size.width, size.height)
+		}
 		if editor.effects != desktop.DefaultEffects() {
 			effects := editor.effects
 			host.Effects = &effects

@@ -358,7 +358,7 @@ func (conn *Conn) detectRemoteSystem(client *ssh.Client, banner string) (RemoteS
 	probes.begin()
 	session, err := client.NewSession()
 	if err != nil {
-		probes.end(err)
+		probes.end(probeFailure(nil, conn.ctx, err))
 		if transportGone(err) {
 			return guess, false, err
 		}
@@ -383,7 +383,7 @@ func (conn *Conn) detectRemoteSystem(client *ssh.Client, banner string) (RemoteS
 	var probe answer
 	select {
 	case probe = <-answered:
-		probes.end(probe.err)
+		probes.end(probeFailure(nil, conn.ctx, probe.err))
 	case <-timer.C:
 		// The channel is left to the server and released with the connection.
 		probes.end(nil)

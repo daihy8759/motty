@@ -162,6 +162,11 @@ func (state *State) paintsHostsPage() bool {
 func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 	defer state.devEndPaint(canvas, size)
 	canvas.SetTree(&tree)
+	if state.appLocked() {
+		state.paintAppLockPage(canvas, size)
+		return
+	}
+	state.lockUI.active = false
 	state.autosaveNotes(canvas)
 	state.syncNoteWindows()
 	state.workspaceCardRegions = state.workspaceCardRegions[:0]
@@ -248,9 +253,8 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 		state.fileNotices.paint(canvas, state.Theme(), state.windowRect())
 		return
 	}
-	// The window is a bar over a body. The terminals show the picture through their
-	// own ground, so with one set only the bar is shell-colored; the shell behind
-	// them must not cover it.
+	// The shell normally paints one opaque root. A terminal can instead show
+	// the desktop or a picture through its own ground; give the bar its own fill.
 	picture := state.paintBackground(canvas, size)
 	terminal := state.terminalPage()
 	fileManager := state.activeSFTPWindow() != nil
@@ -284,7 +288,7 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 	}
 	cardRight += state.toolbarDockSideReserveFor(false, false)
 	chrome.workspaceSlot = ui.Box{}
-	chrome.shellPicture = picture
+	chrome.shellBackdrop = picture || (terminal && state.desktopTransparency() > 0)
 	chrome.shellHeight = size.Height
 	chrome.shellGeometry = geometry
 	chrome.shellScroll = scroll
@@ -489,7 +493,7 @@ func (state *State) windowPage() *ui.Page {
 	chrome := &state.chrome
 	if chrome.windowPage == nil {
 		chrome.windowPage = ui.NewPage(ui.PageConfig{
-			Tree: &tree, Root: shellPageRoot, Theme: &state.theme, View: state.declareShell,
+			Tree: &tree, Root: shellPageRoot, Theme: &state.theme, EditMenu: &state.editMenu, View: state.declareWorkbenchPage,
 			ScrollbarSize: catalogBarGutter, Styles: &ui.Styles{Switch: state.switchLook},
 		})
 	}
@@ -504,6 +508,18 @@ func (state *State) windowPage() *ui.Page {
 func (state *State) WindowConfig(base app.Config) app.Config {
 	config := ui.Configure(state.windowPage(), base)
 	config.Paint = base.Paint
+	if state.options.TerminalTransparency {
+		// The terminal's default fill is translucent over the desktop, so the
+		// window itself must composite: nothing under the shell is opaque.
+		config.Transparent = true
+		config.ClearColor = app.Color{}
+		config.OnTransparentChange = func(active bool) {
+			state.windowComposited.Store(active)
+			if state.options.Invalidate != nil {
+				state.options.Invalidate()
+			}
+		}
+	}
 	// The assistant owns the wheel over its own panel: its lists keep their
 	// offsets in the page, but a modal dialog must still keep them still, which
 	// the page's generic scroll-area routing does not know. Everything else the
@@ -517,6 +533,49 @@ func (state *State) WindowConfig(base app.Config) app.Config {
 			w.activate()
 		}
 	}
+	// A lock may arrive between the previous paint and the next input. Do not
+	// let a stale business control in the page consume that event before the
+	// workbench handler can check the profile lock.
+	key, shortcut, pointer, input := config.OnKey, config.OnShortcut, config.OnPointer, config.TextInput
+	config.OnKey = func(event gfx.KeyEvent) gfx.EventResult {
+		if state.modal == modalAppLock && state.appLockBusy() {
+			return gfx.EventResult{Handled: true}
+		}
+		if state.appAccessBlocked() && (!event.Target.IsZero() && !appLockOwns(event.Target)) {
+			return gfx.EventResult{Handled: true}
+		}
+		if state.appLocked() && event.Target.IsZero() {
+			result := state.appLockKey(event)
+			result.Handled = true
+			return result
+		}
+		result := key(event)
+		if state.appAccessBlocked() {
+			result.Handled = true
+		}
+		return result
+	}
+	config.OnShortcut = func(event gfx.KeyEvent) gfx.EventResult {
+		if state.appAccessBlocked() || state.modal == modalAppLock {
+			return state.Shortcut(event)
+		}
+		return shortcut(event)
+	}
+	config.OnPointer = func(event gfx.PointerEvent) gfx.EventResult {
+		if state.modal == modalAppLock && state.appLockBusy() {
+			return gfx.EventResult{Handled: true}
+		}
+		if state.appAccessBlocked() && (!appLockOwns(event.Target)) {
+			return gfx.EventResult{Handled: true}
+		}
+		return pointer(event)
+	}
+	config.TextInput = func(context app.TextInputContext) *app.TextInput {
+		if (state.appAccessBlocked() || state.modal == modalAppLock) && state.appLockEditor(context.ID) == nil {
+			return nil
+		}
+		return input(context)
+	}
 	return config
 }
 
@@ -525,6 +584,9 @@ func (state *State) WindowConfig(base app.Config) app.Config {
 // the wheel over its backdrop: the panel keeps still behind it, as it did when
 // its list was painted by hand and the window's own handler saw the event first.
 func (state *State) scrollWindow(event gfx.ScrollEvent) gfx.EventResult {
+	if state.appAccessBlocked() {
+		return gfx.EventResult{Handled: true}
+	}
 	if state.hostGroupMenu {
 		// The move picker and its backdrop own the wheel over the host list.
 		return state.Scroll(event)
@@ -625,11 +687,11 @@ func (state *State) declareShell(c ui.C) {
 	}
 	chrome, pal := &state.chrome, state.pal
 	root := ui.Column(c).Fill()
-	if !chrome.shellPicture {
+	if !chrome.shellBackdrop {
 		root.Background(state.windowFrameColor())
 	}
 	root.Children(func() {
-		state.declareWindowBar(c, &chrome.bar, false, chrome.shellPicture, chrome.shellGeometry, chrome.shellScroll)
+		state.declareWindowBar(c, &chrome.bar, false, chrome.shellBackdrop, chrome.shellGeometry, chrome.shellScroll)
 		if chrome.shellFullPage {
 			return
 		}
@@ -774,7 +836,7 @@ func (state *State) declareProbeBar(c ui.C) {
 // the buttons; when even the narrowest do not fit they scroll under a clip, and the
 // new-tab button stays at the end of that room instead of being pushed out of the
 // window. With probe set only the places are declared, for windowBarGeometry.
-func (state *State) declareWindowBar(c ui.C, bar *windowBar, probe, picture bool, geometry barGeometry, scroll float32) {
+func (state *State) declareWindowBar(c ui.C, bar *windowBar, probe, backdrop bool, geometry barGeometry, scroll float32) {
 	m, pal, chrome := state.messages, state.pal, &state.chrome
 	leading, _ := state.windowTitlebarInsets()
 	visibleFileTabs := 0
@@ -798,7 +860,7 @@ func (state *State) declareWindowBar(c ui.C, bar *windowBar, probe, picture bool
 		// after it, take their own presses.
 		row.MovesWindow()
 	}
-	if picture {
+	if backdrop {
 		row.Background(state.windowFrameColor())
 	}
 	row.Children(func() {
@@ -1255,7 +1317,7 @@ type chromeLayout struct {
 	// the tabs come out; probeInput is what its cached view reads.
 	windowPage     *ui.Page
 	workspaceSlot  ui.Box
-	shellPicture   bool
+	shellBackdrop  bool
 	shellHeight    float32
 	shellGeometry  barGeometry
 	shellScroll    float32
@@ -1397,6 +1459,9 @@ func (state *State) declareNavigation(c ui.C) {
 		// A shell on this computer needs no host, so its way in is always at hand:
 		// above the Settings, at the bottom of the sidebar. A dev build also puts
 		// the component gallery there (see devDeclareNavigation).
+		if state.appLockEnabled() {
+			state.navigationItem(c, hitAppLock, iconLock, m.AppLock.Lock, false, 4)
+		}
 		state.navigationItem(c, hitLocalTerminal, iconTerminal, m.LocalTerminal, false, 4)
 		state.openLocalShellPickerOn(c.Canvas(), hitLocalTerminal, false)
 		state.devDeclareNavigation(c)
@@ -1593,7 +1658,7 @@ func (state *State) declareHostsToolbar(c ui.C, width float32, plan hostsHeaderP
 				state.chrome.searchBound = true
 			}
 			state.chrome.searchField.Disabled = state.hostSort.enabled
-			field := ui.TextFieldID(c, hitSearch, &state.chrome.searchField, m.NavSearch, m.SearchPlaceholder).
+			field := ui.TextField(c, &state.chrome.searchField, m.NavSearch, m.SearchPlaceholder, ui.WithID(hitSearch)).
 				Icon(lucideIcons[iconSearch]).FillWidth().Height(toolbarHeight).Disabled(state.hostSort.enabled)
 			if state.search.RuneCount() > 0 && !state.hostSort.enabled {
 				field = field.Action(lucideIcons[iconClose], m.SearchClear)
@@ -2892,6 +2957,8 @@ func dialogViewport(c ui.C) gfx.Rect {
 // dispatches.
 func (state *State) declareDialogs(c ui.C) {
 	switch state.modal {
+	case modalAppLock:
+		state.declareAppLockDialog(c)
 	case modalOpenLink:
 		state.declareLaunchDialog(c)
 	case modalStateNotice:
@@ -2906,6 +2973,8 @@ func (state *State) declareDialogs(c ui.C) {
 		state.declareTabRenameDialog(c)
 	case modalLocalStartupCommand:
 		state.declareLocalStartupCommandDialog(c)
+	case modalDesktopResolution:
+		state.declareDesktopResolutionDialog(c)
 	case modalAIRename:
 		state.declareAIRenameDialog(c)
 	case modalHostImportResult:
@@ -3492,8 +3561,8 @@ func (state *State) declareHostGroupDeleteDialog(c ui.C) {
 			// hand-painted group stretched them: a radio centres its circle and
 			// label in the row.
 			ui.RadioGroup(c).Fill().Children(func() {
-				ui.RadioID(c, hitGroupDeleteParent, &state.groupActions.ungroup, false, choices[0]).Grow(1)
-				ui.RadioID(c, hitGroupDeleteUngroup, &state.groupActions.ungroup, true, choices[1]).Grow(1)
+				ui.Radio(c, &state.groupActions.ungroup, false, choices[0], ui.WithID(hitGroupDeleteParent)).Grow(1)
+				ui.Radio(c, &state.groupActions.ungroup, true, choices[1], ui.WithID(hitGroupDeleteUngroup)).Grow(1)
 			})
 		})
 	})

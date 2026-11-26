@@ -425,8 +425,9 @@ func openWorkbenchWindow(application *app.Application, status *tray, hub *workbe
 		closeWindow()
 	}
 	state = workbench.New(workbench.Options{
-		DevelopmentSource: importSource,
-		Invalidate:        invalidate, Invalidator: &invalidator, NewWindow: newWindow,
+		DevelopmentSource:    importSource,
+		TerminalTransparency: app.Supports(app.CapabilityTransparentWindow),
+		Invalidate:           invalidate, Invalidator: &invalidator, NewWindow: newWindow,
 		Post:              application.Post,
 		PostAfter:         application.PostAfter,
 		SetMenuBar:        application.SetMenuBar,
@@ -493,6 +494,13 @@ func openWorkbenchWindow(application *app.Application, status *tray, hub *workbe
 
 	var nativeInput app.TextInput
 	resolveInput := func(context app.TextInputContext) *app.TextInput {
+		if state.ProfileLocked() {
+			if editor := state.EditorFor(context.ID); editor != nil {
+				nativeInput = app.TextInput{Editor: editor, NavigationKeys: context.NavigationKeys}
+				return &nativeInput
+			}
+			return nil
+		}
 		if context.Terminal {
 			return state.TerminalInput(context)
 		}

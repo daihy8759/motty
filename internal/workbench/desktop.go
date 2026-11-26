@@ -37,8 +37,11 @@ var (
 	hitDesktopReconnect  = tree.ID(desktopHits, "reconnect")
 	hitDesktopFullscreen = tree.ID(desktopHits, "fullscreen")
 	hitDesktopBarPin     = tree.ID(desktopHits, "bar-pin")
+	hitDesktopBarDock    = tree.ID(desktopHits, "bar-dock")
+	hitDesktopBarDrag    = tree.ID(desktopHits, "bar-drag")
 	hitDesktopLatency    = tree.ID(desktopHits, "latency")
 	hitDesktopQuality    = tree.ID(desktopHits, "quality")
+	hitDesktopResolution = tree.ID(desktopHits, "resolution")
 )
 
 const (
@@ -114,6 +117,10 @@ type desktopView struct {
 	settling       bool
 	// qualityMenu is whether the quality menu of the bar is open.
 	qualityMenu bool
+	// resolutionMenu is whether the resolution menu of an RDP bar is open.
+	resolutionMenu bool
+	// dockMenu is whether the fullscreen bar's dock menu is open.
+	dockMenu bool
 }
 
 // imageDigest identifies the picture a desktop's clipboard was last given, so the
@@ -433,6 +440,11 @@ func (state *State) openDesktop(session *Session) {
 		session.desk.close()
 	}
 	session.desk = newDesktopView(remote, session.host.Clipboard)
+	if _, fixed := session.host.fixedDesktopSize(); fixed {
+		// A host with a chosen resolution keeps it: the server is never asked
+		// to follow the pane, so the picture is scaled to the pane instead.
+		session.desk.resizer = nil
+	}
 	session.desk.chromeless = session.host.Chromeless
 	session.term.ended = false
 	session.desk.active = state.desktopVisible(session)
@@ -810,7 +822,7 @@ func (state *State) syncShortcutCapture() {
 	if capture.take == nil {
 		return
 	}
-	if want := state.desktopHoldsTheKeyboard(); want != capture.taken {
+	if want := !state.appAccessBlocked() && state.desktopHoldsTheKeyboard(); want != capture.taken {
 		capture.taken = want
 		if err := capture.take(want); err != nil && want {
 			// A platform that cannot take them leaves them with the system, as before.
@@ -1012,9 +1024,15 @@ func (state *State) clickDesktop(id gfx.ID) bool {
 		state.toggleDesktopFullscreen(session)
 	case hitDesktopBarPin:
 		state.setDesktopFullscreenBarAutoHide(!state.desktopBar.autoHide)
+	case hitDesktopBarDock:
+		view.dockMenu = !view.dockMenu
 	case hitDesktopQuality:
 		if !view.ended {
 			view.qualityMenu = !view.qualityMenu
+		}
+	case hitDesktopResolution:
+		if !view.ended {
+			view.resolutionMenu = !view.resolutionMenu
 		}
 	case hitDesktopCapture:
 		state.toggleCapture(view)
@@ -1156,6 +1174,14 @@ func (state *State) declareDesktopTools(c ui.C, session *Session, view *desktopV
 		if !view.fit {
 			actual = actual.Secondary()
 		}
+		var resolution ui.Box
+		rdpBar := session.host.Protocol == protocolRDP
+		if rdpBar {
+			resolution = ui.Button(c, m.Resolution).XSmall().Ghost().Hit(state.paneIdentity(session, hitDesktopResolution), m.Resolution)
+			if view.ended {
+				resolution = resolution.Disabled(true)
+			}
+		}
 		fullscreen := ui.Button(c, fullscreenLabel).XSmall().Ghost().Hit(state.paneIdentity(session, hitDesktopFullscreen), fullscreenLabel)
 		if view.ended {
 			fullscreen = fullscreen.Disabled(true)
@@ -1165,6 +1191,9 @@ func (state *State) declareDesktopTools(c ui.C, session *Session, view *desktopV
 			quality = quality.Disabled(true)
 		}
 		state.declareDesktopQualityMenu(c, session, view, quality)
+		if rdpBar {
+			state.declareDesktopResolutionMenu(c, session, view, resolution)
+		}
 	})
 }
 

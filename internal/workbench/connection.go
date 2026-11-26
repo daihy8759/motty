@@ -197,6 +197,8 @@ type DragPreview interface {
 }
 
 type Options struct {
+	// TerminalTransparency enables per-pixel desktop compositing for the main window.
+	TerminalTransparency bool
 	// DevelopmentSource offers a one-way import into an unused development
 	// profile. Nil disables discovery, including for explicit test profiles.
 	DevelopmentSource *DevelopmentSource
@@ -587,6 +589,7 @@ const (
 	modalOpenLink
 	modalRenameTab
 	modalLocalStartupCommand
+	modalDesktopResolution
 	modalAIRename
 	modalCloseTabs
 	modalQuitKeepWindows
@@ -616,6 +619,7 @@ const (
 	modalPasteReview
 	modalIconColorPicker
 	modalAgentHosts
+	modalAppLock
 )
 
 // tone colors a session's headline.
@@ -643,6 +647,9 @@ func (state *State) startConnection(session *Session, host Host) {
 }
 
 func (state *State) startConnectionMode(session *Session, host Host, automatic bool) {
+	if state.appAccessBlocked() {
+		return
+	}
 	if workspaceID, _, ok := state.deck.PaneForSession(layoutcore.SessionID(session.ID)); ok {
 		state.clearWorkspaceBroadcast(workspaceID)
 	}
@@ -927,6 +934,22 @@ func (state *State) finishStartingConnection(session *Session, automatic bool) {
 // connection goroutine asked for, so Paint only ever reads state. It does
 // nothing for sessions whose status is unchanged and whose shell is quiet.
 func (state *State) Wake() {
+	state.drainAppLockResults()
+	if state.appAccessBlocked() {
+		// Keep connected programs moving while their screens are concealed. The
+		// regular pump bounds its backlog and suppresses interactive effects
+		// while locked; new shells and automation wait for the normal wake.
+		for i := range state.sessions {
+			s := &state.sessions[i]
+			if s.term != nil && s.term.shell != nil {
+				state.pump(s)
+			}
+			if s.transfer.phase == transferRunning || s.transfer.phase == transferClosing {
+				state.pumpSessionTransfer(s)
+			}
+		}
+		return
+	}
 	defer state.syncDesktopFullscreen()
 	defer state.syncMenuBar()
 	defer state.syncDesktopSleep()
@@ -1499,6 +1522,11 @@ func (state *State) showNextPrompt() {
 }
 
 func (state *State) closeModal() {
+	if state.modal == modalAppLock {
+		state.lockUI.formFields = [3]appLockFormField{}
+		state.lockUI.formCount = 0
+		state.lockUI.error = ""
+	}
 	returnToRules := state.ruleManager.returning && (state.modal == modalHighlightRule || state.modal == modalAutofillRule || state.modal == modalDeleteRule)
 	returnToSnippetGroups := state.snippetGroups.returning && (state.modal == modalSnippetGroupRename || state.modal == modalSnippetGroupDelete)
 	returnToSnippet := state.modal == modalSnippetGroups && state.snippetGroups.returnToSnippet

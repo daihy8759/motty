@@ -66,6 +66,7 @@ func ChineseVariant(tag string) Language {
 // Messages is the complete set of user-visible workbench strings. Adding a
 // language means adding one field initialization, not touching call sites.
 type Messages struct {
+	AppLock        AppLockMessages
 	RemoteLogs     RemoteLogMessages
 	HostsPanel     HostsPanelMessages
 	ActionFeedback ActionFeedbackMessages
@@ -277,6 +278,8 @@ type Messages struct {
 	SettingsAppearanceSystem               string
 	SettingsAppearanceDark                 string
 	SettingsAppearanceLight                string
+	SettingsTransparency                   string
+	SettingsTransparencyDescription        string
 	SettingsCorners                        string
 	SettingsCornersRounded                 string
 	SettingsCornersSquare                  string
@@ -432,6 +435,7 @@ type Messages struct {
 	TipFiles                               string
 	TipFilesLocal                          string
 	SFTPInsertPath                         string
+	MenuCut                                string
 	MenuCopy                               string
 	MenuFile                               string
 	MenuEdit                               string

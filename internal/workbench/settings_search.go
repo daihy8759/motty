@@ -173,6 +173,9 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	row(settingsGeneral, m.SettingsSidebar, m.SettingsSidebarHint)
 	row(settingsGeneral, tools.DiagnosticsRow, tools.DiagnosticsDescription)
 	row(settingsAppearance, m.SettingsAppearance, "")
+	if state.terminalTransparent() {
+		rowSearch(settingsAppearance, m.SettingsTransparency, m.SettingsTransparencyDescription, "opacity transparency translucent")
+	}
 	rowSearch(settingsAppearance, m.SettingsCorners, "", "round square rounded corner radius")
 	rowSearch(settingsAppearance, m.SettingsIconColor, m.SettingsIconColorDescription, "logo icon taskbar dock tray")
 	row(settingsAppearance, m.SettingsTextSize, m.SettingsTextSizeDescription)
@@ -272,6 +275,9 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	row(settingsFiles, tools.FilesTerminalFollow, tools.FilesTerminalFollowDescription)
 	row(settingsFiles, tools.FilesFollowSetup, tools.FilesFollowSetupDescription)
 
+	rowSearch(settingsSecurity, m.AppLock.Protection, m.AppLock.SettingsDescription, "master password lock unlock 锁屏 主密码")
+	row(settingsSecurity, m.AppLock.ChangePassword, "")
+	rowSearch(settingsSecurity, m.AppLock.SystemTitle, m.AppLock.SystemDescription, "Windows Hello Touch ID fingerprint biometric 系统解锁 指纹")
 	row(settingsSecurity, m.SessionLogs.SettingsCaptureRow, m.SessionLogs.SettingsCaptureDescription)
 	row(settingsSecurity, m.SessionLogs.SettingsStorageRow, m.SessionLogs.SettingsStorageDescription)
 	row(settingsSecurity, m.SessionLogs.ClearUnfavorited, m.SessionLogs.ClearUnfavoritedPrompt)

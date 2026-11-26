@@ -2,6 +2,7 @@ package workbench
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"motty/internal/desktop"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/text"
 	"github.com/vivaui/viva/ui"
+	"motty/internal/buildinfo"
 	"motty/internal/configstore"
 	"motty/internal/highlight"
 	"motty/internal/i18n"
@@ -237,6 +239,7 @@ var (
 
 // Settings: its explicit choices.
 var (
+	hitTerminalTransparency    = tree.ID(settingsHits, "terminal-transparency")
 	hitSettingsTextSizeDown    = tree.ID(settingsHits, "settings-text-size-down")
 	hitSettingsTextSizeReset   = tree.ID(settingsHits, "settings-text-size-reset")
 	hitSettingsTextSizeUp      = tree.ID(settingsHits, "settings-text-size-up")
@@ -458,7 +461,15 @@ const (
 // Paint reads it synchronously and never starts work or allocates background
 // resources.
 type State struct {
-	dashboard dashboardState
+	lockUI             appLockUI
+	cancelLockAction   context.CancelFunc
+	cancelSync         context.CancelFunc
+	syncGeneration     uint64
+	appProtection      *applicationProtection
+	profileDeferred    bool
+	afterProfileUnlock func()
+	protectedChildren  []*app.ContentWindow
+	dashboard          dashboardState
 	// clipboardDirty says the system clipboard changed since the desktop
 	// sessions were last offered it. It is set from any goroutine
 	// (ClipboardChanged) and cleared on the window's thread (Wake).
@@ -581,7 +592,6 @@ type State struct {
 	forwardColumns         [6]components.TableColumn
 	forwardHeadings        [6]string
 	keysColumns            [5]components.TableColumn
-	keysHeadings           [5]string
 	proxyColumns           [6]components.TableColumn
 	proxyHeadings          [6]string
 	proxyFilteredIndices   []int
@@ -637,8 +647,8 @@ type State struct {
 	systemKeys    systemKeyCapture
 	winChrome     windowChrome
 	// desktopBar is a fullscreen remote desktop's floating bar: whether its pin
-	// keeps it visible, and where the pointer is in the band at the top edge
-	// that reveals it. See desktop_fullscreen.go.
+	// keeps it visible, the edge it is docked to, and where the pointer is in the
+	// strip and the bar that reveal it. See desktop_fullscreen.go.
 	desktopBar desktopFullscreenBar
 	// desktopAwake says this window already holds the sleep request for a visible
 	// remote desktop; see keepAwakeForDesktop.
@@ -738,6 +748,7 @@ type State struct {
 	language           i18n.Language
 	languageChosen     bool // the user picked it; until then it follows the system
 	messages           i18n.Messages
+	editMenu           ui.EditMenuLabels // the words of every text field's edit menu, which each window's page points at
 	modal              modalKind
 	modalSession       uint32
 	dialogError        string
@@ -751,14 +762,18 @@ type State struct {
 	post func(func())
 	// setMenuBar installs the macOS menu bar; menuBarSig is the state it was
 	// built for, so Wake rebuilds it only when enablement or language changed.
-	setMenuBar      func([]app.Menu) error
-	menuBarSig      string
-	appearance      appearance
-	appearanceMode  appearanceMode
-	cornerStyle     cornerStyle
-	iconColor       iconColor
-	iconColorChoice iconColor // the unconfirmed selection in the icon picker
-	networkProxy    networkProxyMode
+	setMenuBar           func([]app.Menu) error
+	menuBarSig           string
+	appearance           appearance
+	appearanceMode       appearanceMode
+	cornerStyle          cornerStyle
+	terminalTransparency ui.SliderState
+	// windowComposited is whether the desktop really shows through the window,
+	// as the platform reported when it opened: the setting means nothing without it.
+	windowComposited atomic.Bool
+	iconColor        iconColor
+	iconColorChoice  iconColor // the unconfirmed selection in the icon picker
+	networkProxy     networkProxyMode
 	// sshBrowser is the Chromium-family browser the SSH tab's browser opens.
 	// Automatic takes the first one installed.
 	sshBrowser          sshbrowser.Family
@@ -783,6 +798,9 @@ type State struct {
 	localStartupCommands map[string]string
 	// localStartupDialog is the popup that edits one shell's startup command.
 	localStartupDialog localStartupDialog
+	// desktopResolution is the popup that types a custom remote resolution for
+	// an open RDP session.
+	desktopResolution  desktopResolutionDialog
 	localStart         localStartPolicy
 	lastLocalDirectory string // where a local shell last was; a new local terminal starts there when no local tab is in front
 	localShellMenu     localShellSelect
@@ -1182,6 +1200,10 @@ func (state *State) Close() {
 	if state == nil || state.closed {
 		return
 	}
+	if state.cancelLockAction != nil {
+		state.cancelLockAction()
+	}
+	state.cancelProfileSync()
 	state.keepAwakeForDesktop(false)
 	state.flushNoteDraft()
 	state.noteActiveLocalDirectory()
@@ -1260,6 +1282,9 @@ func (state *State) Close() {
 		state.forwards[index].stop()
 	}
 	state.closeForwardTunnels()
+	if p := state.appProtection; p != nil && (state.appLockEnabled() || p.busy) && len(state.profileWindows()) == 0 {
+		state.sealProfile()
+	}
 	memoryTrim.request()
 }
 
@@ -1312,6 +1337,7 @@ func New(options Options) *State {
 		update:                updateState{firstDelay: updateFirstDelayDefault, every: updateIntervalDefault},
 		winChrome:             windowChrome{remember: options.RememberWindowFrame},
 	}
+	state.refreshEditMenu()
 	// The command drawer shows by default; a saved state may close it.
 	// The reference cell stands in until the first paint measures the font on the
 	// window's canvas (measureTerminalCell).
@@ -1323,9 +1349,36 @@ func New(options Options) *State {
 	state.tooltip.ShowOnFocus()
 	state.setAppearance(appearanceDark)
 	state.recompileHighlights()
+	state.attachProtection()
+	if state.appLocked() {
+		state.profileDeferred = true
+		prefs, _ := configstore.ReadLocal(context.Background(), state.options.StatePath, configFormat, localKey)
+		var saved savedState
+		_ = json.Unmarshal(prefs, &saved)
+		if state.winChrome.remember {
+			window, _ := configstore.ReadLocal(context.Background(), state.options.StatePath, configFormat, windowKey(state.windowID, buildinfo.Development))
+			state.restoreWindowPlacement(applyWindowState(saved, window, state.windowID))
+		}
+		state.restoreWindowAppearance(saved)
+		state.initAI()
+		state.stopAppearanceWatch = state.options.WatchSystemAppearance(state.systemAppearanceChanged)
+		state.validateInterfaceFont()
+		if err := state.appProtection.openErr; err != nil {
+			state.lockUI.error = state.appLockErrorText(err)
+		}
+	} else {
+		state.loadApplicationProfile()
+	}
+	if state.options.Group != nil {
+		state.options.Group.join(state)
+	}
+	return state
+}
+
+// loadApplicationProfile runs once per window, after the profile can be read.
+func (state *State) loadApplicationProfile() {
 	state.initKnownHosts()
 	state.initSecrets()
-
 	state.starting = true
 	// A fresh window's completion is the automatic list: the menu opens as the
 	// user types, and the inline suggestion is a choice in Settings. Capturing
@@ -1339,11 +1392,9 @@ func New(options Options) *State {
 	config, saved, configBase, report, err := openConfig(state.options.StatePath, state.windowID)
 	state.config, state.configBase = config, configBase
 	if config != nil && state.secrets.vault != nil {
-		// Saved passwords are versioned by the same clock as the records.
 		state.secrets.vault.SetStamper(func() (string, error) {
 			stamp, err := config.NextStamp()
 			if err == nil {
-				// A password changed: it is shared, so other computers will want it.
 				state.requestSync()
 			}
 			return string(stamp), err
@@ -1389,7 +1440,9 @@ func New(options Options) *State {
 	state.syncVisible()
 	state.refreshHostGroups()
 	state.refreshHostSelection()
-	state.initAI()
+	if state.ai.inbox == nil {
+		state.initAI()
+	}
 	if state.bg.waiting {
 		state.decodeBackground(state.bg.serial)
 	}
@@ -1397,12 +1450,8 @@ func New(options Options) *State {
 	state.validateInterfaceFont()
 	state.loginOn = state.settingsLoginEnabled()
 	state.starting = false
-	if state.options.Group != nil {
-		state.options.Group.join(state)
-	}
 	state.sshSyncStart()
 	state.offerDevelopmentImport()
-	return state
 }
 
 // setAppearance selects the palette and rebuilds the component theme once, so
@@ -1500,6 +1549,9 @@ func (state *State) Messages() i18n.Messages {
 // not an open dialog's field. The runtime reports which hit holds keyboard
 // focus; this maps it to the text it edits.
 func (state *State) EditorFor(hit gfx.ID) *text.Editor {
+	if state.appAccessBlocked() || state.modal == modalAppLock {
+		return state.appLockEditor(hit)
+	}
 	if state.noteExit != nil {
 		return nil
 	}
@@ -1573,6 +1625,10 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 	case modalRenameTab:
 		if hit == hitTabRenameField {
 			return &state.tabRename.editor
+		}
+	case modalDesktopResolution:
+		if hit == hitDesktopResolutionField {
+			return &state.desktopResolution.editor
 		}
 	case modalLocalStartupCommand:
 		if hit == hitLocalStartupField {
@@ -1770,6 +1826,13 @@ func (state *State) WindowControlsStyle() app.WindowControlsStyle {
 
 // Click applies one stable hit action and plays the motion of the row's icon.
 func (state *State) Click(id gfx.ID) {
+	if state.appAccessBlocked() || state.modal == modalAppLock {
+		state.clickAppLock(id)
+		return
+	}
+	if state.clickAppLock(id) {
+		return
+	}
 	if !state.clickNoteExit(id) {
 		state.click(id, true)
 		state.keepKeyboardOnDesktop()
@@ -1878,6 +1941,9 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		return
 	case modalLocalStartupCommand:
 		state.clickLocalStartupCommandDialog(id)
+		return
+	case modalDesktopResolution:
+		state.clickDesktopResolutionDialog(id)
 		return
 	case modalAIRename:
 		state.clickAIRenameDialog(id)
@@ -2692,6 +2758,18 @@ func (state *State) hostForRow(id gfx.ID) (Host, bool) {
 // Pointer handles the pointer events the runtime does not turn into clicks. A
 // double click on a host row connects to it.
 func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
+	if state.modal == modalAppLock && !state.appAccessBlocked() {
+		if appLockOwns(event.Target) {
+			return gfx.EventResult{}
+		}
+		return gfx.EventResult{Handled: true}
+	}
+	if state.appAccessBlocked() {
+		if appLockOwns(event.Target) {
+			return gfx.EventResult{}
+		}
+		return gfx.EventResult{Handled: true}
+	}
 	// A drag owns the pointer from the press it captures to its release: the
 	// panes may change size on every motion, and the shells wait for the end.
 	switch event.Kind {
@@ -2728,9 +2806,14 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 		defer func() { outcome.Repaint = true }()
 	}
 	// A fullscreen desktop's unpinned bar appears while the pointer reaches the
-	// top edge, before the pointer's press can land on the picture there.
+	// edge it is docked to, before the pointer's press can land on the picture
+	// there.
 	if state.trackDesktopFullscreenBar(event) {
 		defer func() { outcome.Repaint = true }()
+	}
+	// A press on the bar itself moves it, before the picture can take the press.
+	if result, handled := state.desktopBarPointer(event); handled {
+		return result
 	}
 	if event.Kind == gfx.PointerDown && !workspaceInlineOwns(event.Target) {
 		state.workspaceCommandEdit = workspaceCommandInline{}
@@ -3037,7 +3120,7 @@ func isHostTagsTarget(id gfx.ID) bool {
 func isDialogField(id gfx.ID) bool {
 	switch id {
 	case hitDialogLabel, hitDialogAddress, hitDialogUser, hitDialogPassword, hitDialogPassphrase, hitDialogGroup, hitDialogPort, hitDialogTags,
-		hitDialogIdleInterval, hitDialogIdleCustomInput:
+		hitDialogIdleInterval, hitDialogIdleCustomInput, hitDialogResolution:
 		return true
 	}
 	return false
@@ -3064,6 +3147,8 @@ func fieldForDialogHit(id gfx.ID) hostField {
 		return fieldIdleInterval
 	case hitDialogIdleCustomInput:
 		return fieldIdleInputCustom
+	case hitDialogResolution:
+		return fieldResolution
 	default:
 		return fieldPort
 	}
@@ -3071,6 +3156,17 @@ func fieldForDialogHit(id gfx.ID) hostField {
 
 // Key provides roving keyboard focus for terminal tabs.
 func (state *State) Key(event gfx.KeyEvent) (outcome gfx.EventResult) {
+	if result := state.appLockShortcut(event, nil); result.Handled {
+		return result
+	}
+	if state.modal == modalAppLock && !state.appAccessBlocked() {
+		return state.appLockFormKey(event)
+	}
+	if state.appAccessBlocked() {
+		result := state.appLockKey(event)
+		result.Handled = true
+		return result
+	}
 	if state.noteExit != nil {
 		return state.noteExitKey(event)
 	}
@@ -3315,6 +3411,9 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		return result
 	}
 	if result, handled := state.localStartupCommandKey(event); handled {
+		return result
+	}
+	if result, handled := state.desktopResolutionKey(event); handled {
 		return result
 	}
 	if result, handled := state.tabRenameKey(event); handled {
