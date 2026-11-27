@@ -85,6 +85,11 @@ func (state *State) runMenuAction(action shortcutAction) gfx.EventResult {
 		return gfx.EventResult{}
 	}
 	result := state.executeShortcut(action)
+	if action == shortcutCopy && state.aiPanelVisible() {
+		if text, ok := state.ai.panel.aiTextSelectionText(); ok {
+			result.ClipboardText = text
+		}
+	}
 	// The menu writes the clipboard itself so a failure reaches the user as a
 	// notice; the field is cleared so the runtime does not write it again.
 	if result.ClipboardText != "" && state.options.SetClipboardText != nil {
