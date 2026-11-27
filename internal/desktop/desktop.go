@@ -229,6 +229,47 @@ type FileReceiver interface {
 	CancelReceivingFiles()
 }
 
+// FileListing is one entry of the file list a remote system's clipboard holds:
+// Name is the path inside the copied selection (`\` separated), Size is the
+// length the server named, and Dir says the entry is a folder.
+type FileListing struct {
+	Name string
+	Size int64
+	Dir  bool
+}
+
+// ClipboardFileList is a remote clipboard's file list, or why none arrived.
+type ClipboardFileList struct {
+	Files []FileListing
+	// Version names this list: a read, release or download of it passes it back,
+	// so one that has since been replaced is left alone.
+	Version uint64
+	Err     error
+}
+
+// FileLister is a Session that can take the file list the remote system put on
+// its clipboard and leave the content on the server until a paste here reads
+// it. The workbench promises the files to the local clipboard (Windows), so a
+// copy inside the remote session transfers nothing until it is pasted; the
+// promise reads the content a range at a time.
+type FileLister interface {
+	Session
+	// RemoteFileList returns the list the remote clipboard delivered since the
+	// previous call, if any.
+	RemoteFileList() (ClipboardFileList, bool)
+	// ReadRemoteFile returns up to length bytes at offset of the file at index
+	// of the list called version. It blocks until the server answers.
+	ReadRemoteFile(version uint64, index int, offset int64, length int) ([]byte, error)
+	// ReleaseRemoteFileList drops the list called version and lets the server's
+	// clipboard data go, once the local clipboard no longer holds the promise.
+	// A newer list is left alone.
+	ReleaseRemoteFileList(version uint64)
+	// DownloadRemoteFileList reads the list called version into a staging
+	// directory instead, for a caller that decided not to promise it; the files
+	// then arrive through FileReceiver. It fails when the list is gone.
+	DownloadRemoteFileList(version uint64) error
+}
+
 // FileProgress is how far files being received have come.
 type FileProgress struct {
 	// Name is the entry being saved, a `/` separated path inside the selection.
@@ -335,9 +376,10 @@ const (
 // Invert, when not empty, holds one entry per pixel for those that show the
 // inverse of the picture behind them instead of a color: the remote's
 // monochrome inverting pointer, whose body is white over a dark picture and
-// black over a light one. No system can draw such a cursor from a static
-// image, so the workbench paints those pixels over the picture itself; the
-// BGRA entry there is transparent and says nothing.
+// black over a light one. A static system cursor cannot express that, so the
+// workbench makes a picture of the shape for the pointer's place, each
+// inverting pixel the inverse of the picture under it, and hands that to the
+// system as the pointer; the BGRA entry there is transparent and says nothing.
 type PointerShape struct {
 	Width, Height int
 	HotX, HotY    int
@@ -346,8 +388,10 @@ type PointerShape struct {
 }
 
 // PointerSource is a Session whose remote system names its pointer's shape.
-// The workbench shows the bitmap as the local pointer over the picture: the
-// system draws it, except the inverting pixels, which it paints itself.
+// The workbench hands the bitmap to the system as the local pointer over the
+// picture, which draws and moves it like any pointer. A shape with inverting
+// pixels becomes a picture made for the pointer's place, so it follows what
+// lies under the pointer.
 type PointerSource interface {
 	Session
 	// PointerShape returns what the remote last said about its pointer, the
@@ -379,6 +423,12 @@ type Options struct {
 	// Clipboard allows the clipboard to cross in both directions. Off, the
 	// backend neither sends the local clipboard nor keeps the remote's.
 	Clipboard bool
+	// DeferClipboardFiles asks a backend whose protocol can do it to deliver
+	// the remote clipboard's file list without its content, so a local paste
+	// reads the content later (see FileLister). A backend that cannot leaves it
+	// false and downloads as usual; the workbench only asks where the platform
+	// can put promised files on the clipboard.
+	DeferClipboardFiles bool
 	// Audio plays the remote system's sound on this computer's default output
 	// device. Off, the backend asks the server for no audio at all. A machine
 	// whose device cannot be opened, or whose server offers no PCM format,

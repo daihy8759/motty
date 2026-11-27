@@ -84,10 +84,12 @@ type Session interface {
   layout. The floating bar holds the pin, the exit button, the keyboard switch,
   the RTT badge and a menu that docks it to the top, bottom, left or right edge;
   it can also be dragged anywhere over the picture, snapping to an edge when let
-  go near one. Its placement, edge or spot, is remembered on this computer.
-  Pinned (the default), the bar stays visible; unpinned, it hides and returns
-  only while the pointer reaches a thin strip along the docked edge, or the place
-  a free bar was left, so content near the picture's edge keeps its clicks. The
+  go near one, and it keeps the spot along that edge where it was let go. Its
+  placement, edge or spot, is remembered on this computer. Pinned (the
+  default), the bar stays visible; unpinned, it slides under its edge (a free
+  bar fades into the middle of where it was) and leaves a small translucent
+  tab with the connection light where it sits. Only that tab brings the bar
+  out; the rest of the picture, the edge included, keeps its clicks. The
   same chord restores the window.
   `Ctrl+Alt+G` still releases the keyboard. Fullscreen exits if the connection
   ends, another page is activated, or a Motty dialog needs attention. The
@@ -357,18 +359,21 @@ cursor, so the remote's arrow, I-beam and resize shapes are the ones the
 remote system drew (`internal/desktop/rdp/session.go`, `desktop.PointerShape`).
 A hidden pointer hides this one; a system pointer is the ordinary arrow.
 
-One kind of shape a system cursor cannot draw: the monochrome inverting
-pointers of Windows' **Windows Inverted** schemes, whose body shows the inverse
-of whatever is behind it (MS-RDPBCGR's AND/XOR masks, `XOR=1` over `AND=1`).
-Motty keeps those pixels apart in the decode
+One kind of shape a system cursor image cannot express on its own: the
+monochrome inverting pointers of Windows' **Windows Inverted** schemes, whose
+body shows the inverse of whatever is behind it (MS-RDPBCGR's AND/XOR masks,
+`XOR=1` over `AND=1`). Motty keeps those pixels apart in the decode
 (`internal/rdpcore/protocol/pointer`: `PointerUpdate.Invert`) instead of
-picking a color for them, and over the picture it hides the system cursor and
-paints the shape itself, each inverting pixel the inverse of the picture under
-it read from the presented surface (`gfx.Surface.Pixel`). Over the bars the
-ordinary arrow is shown, since the picture is not there to be inverted. This
-is the only pointer Motty paints rather than hands to the system; every other
-shape is still the system's own cursor, and the painted one follows the
-picture at the display's device pixels.
+picking a color for them, and for the pointer's place makes a cursor image in
+which each of them is the inverse of the picture under it read from the
+presented surface (`gfx.Surface.Pixel`). The system draws that image as the
+pointer and moves it like any other, so it keeps the hardware pointer's
+smoothness and the picture is not repainted as it moves; the image is made
+again only when the pointer reaches pixels with another picture under them or
+that picture changes, and the picture hit asks for it at each pointer place
+through `gfx.HitOptions.CursorImageAt`. Over the bars the ordinary arrow is
+shown, since the picture is not there to be inverted. One image pixel is one
+device pixel, as for every shape the remote names.
 
 ### Quality and bandwidth
 
@@ -513,17 +518,34 @@ file list (`CF_HDROP` on Windows, file URLs on macOS, `text/uri-list` and
 `x-special/gnome-copied-files` on Linux), so they paste in Finder, Explorer, a
 Linux file manager or any application that takes files.
 
+On Windows the list is promised to this computer's clipboard instead
+(`app.SetClipboardFilePromises`): the descriptor tree goes on the clipboard, and
+a file's bytes are fetched from the server only when the user pastes it. Copying
+a large file inside the remote session therefore transfers nothing until it is
+pasted here, as with Windows' own client; Explorer shows the copy's progress.
+The promise reads the content a 64 KiB range at a time, and the server's
+clipboard data stays locked while it is on the clipboard. When something else
+replaces the local clipboard, the promise's release callback unlocks the
+server's data and the list is dropped. macOS and Linux file managers copy the
+paths the clipboard names and cannot ask for a file's content at paste time, so
+there the files are still read into the staging directory as soon as the server
+copies them.
+
 The server's clipboard data is locked (`CB_LOCK_CLIPDATA`) while it is read, as
 `mstsc` does, and unlocked when the read ends; a copy made on the server
 meanwhile therefore cannot change the list under the read. A new remote
 clipboard cancels an older read and releases its lock, so an old selection never
 replaces a newer one. The lock is taken before the list request; the size and
 64 KiB byte-range requests carry its id, which is what makes Windows serve the
-contents after the lock.
+contents after the lock. In the promised case the same lock is held for as long
+as the clipboard holds the promise, and a newer remote clipboard or a local copy
+releases it.
 
-The clipboard holds paths, not copies: the staging directory has to stay while
-a paste may still read it, and the system's temporary-directory cleanup or the
-user removes it afterwards. Names that could leave the staging directory
+Where the files are downloaded, the clipboard holds paths, not copies: the
+staging directory has to stay while a paste may still read it, and the system's
+temporary-directory cleanup or the user removes it afterwards. A promised list
+takes at most 4096 entries and names the shell can describe; a larger selection,
+or one the platform refuses, is downloaded as before. Names that could leave the staging directory
 (`..`, absolute paths, empty components) are refused and counted; Windows'
 forbidden characters and device names (`CON`, `COM1`, …) are made safe the same
 way as in the other direction; paths are limited to 32 levels and the list to
@@ -593,12 +615,13 @@ On the **Windows 11 test VM** (`tools/winenv`), with clipboard sharing on: a pic
 copied on this computer reached the session's clipboard (`Clipboard.GetImage`
 returned the same 320x200 picture, corner pixels included) and pasted into the
 remote Paint, shown in a capture of the session. The same VM, with the **Windows
-Inverted** pointer scheme (its `*_i.cur` files) applied: the headless Motty build
-showed the arrow's body as the inverse of the wallpaper under it — orange over the
-blue wallpaper, near-black over the light taskbar — instead of the black body with
-a white edge it drew before; the shape decoded from that session is
-`internal/rdpcore/protocol/pointer/testdata/inverted-arrow.bin`, and the session
-reported the system cursor hidden over the picture (`cursor` -> `shape=11`).
+Inverted** pointer scheme (its `*_i.cur` files) applied, is where the inverted
+arrow of `internal/rdpcore/protocol/pointer/testdata/inverted-arrow.bin` came
+from. The pointer is now handed to the system as a cursor picture: over Notepad's
+text, an inverting I-beam reached the system at the pointer's place as a 64x64
+picture whose body was the inverse of the white page under it (`cursor` ->
+`image=64x64 hot=19,20 scale=2`), and moving the pointer did not repaint the
+picture.
 The workbench's certificate question (new, trusted, changed, rejected) is
 covered by a unit test with a fake server. Not exercised: a domain-joined server,
 Windows Server editions, Windows 10, an RD Gateway, Kerberos, a real window,
@@ -612,5 +635,4 @@ a console session, and xrdp ignores the field.
 ## Follow-ups
 
 * VeNCrypt/TLS with a certificate trust prompt like the SSH host-key prompt.
-* A cursor shape drawn locally (needs a hidden-cursor option in Viva).
 * Telling a covered or minimized window apart (Viva).

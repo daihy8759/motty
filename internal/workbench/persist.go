@@ -114,6 +114,7 @@ type savedState struct {
 	TerminalTabTitle        bool                `json:"terminal_tab_title,omitempty"`
 	TerminalShowLatency     bool                `json:"terminal_show_latency,omitempty"`
 	TerminalToolbarPosition string              `json:"terminal_toolbar_position,omitempty"`
+	ToastPlacement          string              `json:"toast_position,omitempty"`
 	TerminalToolbarSize     string              `json:"terminal_toolbar_size,omitempty"`
 	TerminalBellOff         bool                `json:"terminal_bell_off,omitempty"`
 	TerminalPasteConfirmOff bool                `json:"terminal_paste_confirm_off,omitempty"`
@@ -585,8 +586,8 @@ func (state *State) snapshot() savedState {
 		VerticalTabsGrouping:       state.verticalTabs.grouping,
 		FullscreenBarAutoHide:      state.desktopBar.autoHide,
 		FullscreenBarDock:          state.desktopBar.dock.String(),
-		FullscreenBarX:             float64(state.desktopBar.free.X),
-		FullscreenBarY:             float64(state.desktopBar.free.Y),
+		FullscreenBarX:             float64(state.desktopBar.at.X),
+		FullscreenBarY:             float64(state.desktopBar.at.Y),
 		NetworkProxy:               state.networkProxy.String(),
 		SSHBrowser:                 string(state.sshBrowser),
 		TerminalOption:             state.terminalOption.String(),
@@ -634,6 +635,7 @@ func (state *State) snapshot() savedState {
 		TerminalShowLatency:        state.terminalShowLatency,
 		TerminalToolbarPosition:    state.terminalToolbarPosition.String(),
 		TerminalToolbarSize:        state.terminalToolbarSize.String(),
+		ToastPlacement:             state.toastPlacement.String(),
 		TerminalBellOff:            state.terminalBellOff,
 		TerminalPasteConfirmOff:    state.pasteConfirmOff,
 		TerminalInputClickOff:      state.terminalInputClickOff,
@@ -1261,6 +1263,7 @@ func (state *State) restoreShared(saved savedState) {
 	state.toolbars.restore(saved.Toolbars)
 	state.terminalToolbarPosition = terminalToolbarPositionFromString(saved.TerminalToolbarPosition)
 	state.terminalToolbarSize = terminalToolbarSizeFromString(saved.TerminalToolbarSize)
+	state.toastPlacement = toastPlacementFromString(saved.ToastPlacement)
 	if saved.Toolbars != nil {
 		if saved.Toolbars.Position != "" {
 			state.terminalToolbarPosition = terminalToolbarPositionFromString(saved.Toolbars.Position)
@@ -1304,7 +1307,9 @@ func (state *State) restoreShared(saved savedState) {
 	state.terminalShowLatency = saved.TerminalShowLatency
 	state.desktopBar.autoHide = saved.FullscreenBarAutoHide
 	state.desktopBar.dock = desktopBarDockFromString(saved.FullscreenBarDock)
-	state.desktopBar.free = gfx.Point{
+	// The spot along an edge the bar was placed at; a file from before the bar
+	// could be placed has none, which reads as the middle of the edge.
+	state.desktopBar.at = gfx.Point{
 		X: min(max(float32(saved.FullscreenBarX), 0), 1),
 		Y: min(max(float32(saved.FullscreenBarY), 0), 1),
 	}

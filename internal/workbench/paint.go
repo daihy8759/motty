@@ -250,7 +250,7 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 		state.paintDesktopDetails(canvas, session, bounds)
 		state.endMenus()
 		state.tooltip.Paint(canvas, state.Theme(), state.windowRect(), components.TooltipOptions{Layer: tooltipLayer, SideOffset: tooltipGap}, components.HoverTooltipDelay)
-		state.fileNotices.paint(canvas, state.Theme(), state.windowRect())
+		state.fileNotices.paintAt(canvas, state.Theme(), state.windowRect(), state.toastPlacement.position())
 		return
 	}
 	// The shell normally paints one opaque root. A terminal can instead show
@@ -362,7 +362,7 @@ func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
 	if _, formatting := canvas.Hovered().In(hitNoteFormats); !formatting {
 		state.tooltip.Paint(canvas, state.Theme(), viewport, components.TooltipOptions{Layer: tooltipLayer, SideOffset: tooltipGap}, components.HoverTooltipDelay)
 	}
-	state.fileNotices.paint(canvas, state.Theme(), gfx.Rect{Y: windowBarHeight, Width: size.Width, Height: max(size.Height-windowBarHeight, 0)})
+	state.fileNotices.paintAt(canvas, state.Theme(), gfx.Rect{Y: windowBarHeight, Width: size.Width, Height: max(size.Height-windowBarHeight, 0)}, state.toastPlacement.position())
 	if !state.workspaceTemplateFocusPending.IsZero() {
 		if state.activeSection == sectionWorkspaces && state.modal == modalNone {
 			canvas.RequestFocus(state.workspaceTemplateFocusPending)
@@ -611,17 +611,13 @@ func (state *State) scrollWindow(event gfx.ScrollEvent) gfx.EventResult {
 		// scroll route (and its backdrop) decide where the event goes.
 		return state.windowPage().RouteWheel(event)
 	}
-	panel := &state.ai.panel
-	if panel.rect.Width > 0 && pointInRect(event.X, event.Y, panel.rect) && state.aiBackgroundScrollBlocked() {
-		return gfx.EventResult{Handled: true}
-	}
-	if result, handled := state.aiPanelScroll(event); handled {
-		return result
-	}
 	// A window dialog owns the wheel over its backdrop. Ask the window's own
 	// handler before the page: the page hands the wheel to the scroll area,
 	// table or list under the pointer first, and those lie behind the dialog
-	// too, so the page would scroll them out from under it.
+	// too, so the page would scroll them out from under it. It also comes
+	// before the assistant's panel: a dialog is centred in the window and can
+	// lie over the panel, and the wheel there is the dialog's, not the panel's
+	// to swallow.
 	if state.modal != modalNone {
 		if state.modal == modalProxyBatchAssociate {
 			// The jump picker's open list and the candidates are the page's.
@@ -630,6 +626,13 @@ func (state *State) scrollWindow(event gfx.ScrollEvent) gfx.EventResult {
 			return result
 		}
 		return state.Scroll(event)
+	}
+	panel := &state.ai.panel
+	if panel.rect.Width > 0 && pointInRect(event.X, event.Y, panel.rect) && state.aiBackgroundScrollBlocked() {
+		return gfx.EventResult{Handled: true}
+	}
+	if result, handled := state.aiPanelScroll(event); handled {
+		return result
 	}
 	// The notes panel's preview is an overlay of the panes: its scroll area is
 	// laid out outside the page's flow, so the wheel is applied here to keep it
@@ -3216,6 +3219,7 @@ func (state *State) declareHostFormBody(c ui.C, title string) {
 	// valid only until the end of the paint that made it.
 	form.passwordControl = ui.Box{}
 	form.authBox, form.portsBox, form.wslDistroBox = ui.Box{}, ui.Box{}, ui.Box{}
+	form.baudBox = ui.Box{}
 	form.encodingBox, form.iconBox = ui.Box{}, ui.Box{}
 	form.idleIntervalBox, form.idleUnitBox, form.idleInputBox = ui.Box{}, ui.Box{}, ui.Box{}
 	for index := range form.colorSwatchBoxes {
@@ -3441,6 +3445,9 @@ func (state *State) paintHostFormFields(canvas *gfx.Canvas) {
 	}
 	if form.portsBox.Valid() {
 		state.rememberHostPageSelect(canvas, form.portsBox, hitDialogPortsTrigger)
+	}
+	if form.baudBox.Valid() {
+		state.rememberHostPageSelect(canvas, form.baudBox, hitDialogBaud)
 	}
 	if form.wslDistroBox.Valid() {
 		state.rememberHostPageSelect(canvas, form.wslDistroBox, hitDialogWSLDistro)
