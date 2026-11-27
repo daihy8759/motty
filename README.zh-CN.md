@@ -310,6 +310,18 @@ python3 tools/headless_drive.py /tmp/motty-home tools/e2e/host_menu_move_e2e.txt
 
 `tools/README.md` 里有 headless 驱动、fixture 和端到端脚本。打包走 Viva：
 
+在 macOS 上构建 Apple Silicon 版本，可以在仓库根目录运行：
+
+```sh
+tools/build-macos-arm64.sh
+```
+
+脚本会先将 `../viva` 的 `main` 分支快进到 `origin/main`，然后在
+`build/apple-silicon/` 生成 `.app`、`.zip` 和 `.dmg`。Viva 工作区必须干净，
+且更新必须能够快进；也可传入自定义输出目录作为脚本的第一个参数。
+
+其他打包方式：
+
 ```sh
 cd ../viva
 go run ./cmd/viva package -C ../motty --format app,dmg --sign-identity -

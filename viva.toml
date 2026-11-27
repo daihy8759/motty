@@ -28,8 +28,6 @@ entitlements = "assets/macos.entitlements"
 
 [mac.info]
 NSMicrophoneUsageDescription = "A program running in a Motty local terminal is requesting access to your microphone."
-
-[mac.info]
 NSLocalNetworkUsageDescription = "Motty uses the local network to connect to SSH hosts and remote desktop servers you choose."
 
 [mac.dmg]
