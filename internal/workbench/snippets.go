@@ -5,13 +5,14 @@ import (
 	"strings"
 	"time"
 
+	"motty/internal/configstore"
+	"motty/internal/term"
+
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/keymap"
 	"github.com/vivaui/viva/text"
 	"github.com/vivaui/viva/ui"
-	"motty/internal/configstore"
-	"motty/internal/term"
 )
 
 // Snippets are commands the user keeps to send to a terminal later: from the
@@ -89,6 +90,7 @@ var (
 	// Inline editor controls on the Snippets page.
 	hitSnippetInlineName         = tree.ID(snippetsHits, "snippet-inline-name")
 	hitSnippetInlineCommand      = tree.ID(snippetsHits, "snippet-inline-command")
+	hitSnippetInlineCommandHelp  = tree.ID(snippetsHits, "snippet-inline-command-help")
 	hitSnippetInlineGroup        = tree.ID(snippetsHits, "snippet-inline-group")
 	hitSnippetInlineGroupTrigger = tree.ID(snippetsHits, "snippet-inline-group-trigger")
 	hitSnippetInlineGroupClear   = tree.ID(snippetsHits, "snippet-inline-group-clear")
@@ -205,28 +207,29 @@ type snippetNewDraft struct {
 
 // snippetInlineEditor holds the Snippets page's right-pane inline editor state.
 type snippetInlineEditor struct {
-	draft       bool
-	savedDraft  *snippetNewDraft
-	loadedValid bool
-	loadedIndex int
-	loadedSnap  snippet
-	name        text.Editor
-	command     text.Editor
-	nameForm    ui.FormFieldState
-	nameField   ui.Field
-	nameBound   bool
-	commandArea dialogArea
-	groupPicker components.SingleSelectState
-	groupSlot   ui.Box
-	capturing   bool
-	error       string
-	breadcrumb  string
-	shortcutLbl string
-	dirty       bool
-	saveTimer   *time.Timer
-	saveDelay   time.Duration
-	saveSeq     uint64
-	lastFocus   gfx.ID
+	draft          bool
+	savedDraft     *snippetNewDraft
+	loadedValid    bool
+	loadedIndex    int
+	loadedSnap     snippet
+	name           text.Editor
+	command        text.Editor
+	nameForm       ui.FormFieldState
+	nameField      ui.Field
+	nameBound      bool
+	commandArea    dialogArea
+	groupPicker    components.SingleSelectState
+	groupSlot      ui.Box
+	capturing      bool
+	error          string
+	errorSelection ui.TextSelectionState // what the user selected of error, to copy it
+	breadcrumb     string
+	shortcutLbl    string
+	dirty          bool
+	saveTimer      *time.Timer
+	saveDelay      time.Duration
+	saveSeq        uint64
+	lastFocus      gfx.ID
 }
 
 // resetSnippetPreview resets transient previews/menus after the list changes.

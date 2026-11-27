@@ -13,11 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/vivaui/viva/app"
-	"github.com/vivaui/viva/components"
-	"github.com/vivaui/viva/gfx"
-	"github.com/vivaui/viva/text"
-	"github.com/vivaui/viva/ui"
 	"motty/internal/buildinfo"
 	"motty/internal/configstore"
 	"motty/internal/highlight"
@@ -28,6 +23,12 @@ import (
 	"motty/internal/sshconn"
 	"motty/internal/systemproxy"
 	layoutcore "motty/internal/workspace"
+
+	"github.com/vivaui/viva/app"
+	"github.com/vivaui/viva/components"
+	"github.com/vivaui/viva/gfx"
+	"github.com/vivaui/viva/text"
+	"github.com/vivaui/viva/ui"
 )
 
 var (
@@ -205,7 +206,9 @@ var (
 	hitKeysPaste       = tree.ID(keysHits, "keys-paste")
 	hitKeysGenerate    = tree.ID(keysHits, "keys-generate")
 	hitKeysCopyPublic  = tree.ID(keysHits, "keys-copy-public")
+	hitKeysCopyPrivate = tree.ID(keysHits, "keys-copy-private")
 	hitKeysExport      = tree.ID(keysHits, "keys-export")
+	hitKeysEdit        = tree.ID(keysHits, "keys-edit")
 	hitKeysRemove      = tree.ID(keysHits, "keys-remove")
 	hitKeysPassphrase  = tree.ID(keysHits, "keys-passphrase")
 	hitKeysCertificate = tree.ID(keysHits, "keys-certificate")
@@ -341,6 +344,7 @@ var (
 	hitSFTPChownUserItem   = tree.Sub(sftpHits, tree.Name("sftp-chown-user"))  // + the match index
 	hitSFTPChownGroupItem  = tree.Sub(sftpHits, tree.Name("sftp-chown-group")) // + the match index
 	hitSFTPChmodBits       = tree.Sub(sftpHits, tree.Name("sftp-chmod-bit"))   // + the bit index
+	hitSFTPChmodRecursive  = tree.ID(sftpHits, "sftp-chmod-recursive")
 	hitSFTPDialogClose     = tree.ID(sftpHits, "sftp-dialog-close")
 	hitSFTPDialogCancel    = tree.ID(sftpHits, "sftp-dialog-cancel")
 	hitSFTPDialogSubmit    = tree.ID(sftpHits, "sftp-dialog-submit")
@@ -741,24 +745,25 @@ type State struct {
 	// search is the box beside Connect: typing narrows the host list, and
 	// Connect opens what it holds. visible lists the indexes into hosts that
 	// match it; it is rebuilt when the text or the host list changes.
-	search             text.Editor
-	visible            []int
-	visibleQuery       string
-	visibleHosts       int
-	status             string
-	language           i18n.Language
-	languageChosen     bool // the user picked it; until then it follows the system
-	messages           i18n.Messages
-	editMenu           ui.EditMenuLabels // the words of every text field's edit menu, which each window's page points at
-	modal              modalKind
-	modalSession       uint32
-	dialogError        string
-	editor             hostEditor
-	forwardEditor      forwardEditor
-	forwardDialogError string
-	proxyEditor        proxyEditor
-	proxyDialogError   string
-	options            Options
+	search               text.Editor
+	visible              []int
+	visibleQuery         string
+	visibleHosts         int
+	status               string
+	language             i18n.Language
+	languageChosen       bool // the user picked it; until then it follows the system
+	messages             i18n.Messages
+	editMenu             ui.EditMenuLabels // the words of every text field's edit menu, which each window's page points at
+	modal                modalKind
+	modalSession         uint32
+	dialogError          string
+	dialogErrorSelection ui.TextSelectionState // what the user selected of dialogError, to copy it
+	editor               hostEditor
+	forwardEditor        forwardEditor
+	forwardDialogError   string
+	proxyEditor          proxyEditor
+	proxyDialogError     string
+	options              Options
 	// post runs work on the window thread; nil uses ai.inbox, which Wake drains.
 	post func(func())
 	// setMenuBar installs the macOS menu bar; menuBarSig is the state it was
@@ -887,6 +892,9 @@ type State struct {
 	sftpDirectoryTree  bool
 	sftpWindowOrder    sftpWindowOrder
 	sftpOpenMode       sftpOpenMode
+
+	sftpClearUploads        bool
+	sftpTransferAutoOpenOff bool
 	// filePreviewMB bounds what a document window loads, in megabytes. The Files
 	// settings choose it with a stepper that has no upper bound.
 	filePreviewMB   int
@@ -1113,6 +1121,8 @@ type State struct {
 	// hostKeyRows is the host-key dialog's lines, kept between paints so the
 	// dialog does not rebuild its list every frame.
 	hostKeyRows []hostKeyRow
+	// hostKeySelection is what the user selected of those lines, to copy it.
+	hostKeySelection ui.TextSelectionState
 
 	// area: keychain, palette, import and the rest
 	// hostGridPaint is the card grid's declaration: one control paints the cards
@@ -1158,23 +1168,24 @@ type State struct {
 	pendingDirectory string
 
 	// Prompt state, filled when a connection asks a question.
-	hostKeyDescription       string
-	passwordFields           []text.Editor
-	sudoSFTP                 sudoSFTPDialog
-	passwordInputs           []dialogField
-	passwordQuestions        []sshconn.Question
-	passwordError            string
-	passwordDescription      string
-	keyPassphrase            text.Editor
-	keyPassphraseError       string
-	keyPassphraseDescription string
-	keyPassphraseInput       dialogField
-	clipboardRequest         remoteClipboardRequest
-	autofillRules            autofillUI
-	loginExpectStep          loginExpectStepState
-	credentialForm           credentialUI
-	commandPalette           commandPalette
-	proxyProfileForm         proxyProfileUI
+	hostKeyDescription          string
+	passwordFields              []text.Editor
+	sudoSFTP                    sudoSFTPDialog
+	passwordInputs              []dialogField
+	passwordQuestions           []sshconn.Question
+	passwordError               string
+	passwordDescription         string
+	keyPassphrase               text.Editor
+	keyPassphraseError          string
+	keyPassphraseErrorSelection ui.TextSelectionState // what the user selected of keyPassphraseError, to copy it
+	keyPassphraseDescription    string
+	keyPassphraseInput          dialogField
+	clipboardRequest            remoteClipboardRequest
+	autofillRules               autofillUI
+	loginExpectStep             loginExpectStepState
+	credentialForm              credentialUI
+	commandPalette              commandPalette
+	proxyProfileForm            proxyProfileUI
 	// proxyProfileReturn is the modal the profile dialog returns to when the
 	// host proxy dialog opened it to make a profile for itself; modalNone otherwise.
 	proxyProfileReturn modalKind
