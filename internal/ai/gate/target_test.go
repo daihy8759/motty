@@ -7,11 +7,17 @@ import (
 
 	"motty/internal/ai/risk"
 	"motty/internal/ai/tools"
+	"motty/internal/shellkind"
 )
 
 type targetBackend struct {
 	fakeBackend
 	session string
+}
+
+func (b *targetBackend) Sessions(ctx context.Context) ([]SessionInfo, error) {
+	sessions, err := b.fakeBackend.Sessions(ctx)
+	return append(sessions, SessionInfo{ID: "2", Title: "db", Ready: true, Shell: shellkind.POSIX}), err
 }
 
 func (b *targetBackend) Exec(_ context.Context, args tools.TerminalExecArgs) (ExecResult, error) {

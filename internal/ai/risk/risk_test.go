@@ -19,6 +19,7 @@ var exact = []tc{
 	{"find . -type f -exec grep -l x {} +", Low}, {"ps aux", Low}, {"ps aux | grep nginx", Low}, {"df -h", Low}, {"du -sh *", Low},
 	{"free -m", Low}, {"uptime", Low}, {"uname -a", Low}, {"whoami", Low}, {"id", Low}, {"pwd", Low}, {"echo hello", Low},
 	{"date", Low}, {"date +%s", Low}, {"stat /etc/hosts", Low}, {"wc -l a.txt", Low}, {"sort a.txt | uniq -c", Low},
+	{"date --date '2026-01-01' +%F", Low}, {"date --reference file +%F", Low}, {"date --file dates.txt +%F", Low},
 	{"journalctl -u nginx --since today", Low}, {"journalctl -xe", Low}, {"systemctl status nginx", Low}, {"systemctl show sshd", Low},
 	{"systemctl list-units --failed", Low}, {"systemctl is-active nginx", Low}, {"docker ps", Low}, {"docker ps -a", Low},
 	{"docker logs -f web", Low}, {"docker inspect web", Low}, {"docker images", Low}, {"docker container ls", Low},
@@ -103,6 +104,7 @@ var exact = []tc{
 	{"sudo rm -rf /tmp/x", High}, {"cd /tmp; rm -rf a", High}, {"ls && rm a", High}, {"ls | rm", High}, {"LD_PRELOAD=/x ls", High},
 	{"watch -n 1 'rm x'", High}, {"su -c 'rm x' bob", High}, {"bash -c 'rm x'", High}, {"sh -c 'ls; rm x'", High}, {"ssh host rm x", High}, {"trap 'rm x' EXIT", High},
 	{"hostname newname", High}, {"date -s '2020-01-01'", High}, {"fsck /dev/sda1", High}, {"losetup /dev/loop0 f", High}, {"journalctl --vacuum-size=1M", High},
+	{"date --set '2026-01-01'", High}, {"date 010100002026", High},
 	{"fuser -k 80/tcp", High}, {"gpg --delete-keys x", High}, {"aws s3 rm s3://x", High}, {"terraform apply", High}, {"lvcreate -L1G x", High},
 
 	// --- Critical
@@ -306,6 +308,36 @@ func TestDecideMatrix(t *testing.T) {
 		if d.String() != s {
 			t.Errorf("Decision(%d).String() = %q", d, d.String())
 		}
+	}
+}
+
+func TestApprovalReasonsSurviveCommandComposition(t *testing.T) {
+	policy := Policy{Enabled: true, AutoUpTo: High}
+	for _, test := range []struct {
+		command string
+		level   Level
+	}{
+		{"custom-tool --help", Medium},
+		{"git custom-subcommand", Medium},
+		{"./tools/ls", High},
+		{"sh -c 'custom-tool'", Medium},
+		{"echo $(custom-tool)", High},
+		{"echo 'unterminated", High},
+		{"echo " + strings.Repeat("a", maxInput), High},
+		{"source ./settings.sh", High},
+		{"cat < ~/.ssh/id_ed25519_sk", Medium},
+		{"cat /etc/ssh/ssh_host_ed25519_key; systemctl stop demo", High},
+	} {
+		assessment := Classify(test.command)
+		if assessment.Level != test.level || policy.Decide(assessment) != DecisionAsk {
+			t.Errorf("classification of %q = %+v, want %v with approval", short(test.command), assessment, test.level)
+		}
+		if assessment.ApprovalReason == "" || !strings.Contains(strings.Join(assessment.Reasons, "\n"), assessment.ApprovalReason) {
+			t.Errorf("classification of %q lost its approval reason: %+v", short(test.command), assessment)
+		}
+	}
+	if decision := policy.Decide(Classify("custom-tool; systemctl reboot")); decision != DecisionConfirmText {
+		t.Errorf("critical action decision = %v, want typed confirmation", decision)
 	}
 }
 

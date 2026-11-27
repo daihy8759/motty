@@ -1508,9 +1508,9 @@ var traditionalAIPanel = AIPanelMessages{
 	RiskCritical: "極高風險",
 
 	AutoScopeHint:       "本次對話中哪些操作無需確認即可執行",
-	AutoScopeLowDesc:    "只讀檢查自動執行，改動類操作先確認。",
-	AutoScopeMediumDesc: "只讀檢查和小範圍改動自動執行；刪除、改權限、停服務與執行無法審閱的程式碼仍先確認。",
-	AutoScopeHighDesc:   "極高風險以下都自動執行，極高風險仍需輸入確認詞。",
+	AutoScopeLowDesc:    "可驗證的只讀檢查自動執行，其餘操作先確認。",
+	AutoScopeMediumDesc: "已識別的低、中風險操作可自動執行；涉及憑證或無法可靠評估時仍須確認。",
+	AutoScopeHighDesc:   "已識別的高風險操作也可自動執行；涉及憑證或無法可靠評估時仍須確認，極高風險須輸入確認詞。",
 
 	ReasoningEffort:     "思考水平",
 	ReasoningEffortHint: "調節模型的思考深度與推理 token 預算",
@@ -1752,7 +1752,7 @@ var traditionalAISettings = AISettingsMessages{
 
 	BehaviourTitle:          "助手行為",
 	AutoRun:                 "無需確認直接執行",
-	AutoRunDesc:             "不超過此風險等級的指令自行執行；高危指令始終先詢問。",
+	AutoRunDesc:             "設定自動執行的風險上限。涉及憑證或無法可靠評估時仍須確認，極高風險須輸入確認詞。",
 	RiskLow:                 "低",
 	RiskMedium:              "中",
 	RiskHigh:                "高",

@@ -39,18 +39,18 @@ func (c *call) inner(ws []word, a *acc) {
 func (s *state) analyze(src string, depth int) acc {
 	var a acc
 	if depth > maxDepth {
-		a.add(High, "nesting too deep to review", "Split the command into separate steps")
+		a.requireApproval(High, "nesting too deep to review", "Split the command into separate steps")
 		return a
 	}
 	if s.budget--; s.budget < 0 {
-		a.add(High, "command too complex to review", "Split the command into separate steps")
+		a.requireApproval(High, "command too complex to review", "Split the command into separate steps")
 		return a
 	}
 	p := &parser{s: s, src: src, depth: depth}
 	p.run()
 	a.merge(p.acc)
 	if p.err != "" {
-		a.add(High, "could not parse the command: "+p.err, "Rewrite it as simpler, well-formed commands")
+		a.requireApproval(High, "could not parse the command: "+p.err, "Rewrite it as simpler, well-formed commands")
 	}
 	saved := s.funcs
 	if len(p.funcs) > 0 {
@@ -125,6 +125,10 @@ func (s *state) pipeline(pl []*cmd, depth int, a *acc) {
 func (s *state) command(c *cmd, in stdin, depth int, a *acc) {
 	for _, r := range c.redirs {
 		switch r.op {
+		case "<", "<>", "<&":
+			a.checkCredential(r.target.text)
+		}
+		switch r.op {
 		case ">", ">>", ">|", "&>", "&>>", "<>":
 			s.writeTarget(r.target, "redirection", a)
 		case ">&":
@@ -144,9 +148,13 @@ func (s *state) command(c *cmd, in stdin, depth int, a *acc) {
 	ws := c.words[c.nameIdx:]
 	s.words(ws, in, depth, a)
 	for _, w := range ws {
-		if credWord(w.text) {
-			a.add(Medium, "touches private key or credential material", "")
-		}
+		a.checkCredential(w.text)
+	}
+}
+
+func (a *acc) checkCredential(text string) {
+	if credWord(text) {
+		a.requireApproval(Medium, "touches private key or credential material", "")
 	}
 }
 
@@ -203,11 +211,11 @@ func isInterpreter(name string) bool {
 
 func (s *state) words(ws []word, in stdin, depth int, a *acc) {
 	if s.budget--; s.budget < 0 {
-		a.add(High, "command too complex to review", "Split the command into separate steps")
+		a.requireApproval(High, "command too complex to review", "Split the command into separate steps")
 		return
 	}
 	if depth > maxDepth {
-		a.add(High, "nesting too deep to review", "Split the command into separate steps")
+		a.requireApproval(High, "nesting too deep to review", "Split the command into separate steps")
 		return
 	}
 	for len(ws) > 0 && ws[0].isAssign() {
@@ -220,7 +228,7 @@ func (s *state) words(ws []word, in stdin, depth int, a *acc) {
 	n := ws[0]
 	args := ws[1:]
 	if n.dyn() || n.glob || n.indirect {
-		a.add(High, "command name is built from a variable, glob or substitution (possible obfuscation)", "Write the command name literally")
+		a.requireApproval(High, "command name is built from a variable, glob or substitution (possible obfuscation)", "Write the command name literally")
 		for _, w := range args {
 			if w.text == "/" || w.text == "/*" || w.text == "~" {
 				a.add(Critical, "computed command applied to a filesystem root", "")
@@ -237,6 +245,13 @@ func (s *state) words(ws []word, in stdin, depth int, a *acc) {
 		args = append([]word{{text: name, quoteAt: -1}}, args...)
 		name = "service"
 	}
+	if index := strings.LastIndexByte(n.text, '/'); index >= 0 {
+		switch n.text[:index] {
+		case "/bin", "/usr/bin", "/sbin", "/usr/sbin", "/etc/init.d":
+		default:
+			a.requireApproval(High, "executable path is outside standard system locations: "+short(n.text), "")
+		}
+	}
 	c := &call{s: s, name: name, args: args, in: in, depth: depth, label: name, subAt: -1}
 	switch {
 	case wrappers[name] != nil:
@@ -252,9 +267,9 @@ func (s *state) words(ws []word, in stdin, depth int, a *acc) {
 	r := lookupRule(name)
 	if r == nil {
 		if strings.Contains(n.text, "/") {
-			a.add(High, "runs a local program or script that cannot be reviewed: "+short(n.text), "Read the script first (cat), then run it")
+			a.requireApproval(High, "runs a local program or script that cannot be reviewed: "+short(n.text), "Read the script first (cat), then run it")
 		} else {
-			a.add(Medium, "unrecognized command "+short(name), "")
+			a.requireApproval(Medium, "unrecognized command "+short(name), "")
 		}
 		return
 	}
@@ -286,6 +301,9 @@ func (s *state) apply(r *rule, c *call, a *acc) {
 				lvl = l
 			} else if r.hasDef {
 				lvl = r.def
+				if r.nested[sub] == nil {
+					a.recordApproval("unrecognized subcommand " + c.label)
+				}
 			}
 			if nr := r.nested[sub]; nr != nil {
 				nc := *c
@@ -364,7 +382,7 @@ func (s *state) wrapper(w *wrapSpec, c *call, a *acc) {
 		var parts []string
 		for _, x := range inner {
 			if x.dyn() {
-				a.add(High, c.name+" runs a command line built from variables", "")
+				a.requireApproval(High, c.name+" runs a command line built from variables", "")
 				return
 			}
 			parts = append(parts, x.text)
@@ -407,12 +425,12 @@ func (s *state) shell(c *call, a *acc) {
 	rest := args[i:]
 	if hasC {
 		if len(rest) == 0 {
-			a.add(High, c.name+" -c without a script", "")
+			a.requireApproval(High, c.name+" -c without a script", "")
 			return
 		}
 		sc := rest[0]
 		if sc.dyn() {
-			a.add(High, c.name+" -c runs a script built from variables or substitutions", "Write the script out literally")
+			a.requireApproval(High, c.name+" -c runs a script built from variables or substitutions", "Write the script out literally")
 			return
 		}
 		a.merge(s.analyze(sc.text, c.depth+1))
@@ -431,16 +449,16 @@ func (s *state) shell(c *call, a *acc) {
 	}
 	switch c.in.kind {
 	case inPipe:
-		a.add(High, "pipes data into a shell, which executes it (remote code execution risk)", "Save the text to a file, read it, then run it")
+		a.requireApproval(High, "pipes data into a shell, which executes it (remote code execution risk)", "Save the text to a file, read it, then run it")
 	case inHere:
-		a.add(High, "a here-document or here-string feeds a shell", "Review the text, then run its commands directly")
+		a.requireApproval(High, "a here-document or here-string feeds a shell", "Review the text, then run its commands directly")
 	case inFile:
-		a.add(High, "a shell reads commands from a file or stdin", "")
+		a.requireApproval(High, "a shell reads commands from a file or stdin", "")
 	default:
 		if len(rest) > 0 {
-			a.add(High, "runs a shell script that cannot be reviewed", "Read the script first (cat), then run it")
+			a.requireApproval(High, "runs a shell script that cannot be reviewed", "Read the script first (cat), then run it")
 		} else {
-			a.add(High, "starts a shell", "")
+			a.requireApproval(High, "starts a shell", "")
 		}
 	}
 	if c.in.text != "" {
@@ -456,10 +474,10 @@ func (s *state) interpreter(c *call, a *acc) {
 		}
 	}
 	if c.in.kind == inPipe {
-		a.add(High, "pipes data into "+c.name+", which executes it", "Save the text to a file, read it, then run it")
+		a.requireApproval(High, "pipes data into "+c.name+", which executes it", "Save the text to a file, read it, then run it")
 		return
 	}
-	a.add(High, c.name+" runs code that cannot be reviewed", "Read the script first (cat), then run it")
+	a.requireApproval(High, c.name+" runs code that cannot be reviewed", "Read the script first (cat), then run it")
 }
 
 // hasFlag reports whether args contain one of the short option letters in

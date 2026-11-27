@@ -1508,9 +1508,9 @@ var chineseAIPanel = AIPanelMessages{
 	RiskCritical: "极高风险",
 
 	AutoScopeHint:       "本次对话中哪些操作无需确认即可执行",
-	AutoScopeLowDesc:    "只读检查自动执行，改动类操作先确认。",
-	AutoScopeMediumDesc: "只读检查和小范围改动自动执行；删除、改权限、停服务与执行无法审阅的代码仍先确认。",
-	AutoScopeHighDesc:   "极高风险以下都自动执行，极高风险仍需输入确认词。",
+	AutoScopeLowDesc:    "可验证的只读检查自动执行，其余操作先确认。",
+	AutoScopeMediumDesc: "已识别的低、中风险操作可自动执行；涉及凭据或无法可靠评估时仍需确认。",
+	AutoScopeHighDesc:   "已识别的高风险操作也可自动执行；涉及凭据或无法可靠评估时仍需确认，极高风险需输入确认词。",
 
 	ReasoningEffort:     "思考水平",
 	ReasoningEffortHint: "调节模型的思考深度与推理 token 预算",
@@ -1752,7 +1752,7 @@ var chineseAISettings = AISettingsMessages{
 
 	BehaviourTitle:          "助手行为",
 	AutoRun:                 "无需确认直接执行",
-	AutoRunDesc:             "不超过此风险等级的命令自行执行；高危命令始终先询问。",
+	AutoRunDesc:             "设定自动执行的风险上限。涉及凭据或无法可靠评估时仍需确认，极高风险需输入确认词。",
 	RiskLow:                 "低",
 	RiskMedium:              "中",
 	RiskHigh:                "高",

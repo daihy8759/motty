@@ -163,7 +163,7 @@ func init() {
 		}
 	}})
 	reg("date", &rule{level: Low, check: func(c *call, a *acc) {
-		for _, w := range positional(c.args, set("-d -r -f")) {
+		for _, w := range positional(c.args, set("-d -r -f --date --reference --file")) {
 			if !strings.HasPrefix(w.text, "+") {
 				a.add(High, "date: sets the system clock", "")
 			}
@@ -211,7 +211,9 @@ func init() {
 	reg("useradd userdel usermod adduser deluser groupadd groupdel groupmod addgroup delgroup passwd chpasswd newusers gpasswd chage chsh chfn visudo vipw vigr",
 		&rule{level: High})
 	reg("eval", &rule{level: High, check: evalCheck, safer: "Run the command directly instead of building it as text"})
-	reg("source .", &rule{level: High, check: func(c *call, a *acc) {}, safer: "Read the file first, then run its commands"})
+	reg("source .", &rule{level: High, check: func(c *call, a *acc) {
+		a.recordApproval(c.name + " runs shell code from a file that cannot be reviewed")
+	}, safer: "Read the file first, then run its commands"})
 	reg("trap", &rule{level: Low, check: func(c *call, a *acc) {
 		pos := positional(c.args, set("-p"))
 		if len(pos) >= 2 && !hasFlag(c.args, "lp") {
@@ -499,7 +501,7 @@ func evalCheck(c *call, a *acc) {
 		return
 	}
 	if anyDyn(c.args) {
-		a.add(High, "eval runs text built from variables or substitutions", "")
+		a.requireApproval(High, "eval runs text built from variables or substitutions", "")
 	}
 	a.merge(c.s.analyze(joinText(c.args), c.depth+1))
 }

@@ -1508,9 +1508,9 @@ var englishAIPanel = AIPanelMessages{
 	RiskCritical: "Critical risk",
 
 	AutoScopeHint:       "What runs without asking in this conversation",
-	AutoScopeLowDesc:    "Read-only checks run on their own; changes ask first.",
-	AutoScopeMediumDesc: "Read-only checks and bounded changes run; deletes, privilege changes, service stops and commands that run unreviewed code ask.",
-	AutoScopeHighDesc:   "Everything below critical runs; critical steps still ask for the typed word.",
+	AutoScopeLowDesc:    "Verified read-only checks run. Other actions require approval.",
+	AutoScopeMediumDesc: "Low and medium risk can run. Credentials and unverified commands require approval.",
+	AutoScopeHighDesc:   "High risk can also run. Credentials and unverified commands ask. Critical actions require typed confirmation.",
 
 	ReasoningEffort:     "Reasoning Effort",
 	ReasoningEffortHint: "Adjust model thinking depth and token budget",
@@ -1752,7 +1752,7 @@ var englishAISettings = AISettingsMessages{
 
 	BehaviourTitle:          "Assistant behaviour",
 	AutoRun:                 "Run without asking",
-	AutoRunDesc:             "Commands up to this risk run on their own. Critical commands always ask first.",
+	AutoRunDesc:             "Set the risk limit for automatic execution. Credential access and unverified commands still ask. Critical actions require a typed confirmation.",
 	RiskLow:                 "Low",
 	RiskMedium:              "Medium",
 	RiskHigh:                "High",

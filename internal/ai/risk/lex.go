@@ -103,6 +103,9 @@ func (p *parser) fail(msg string) {
 // sub analyzes the body of a command or process substitution.
 func (p *parser) sub(inner string) {
 	r := p.s.analyze(inner, p.depth+1)
+	if r.approvalReason != "" {
+		p.acc.recordApproval("inside command substitution: " + r.approvalReason)
+	}
 	if r.level == Low {
 		return
 	}

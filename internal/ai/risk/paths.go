@@ -168,7 +168,7 @@ func sensitive(p string) bool {
 	return false
 }
 
-var credBases = set("id_rsa id_dsa id_ecdsa id_ed25519 shadow gshadow .netrc .pgpass .git-credentials")
+var credBases = set("id_rsa id_dsa id_ecdsa id_ed25519 id_ecdsa_sk id_ed25519_sk shadow gshadow .netrc .pgpass .git-credentials")
 
 // credWord reports text that names private key or credential material.
 func credWord(t string) bool {
@@ -177,6 +177,9 @@ func credWord(t string) bool {
 		return true
 	}
 	if b == "credentials" && strings.Contains(t, ".aws") {
+		return true
+	}
+	if strings.HasPrefix(b, "ssh_host_") && strings.HasSuffix(b, "_key") {
 		return true
 	}
 	return strings.HasSuffix(b, ".key") && !strings.HasSuffix(b, "_pub.key")

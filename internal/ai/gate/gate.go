@@ -485,11 +485,13 @@ func (g Gate) readySession(ctx context.Context) (string, error) {
 }
 
 func (g Gate) assessCommand(ctx context.Context, id, command string) (context.Context, risk.Assessment) {
+	assessment := risk.Classify(command)
 	kind := shellkind.Unknown
 	if resolver, ok := g.Backend.(commandShellResolver); ok {
-		if g.Mode != ModeAllowAll && g.Policy.Decide(risk.Classify(command)) == risk.DecisionAuto {
-			ctx, kind = resolver.CommandShell(ctx, id)
+		if g.Mode == ModeAllowAll || g.approvalPolicy().Decide(assessment) != risk.DecisionAuto {
+			return ctx, assessment
 		}
+		ctx, kind = resolver.CommandShell(ctx, id)
 	} else {
 		sessions, err := g.Backend.Sessions(ctx)
 		if err == nil {
@@ -501,7 +503,7 @@ func (g Gate) assessCommand(ctx context.Context, id, command string) (context.Co
 			}
 		}
 	}
-	return g.commandContext(ctx, kind), risk.ClassifyForShell(command, kind)
+	return g.commandContext(ctx, kind), assessment.ForShell(kind)
 }
 
 func (g Gate) commandContext(ctx context.Context, kind shellkind.Kind) context.Context {
@@ -617,13 +619,7 @@ func (g Gate) execMany(ctx context.Context, name string, args tools.TerminalExec
 	return Result{Text: text.String(), IsError: failed == len(args.Sessions)}
 }
 
-// ask applies the policy and, when needed, the user's answer. It returns nil
-// when the action may proceed and the result to send back otherwise. The
-// request's locked target set decides which sessions a call may reach; the
-// risk policy alone decides whether it runs without asking, on the default and
-// on a referenced connection alike. An approval always names the target it is
-// about.
-func (g Gate) ask(ctx context.Context, tool string, kind tools.Kind, session, summary string, assessment risk.Assessment, otherSessions ...string) *Result {
+func (g Gate) approvalPolicy() risk.Policy {
 	policy := g.Policy
 	if g.Scope != nil {
 		policy.AutoUpTo = g.Scope.Level()
@@ -631,7 +627,17 @@ func (g Gate) ask(ctx context.Context, tool string, kind tools.Kind, session, su
 	if g.Mode == ModeAuto && policy.AutoUpTo < risk.Medium {
 		policy.AutoUpTo = risk.Medium
 	}
-	decision := policy.Decide(assessment)
+	return policy
+}
+
+// ask applies the policy and, when needed, the user's answer. It returns nil
+// when the action may proceed and the result to send back otherwise. The
+// request's locked target set decides which sessions a call may reach; the
+// risk policy alone decides whether it runs without asking, on the default and
+// on a referenced connection alike. An approval always names the target it is
+// about.
+func (g Gate) ask(ctx context.Context, tool string, kind tools.Kind, session, summary string, assessment risk.Assessment, otherSessions ...string) *Result {
+	decision := g.approvalPolicy().Decide(assessment)
 	// Full access explicitly authorizes all reachable connections without an
 	// approval, including references; it never overrides a hard policy block.
 	if g.Mode == ModeAllowAll && decision != risk.DecisionBlock {

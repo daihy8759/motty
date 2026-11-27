@@ -232,6 +232,40 @@ func TestWithoutAnApproverNothingRiskyRuns(t *testing.T) {
 	}
 }
 
+func TestHighScopeStillAsksBeforeUnverifiedCommands(t *testing.T) {
+	ctx := WithOutputOwner(t.Context(), "owner")
+	backend := &fakeBackend{}
+	approvals := 0
+	g := Gate{Backend: backend, Policy: risk.Policy{Enabled: true, AutoUpTo: risk.High}, Approver: func(_ context.Context, request Request) (bool, string, error) {
+		approvals++
+		if request.Assessment.ApprovalReason == "" {
+			t.Errorf("missing approval reason for %q", request.Summary)
+		}
+		return false, "", nil
+	}}
+	for _, call := range []struct{ tool, args string }{
+		{tools.NameTerminalExec, `{"command":"custom-tool --help"}`},
+		{tools.NameTerminalExec, `{"command":"echo 'unterminated"}`},
+		{tools.NameTerminalExec, `{"command":"cat < /etc/shadow"}`},
+		{tools.NameTerminalStart, `{"command":"custom-tool --help"}`},
+		{tools.NameSFTPRead, `{"path":"/etc/shadow"}`},
+	} {
+		if result := g.Run(ctx, call.tool, []byte(call.args)); !result.Denied {
+			t.Errorf("%s bypassed approval: %+v", call.tool, result)
+		}
+	}
+	if approvals != 5 || backend.execs.Load() != 0 || backend.reads.Load() != 0 {
+		t.Fatalf("approvals=%d, executions=%d, reads=%d", approvals, backend.execs.Load(), backend.reads.Load())
+	}
+	if result := g.Run(ctx, tools.NameTerminalExec, []byte(`{"command":"mkdir -p /tmp/motty-test"}`)); result.IsError || backend.execs.Load() != 1 || approvals != 5 {
+		t.Fatalf("recognized medium-risk command did not run automatically: %+v", result)
+	}
+	g.Approver = yes("")
+	if result := g.Run(ctx, tools.NameTerminalExec, []byte(`{"command":"custom-tool --help"}`)); result.IsError || backend.execs.Load() != 2 {
+		t.Fatalf("approved command did not run: %+v", result)
+	}
+}
+
 func TestAllowAllRunsEveryRiskAndFileOperationWithoutApproval(t *testing.T) {
 	backend := &fakeBackend{}
 	g := Gate{Backend: backend, Mode: ModeAllowAll, Approver: func(context.Context, Request) (bool, string, error) {
@@ -351,10 +385,10 @@ func (b *mixedShellBackend) Sessions(ctx context.Context) ([]SessionInfo, error)
 	return sessions, err
 }
 
-func TestPowerShellCommandsNeedApprovalInMediumScope(t *testing.T) {
+func TestPowerShellCommandsNeedApprovalInHighScope(t *testing.T) {
 	ctx := WithOutputOwner(t.Context(), "owner")
 	backend := &mixedShellBackend{}
-	g := Gate{Backend: backend, Mode: ModeAuto, Policy: risk.Policy{Enabled: true}}
+	g := Gate{Backend: backend, Policy: risk.Policy{Enabled: true, AutoUpTo: risk.High}}
 	for name, args := range map[string]string{
 		tools.NameTerminalExec:     `{"session":"w1:2","command":"ls"}`,
 		tools.NameTerminalStart:    `{"session":"w1:2","command":"ls"}`,
@@ -363,6 +397,33 @@ func TestPowerShellCommandsNeedApprovalInMediumScope(t *testing.T) {
 		if result := g.Run(ctx, name, []byte(args)); !result.Denied {
 			t.Errorf("%s bypassed approval: %+v", name, result)
 		}
+	}
+	if len(backend.ran) != 0 {
+		t.Fatalf("commands reached the backend: %v", backend.ran)
+	}
+}
+
+type shellProbeBackend struct {
+	fakeBackend
+	shell  shellkind.Kind
+	probes int
+}
+
+func (backend *shellProbeBackend) CommandShell(ctx context.Context, _ string) (context.Context, shellkind.Kind) {
+	backend.probes++
+	return ctx, backend.shell
+}
+
+func TestAutomaticMediumScopeUsesShellProbe(t *testing.T) {
+	backend := &shellProbeBackend{shell: shellkind.Unknown}
+	g := Gate{Backend: backend, Mode: ModeAuto, Policy: risk.Policy{Enabled: true}}
+	args := []byte(`{"command":"mkdir -p /tmp/motty-test"}`)
+	if result := g.Run(t.Context(), tools.NameTerminalExec, args); !result.Denied || backend.execs.Load() != 0 || backend.probes != 1 {
+		t.Fatalf("unverified shell: %+v, probes=%d", result, backend.probes)
+	}
+	backend.shell = shellkind.POSIX
+	if result := g.Run(t.Context(), tools.NameTerminalExec, args); result.IsError || backend.execs.Load() != 1 || backend.probes != 2 {
+		t.Fatalf("verified shell: %+v, probes=%d", result, backend.probes)
 	}
 }
 
