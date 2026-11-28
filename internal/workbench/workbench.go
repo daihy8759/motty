@@ -101,7 +101,6 @@ var (
 	hitPasswordSubmit          = tree.ID(shellHits, "password-submit")
 	hitPasswordCancel          = tree.ID(shellHits, "password-cancel")
 	hitPasswordClose           = tree.ID(shellHits, "password-close")
-	hitPasswordDismiss         = tree.ID(shellHits, "password-dismiss")
 	hitHome                    = tree.ID(shellHits, "home")
 	hitNewTab                  = tree.ID(shellHits, "new-tab")
 	hitNewWindow               = tree.ID(shellHits, "new-window")
@@ -250,7 +249,11 @@ var (
 	hitSettingsFontSizeDown    = tree.ID(settingsHits, "settings-font-size-down")
 	hitSettingsFontSizeReset   = tree.ID(settingsHits, "settings-font-size-reset")
 	hitSettingsFontSizeUp      = tree.ID(settingsHits, "settings-font-size-up")
+	hitSettingsScrollbackMinus = tree.ID(settingsHits, "settings-scrollback-minus")
+	hitSettingsScrollbackValue = tree.ID(settingsHits, "settings-scrollback-value")
+	hitSettingsScrollbackPlus  = tree.ID(settingsHits, "settings-scrollback-plus")
 	hitSettingsCursorToggle    = tree.ID(settingsHits, "settings-cursor-blink")
+	hitSettingsCursorProgram   = tree.ID(settingsHits, "settings-cursor-program")
 	hitSettingsCopyOnSelect    = tree.ID(settingsHits, "settings-copy-on-select")
 	hitSettingsWordSeparators  = tree.ID(settingsHits, "settings-word-separators")
 	hitSettingsRightClickPaste = tree.ID(settingsHits, "settings-right-click-paste")
@@ -272,6 +275,8 @@ var (
 	hitProxyDialogCancel             = tree.ID(proxiesHits, "proxy-dialog-cancel")
 	hitProxyDialogSubmit             = tree.ID(proxiesHits, "proxy-dialog-submit")
 	hitProxyDialogViaShell           = tree.ID(proxiesHits, "proxy-dialog-via-shell")
+	hitProxyDialogNewTarget          = tree.ID(proxiesHits, "proxy-dialog-new-target")
+	hitProxyDialogNewJump            = tree.ID(proxiesHits, "proxy-dialog-new-jump")
 	hitProxyDialogViaHelp            = tree.ID(proxiesHits, "proxy-dialog-via-shell-help")
 	hitProxyDialogRelay              = tree.ID(proxiesHits, "proxy-dialog-relay")
 	hitProxyRowList                  = tree.Sub(proxiesHits, tree.Name("proxy-row"))
@@ -367,22 +372,23 @@ var (
 var hitRemoteStats = tree.ID(shellHits, "remote-stats") // The terminal's context menu owns a fixed range too: it is painted by the
 // window, over every pane, for the session that raised it.
 var (
-	hitTerminalMenuDismiss     = tree.ID(terminalMenuHits, "terminal-menu-dismiss")
-	hitTerminalMenuCopy        = tree.ID(terminalMenuHits, "terminal-menu-copy")
-	hitTerminalMenuPaste       = tree.ID(terminalMenuHits, "terminal-menu-paste")
-	hitTerminalMenuSelectAll   = tree.ID(terminalMenuHits, "terminal-menu-select-all")
-	hitTerminalMenuClearScreen = tree.ID(terminalMenuHits, "terminal-menu-clear-screen")
-	hitTerminalMenuClear       = tree.ID(terminalMenuHits, "terminal-menu-clear")
-	hitTerminalMenuSplitRight  = tree.ID(terminalMenuHits, "terminal-menu-split-right")
-	hitTerminalMenuSplitDown   = tree.ID(terminalMenuHits, "terminal-menu-split-down")
-	hitTerminalMenuClosePane   = tree.ID(terminalMenuHits, "terminal-menu-close-pane")
-	hitTerminalMenuFiles       = tree.ID(terminalMenuHits, "terminal-menu-files")
-	hitTerminalMenuStats       = tree.ID(terminalMenuHits, "terminal-menu-stats")
-	hitLocalTerminal           = tree.ID(terminalMenuHits, "local-terminal")
-	hitTerminalMenuReconnect   = tree.ID(terminalMenuHits, "terminal-menu-reconnect")
-	hitTerminalMenuRestart     = tree.ID(terminalMenuHits, "terminal-menu-restart")
-	hitTerminalMenuDisconnect  = tree.ID(terminalMenuHits, "terminal-menu-disconnect")
-	hitTerminalMenuTransfer    = tree.ID(terminalMenuHits, "terminal-menu-transfer")
+	hitTerminalMenuDismiss        = tree.ID(terminalMenuHits, "terminal-menu-dismiss")
+	hitTerminalMenuCopy           = tree.ID(terminalMenuHits, "terminal-menu-copy")
+	hitTerminalMenuPaste          = tree.ID(terminalMenuHits, "terminal-menu-paste")
+	hitTerminalMenuPasteSelection = tree.ID(terminalMenuHits, "terminal-menu-paste-selection")
+	hitTerminalMenuSelectAll      = tree.ID(terminalMenuHits, "terminal-menu-select-all")
+	hitTerminalMenuClearScreen    = tree.ID(terminalMenuHits, "terminal-menu-clear-screen")
+	hitTerminalMenuClear          = tree.ID(terminalMenuHits, "terminal-menu-clear")
+	hitTerminalMenuSplitRight     = tree.ID(terminalMenuHits, "terminal-menu-split-right")
+	hitTerminalMenuSplitDown      = tree.ID(terminalMenuHits, "terminal-menu-split-down")
+	hitTerminalMenuClosePane      = tree.ID(terminalMenuHits, "terminal-menu-close-pane")
+	hitTerminalMenuFiles          = tree.ID(terminalMenuHits, "terminal-menu-files")
+	hitTerminalMenuStats          = tree.ID(terminalMenuHits, "terminal-menu-stats")
+	hitLocalTerminal              = tree.ID(terminalMenuHits, "local-terminal")
+	hitTerminalMenuReconnect      = tree.ID(terminalMenuHits, "terminal-menu-reconnect")
+	hitTerminalMenuRestart        = tree.ID(terminalMenuHits, "terminal-menu-restart")
+	hitTerminalMenuDisconnect     = tree.ID(terminalMenuHits, "terminal-menu-disconnect")
+	hitTerminalMenuTransfer       = tree.ID(terminalMenuHits, "terminal-menu-transfer")
 )
 
 // The saved-passwords dialogs, and the boxes that offer to save.
@@ -822,6 +828,7 @@ type State struct {
 	terminalFontFace   gfx.MonoFace
 	terminalLineHeight lineHeight
 	terminalScrollback int
+	scrollbackEdit     numberStepperEdit
 	terminalFindPrefs  terminalFindPreferences
 	findSettingsUI     terminalFindSettingsUI
 	// terminalZoomSaveTimer coalesces a primary+wheel burst into one save once the
@@ -832,8 +839,12 @@ type State struct {
 	// font size.
 	interfaceTextSize   interfaceTextSize
 	terminalCursorStyle terminalCursorStyle
-	connectionReconnect reconnectPolicy
-	restoreConnect      restoreConnectPolicy
+	// terminalCursorProgram records whether a program may change the cursor
+	// shape with DECSCUSR. Zero keeps the user's shape, so the block PowerShell
+	// asks for through ConPTY does not cover spaces and backspaced cells.
+	terminalCursorProgram bool
+	connectionReconnect   reconnectPolicy
+	restoreConnect        restoreConnectPolicy
 	// What a launch opens once, from the first Wake (see openStartupSessions):
 	// a local terminal, and the saved hosts to connect, by catalog id.
 	// startupLocal opens the machine's default local terminal at a launch;
@@ -845,6 +856,10 @@ type State struct {
 	// startupEnabled is the feature switch of what a launch opens: off, the
 	// launch opens nothing but the choices are kept for when it turns on again.
 	startupEnabled bool
+	// startupLocalPrepared names the local session opened before the native
+	// window's first paint. The first Wake consumes it so it does not open a
+	// duplicate local tab or focus a different restored tab.
+	startupLocalPrepared uint32
 	// startupReuse also applies to ordinary host opens. An explicit new tab,
 	// pane, or duplicate still starts a separate session.
 	startupReuse  bool
@@ -898,7 +913,7 @@ type State struct {
 	// filePreviewMB bounds what a document window loads, in megabytes. The Files
 	// settings choose it with a stepper that has no upper bound.
 	filePreviewMB   int
-	filePreviewEdit filePreviewEdit
+	filePreviewEdit numberStepperEdit
 	sftpColumns     sftpColumnPreferences
 	// sftpTypeIcons is the system icon of each file extension, shared by every
 	// row and every listing. A nil map means none has been asked for yet.
@@ -907,9 +922,14 @@ type State struct {
 	// dragged the file lists' columns to; zero until a width was chosen, when
 	// the lists keep their width-based defaults. sftpColumnWidthsChosen says a
 	// drag or a double click has replaced those defaults.
+	// sftpColumnModifiedText and sftpColumnShortText are what the modification
+	// time and its year-less form measure at the current interface font and
+	// text size, refreshed on every paint.
 	sftpColumnSizeWidth     float32
 	sftpColumnModifiedWidth float32
 	sftpColumnWidthsChosen  bool
+	sftpColumnModifiedText  float32
+	sftpColumnShortText     float32
 	sftpFilesSettings       sftpFilesSettingsCache
 	sftpDownloadDirectory   string
 	defaultEditor           ExternalEditor // hands remote folders to this computer's editor
@@ -931,7 +951,10 @@ type State struct {
 	shareConnections        shareConnectionsPolicy
 	tooltip                 components.HoverTooltip
 	selectTypeahead         selectTypeahead
-	restorePending          bool // restored tabs have not yet been connected (see connectRestoredSessions)
+	restorePending          bool                   // restored tabs have not yet been connected (see connectRestoredSessions)
+	savedActiveWorkspace    layoutcore.WorkspaceID // the tab that was active in the saved window
+	preparingInitialLocal   bool                   // local startup sessions use the background shell path
+	startupTextSession      uint32                 // the one terminal holding early input for the focused control
 	terminalClipboard       terminalClipboardPolicy
 	terminalIntense         terminalIntense
 
@@ -1442,6 +1465,7 @@ func (state *State) loadApplicationProfile() {
 	// connection's wake-ups would have nowhere to go and its progress would
 	// never reach the screen.
 	state.restorePending = state.startupWanted()
+	state.savedActiveWorkspace = state.deck.ActiveWorkspace()
 	switch {
 	case err != nil:
 		state.status = fmt.Sprintf(state.messages.StatusSaveFailedFmt, err)
@@ -1898,6 +1922,9 @@ func (state *State) click(id gfx.ID, feedback bool) {
 	// typed there, as the assistant page's stepper does.
 	if state.filePreviewEdit.editing && id != hitSettingsPreviewValue && id != hitSettingsPreviewMinus && id != hitSettingsPreviewPlus {
 		state.commitFilePreviewEdit()
+	}
+	if state.scrollbackEdit.editing && id != hitSettingsScrollbackValue && id != hitSettingsScrollbackMinus && id != hitSettingsScrollbackPlus {
+		state.commitScrollbackEdit()
 	}
 	if feedback {
 		state.pressIconMotion(id)
@@ -2384,6 +2411,13 @@ func (state *State) click(id gfx.ID, feedback bool) {
 			w.click(id)
 		} else {
 			state.clickSFTP(id)
+		}
+	case tree.Within(id.Scope(), filePropertiesHits):
+		// The docked panel's properties dialog is one of the workbench modals
+		// dispatched above. A file-manager tab declares its own in the same page
+		// with the same identities, so its window has to act on it.
+		if w := state.activeSFTPWindow(); w != nil && !w.closed && w.fileProperties.open {
+			w.click(id)
 		}
 	case tree.Within(id.Scope(), sftpWindowHits):
 		// The hand-painted controls of the file-manager tab keep the window's
@@ -2906,6 +2940,16 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 		}
 		return gfx.EventResult{Handled: true}
 	}
+	if state.modal == modalNone {
+		if w := state.activeSFTPWindow(); w != nil && w.fileProperties.open {
+			// A file-manager tab's properties dialog is modal for its tab, not a
+			// workbench modal: only its own close actions reach the runtime.
+			if event.Target == hitFilePropertiesClose || event.Target == hitFilePropertiesDismiss {
+				return gfx.EventResult{}
+			}
+			return gfx.EventResult{Handled: true}
+		}
+	}
 	if result, handled := state.localProxyPointer(event); handled {
 		return result
 	}
@@ -2959,19 +3003,29 @@ func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
 		return result
 	}
 	if state.fileTabVerticalRailAt(event.X, event.Y) {
-		repaint := false
 		if w := state.activeSFTPWindow(); w != nil && w.drag.active {
 			w.cancelDrag()
-			repaint = true
+			return gfx.EventResult{Handled: true, Repaint: true}
 		}
-		return gfx.EventResult{Handled: true, Repaint: repaint}
+		// Blank rail surface (and any stray file-tab hit behind an expanded
+		// auto-hide rail) stops here; interactive controls painted on the
+		// vertical rail (tabs, close buttons, group headers, new-tab, menus)
+		// return unhandled so Viva delivers clicks and right-clicks normally
+		// without falling through to sftpTabPointer.
+		if event.Target.IsZero() || event.Target == hitVerticalTabs || state.fileTabHit(event.Target) {
+			return gfx.EventResult{Handled: true}
+		}
+		return gfx.EventResult{}
 	}
 	// An assistant drawer is painted over the page when the window is too narrow
 	// to dock it. It therefore owns pointer input before a full-page file tab.
 	if result, handled := state.aiPointer(event); handled {
 		return result
 	}
-	if result, handled := state.filePreviewPointer(event); handled {
+	if result, handled := state.stepperPointer(event, settingsFiles, hitSettingsPreviewValue, state.beginFilePreviewEdit); handled {
+		return result
+	}
+	if result, handled := state.stepperPointer(event, settingsTerminal, hitSettingsScrollbackValue, state.beginScrollbackEdit); handled {
 		return result
 	}
 	if state.modal == modalNone {
@@ -3739,7 +3793,9 @@ func (state *State) createHostSessionWithDirectory(host Host, address string, co
 	state.fitTerminals()
 	state.fitSFTP(state.viewport)
 	state.rebuildTabOptions()
-	state.save()
+	if !state.preparingInitialLocal {
+		state.save()
+	}
 	return session
 }
 

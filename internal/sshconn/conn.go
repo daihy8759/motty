@@ -376,9 +376,9 @@ type Conn struct {
 	x11client *ssh.Client
 	x11       *x11fwd.Hub
 
-	// agentClient is the local ssh-agent, dialed once for authentication and
-	// agent forwarding alike; agentForwardClient is the client whose
-	// "auth-agent@openssh.com" channels are already being served from it.
+	// agentClient is the local ssh-agent, dialed once for authentication;
+	// agentForwardClient is the client whose "auth-agent@openssh.com" channels
+	// are already being served, each over its own link to the agent.
 	agentmu            sync.Mutex
 	agentClient        agent.ExtendedAgent
 	agentForwardClient *ssh.Client
@@ -541,6 +541,18 @@ func (conn *Conn) DialContext(ctx context.Context, network, address string) (net
 func IsChannelRefused(err error) bool {
 	var refused *ssh.OpenChannelError
 	return errors.As(err, &refused) && refused.Reason == ssh.Prohibited
+}
+
+// IsRemoteForwardRefused reports whether err is the server declining a
+// tcpip-forward request, such as when AllowTcpForwarding is disabled or
+// PermitListen forbids the requested listener. The vendored ssh package reports
+// the refusal as a plain error (third_party/golang.org/x/crypto/ssh/tcpip.go),
+// so the text is the only thing to match; update this with that file.
+func IsRemoteForwardRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "tcpip-forward request denied by peer")
 }
 
 // Listen asks the authenticated SSH server to open one remote listener.
@@ -926,6 +938,10 @@ func (conn *Conn) handshake(endpoint Endpoint, socket net.Conn, known *hostKeys)
 	}
 	address := endpoint.address()
 	wanted := conn.config.Algorithms[address]
+	keyExchanges := wanted.KeyExchanges
+	if len(keyExchanges) == 0 {
+		keyExchanges = defaultKeyExchanges()
+	}
 	hostKeys, err := hostKeyAlgorithms(known.algorithms(address), wanted.HostKeys)
 	if err != nil {
 		socket.Close()
@@ -937,7 +953,7 @@ func (conn *Conn) handshake(endpoint Endpoint, socket net.Conn, known *hostKeys)
 		return nil, "", errors.New("Kerberos authentication is not available in this build")
 	}
 	clientConfig := &ssh.ClientConfig{
-		Config: ssh.Config{KeyExchanges: wanted.KeyExchanges, Ciphers: wanted.Ciphers, MACs: wanted.MACs},
+		Config: ssh.Config{KeyExchanges: keyExchanges, Ciphers: wanted.Ciphers, MACs: wanted.MACs},
 		User:   endpoint.User,
 		Auth:   conn.authMethods(endpoint.Host, authentication),
 		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {

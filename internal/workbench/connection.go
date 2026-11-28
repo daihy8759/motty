@@ -724,6 +724,13 @@ func (state *State) startConnectionMode(session *Session, host Host, automatic b
 	session.desktopTunnel = false
 	if host.isLocal() {
 		// A shell on this machine: nothing to dial, so it is connected at once.
+		if state.preparingInitialLocal {
+			conn := newLocalConn(host.localShell, state.networkProxy)
+			conn.backgroundShell, conn.prepareOnWake = true, true
+			session.conn = conn
+			state.finishStartingConnection(session, automatic)
+			return
+		}
 		session.conn = state.localConnection(session, host)
 		state.finishStartingConnection(session, automatic)
 		// There is no goroutine to report that it is connected, so say so now:
@@ -978,6 +985,7 @@ func (state *State) Wake() {
 	}
 	if state.restorePending {
 		state.restorePending = false
+		state.resolvePreparedLocalSessions()
 		// Local shells first: they dial nothing, so they need not share the
 		// bound on how many connections one restore opens.
 		state.startRestoredLocalSessions()
@@ -1005,8 +1013,9 @@ func (state *State) Wake() {
 		state.advancePasteQueue(session, findNow)
 		state.runLoginCommand(session)
 		state.runIdleKeepAlive(session, findNow)
-		// A session-local charset notice changes the available character grid.
-		// Resize after parsing output, never reentrantly from an OSC callback.
+		// A session-local charset notice or auto-sized line-number gutter can
+		// change the available character grid. Resize after parsing output,
+		// never reentrantly from an OSC callback.
 		state.fitTerminal(session)
 		state.followTerminalDirectory(session)
 		if session.ID == state.activeSessionID && state.activeSection == sectionTerminal && state.monitorShown(state.deck.ActiveWorkspace()) {
@@ -1032,13 +1041,13 @@ func (state *State) Wake() {
 		state.scheduleUpdateCheck(state.update.firstDelay)
 	}
 	state.pumpSFTPConnections()
+	state.syncSFTPWindows()
 	state.wakeEmbeddedSFTPWindows()
 	state.pumpDashboard()
 	state.pumpSessionLogs()
 	state.showNextPrompt()
 	state.drainAI()
 	state.syncNoteWindows()
-	state.syncSFTPWindows()
 	state.aiPumpCLILogin()
 	state.syncRemoteToolsWindows()
 	if len(state.edits.list) > 0 && !state.edits.watching {
@@ -1142,6 +1151,10 @@ func (state *State) apply(session *Session, status sshconn.Status) {
 		}
 		// After the connected line: a saved or failed save is what the user needs to read.
 		state.rememberSecret(session)
+		state.ensureSessionContextSFTP(session)
+		if w := state.sftpWindows[session.ID]; w != nil && !w.closed && !w.ownsConnection {
+			w.syncBorrowedConnection()
+		}
 	case sshconn.PhaseClosed:
 		session.closeSSHBrowser()
 		session.stopRemoteLogs()
@@ -1698,15 +1711,15 @@ func (state *State) clickHostKey(id gfx.ID) {
 	state.answered(session)
 }
 
-// clickPassword handles the password dialog. Dismissing it cancels the
-// connection.
+// clickPassword handles the password dialog. Cancel and the close button
+// cancel the connection.
 func (state *State) clickPassword(id gfx.ID) {
 	switch id {
 	case hitPasswordSave:
 		state.secrets.save = !state.secrets.save
 	case hitPasswordSubmit:
 		state.submitPassword()
-	case hitPasswordCancel, hitPasswordClose, hitPasswordDismiss:
+	case hitPasswordCancel, hitPasswordClose:
 		session := state.promptSession()
 		if session != nil && session.conn != nil {
 			session.conn.Cancel()

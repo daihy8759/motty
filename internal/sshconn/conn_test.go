@@ -1264,3 +1264,34 @@ func TestMissingStoredKeyIsReportedNotSilentlySkipped(t *testing.T) {
 		t.Fatalf("skipped = %v", status.Skipped)
 	}
 }
+
+// A server may support nothing but diffie-hellman-group-exchange-sha256, a
+// secure key exchange the library implements but leaves out of its own default
+// offer. A host added without an algorithm choice must still reach it.
+func TestADefaultHostReachesAServerThatOnlyOffersGroupExchange(t *testing.T) {
+	server := startServer(t, func(s *testServer) {
+		s.password = "pw"
+		s.algorithms = &ssh.Config{KeyExchanges: []string{ssh.KeyExchangeDHGEXSHA256}}
+	})
+	h := dial(t, server, nil)
+	h.phase(PhaseHostKeyPrompt)
+	h.conn.TrustHostKey(false)
+	h.phase(PhasePasswordPrompt)
+	h.conn.SubmitPassword("pw")
+	connected := h.phase(PhaseConnected)
+	if connected.Negotiated.KeyExchange != ssh.KeyExchangeDHGEXSHA256 {
+		t.Fatalf("negotiated %q", connected.Negotiated.KeyExchange)
+	}
+}
+
+func TestIsRemoteForwardRefused(t *testing.T) {
+	if !IsRemoteForwardRefused(errors.New("portforward: listen on 127.0.0.1:8080: ssh: tcpip-forward request denied by peer")) {
+		t.Fatal("IsRemoteForwardRefused = false, want true for tcpip-forward denial")
+	}
+	if IsRemoteForwardRefused(errors.New("connection refused")) {
+		t.Fatal("IsRemoteForwardRefused = true, want false for unrelated error")
+	}
+	if IsRemoteForwardRefused(nil) {
+		t.Fatal("IsRemoteForwardRefused(nil) = true, want false")
+	}
+}

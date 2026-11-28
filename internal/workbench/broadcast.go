@@ -382,6 +382,10 @@ func (state *State) clickTerminalTools(id gfx.ID) bool {
 	case id == hitSettingsCursorToggle:
 		state.terminalCursorSteady = !state.terminalCursorSteady
 		state.save()
+	case id == hitSettingsCursorProgram:
+		state.terminalCursorProgram = !state.terminalCursorProgram
+		state.applyTerminalCursorStyle()
+		state.save()
 	case id == hitSettingsCopyOnSelect:
 		state.terminalCopyOnSelect = !state.terminalCopyOnSelect
 		state.save()
@@ -464,6 +468,9 @@ func (state *State) clickTerminalTools(id gfx.ID) bool {
 		state.askDeleteHighlightRule(item(id))
 	case id.Scope() == hitSnippetSendList:
 		state.sendSnippet(item(id))
+		if state.modal == modalNone {
+			state.returnKeyboardToTerminal()
+		}
 	default:
 		return false
 	}

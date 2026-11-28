@@ -365,6 +365,202 @@ func TestSFTPFileTabEventsRouteThroughTheWorkbenchPage(t *testing.T) {
 	}
 }
 
+// The properties dialog a file-manager tab declares keeps the same identities
+// as the docked panel's, so the workbench page must route its close actions and
+// keys to the window that opened it: both close controls (the title bar's and
+// the footer's) and the backdrop, as well as Escape, must close it without
+// acting on the file list behind it.
+func TestSFTPFileTabPropertiesDialogClosesFromItsOwnControls(t *testing.T) {
+	state, _, w, _, _ := openSFTPTabFixture(t)
+	preview, err := headless.Open(app.Config{
+		Title: "File tab properties", Width: 1100, Height: 720, Tree: Tree(),
+		Paint: state.Paint, OnPointer: state.Pointer, OnKey: state.Key, OnResize: state.Resize,
+	}, nil, headless.Options{Scale: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer preview.Close()
+	if err := preview.Driver().Pump(); err != nil {
+		t.Fatal(err)
+	}
+
+	// open declares the dialog on the tab and returns the controls the page
+	// painted for closing it.
+	open := func() []gfx.Hit {
+		t.Helper()
+		w.view.sftpFolder.selectRow(0, 0)
+		w.selectionChanged(false)
+		w.fileAction(false, hitSFTPProperties)
+		if !w.fileProperties.open {
+			t.Fatal("the file-manager properties dialog did not open")
+		}
+		// The action only queues a repaint; the tab is declared by the page,
+		// which has no window of its own to paint it.
+		if err := preview.Driver().Paint(); err != nil {
+			t.Fatal(err)
+		}
+		var closes []gfx.Hit
+		for _, hit := range preview.Snapshot().Hits {
+			if hit.ID == hitFilePropertiesClose && !hit.Block {
+				closes = append(closes, hit)
+			}
+		}
+		return closes
+	}
+
+	closes := open()
+	if len(closes) < 2 {
+		t.Fatalf("the properties dialog painted %d close controls, want the title bar's and the footer's", len(closes))
+	}
+	for index, hit := range closes {
+		if err := preview.Click(hit.Bounds.X+hit.Bounds.Width/2, hit.Bounds.Y+hit.Bounds.Height/2); err != nil {
+			t.Fatal(err)
+		}
+		if w.fileProperties.open {
+			t.Fatalf("close control %d did not close the tab's properties dialog", index)
+		}
+		open()
+	}
+
+	// A press on the dialog's backdrop closes it, and does not reach the list
+	// selection behind it.
+	selected := w.view.sftpFolder.selected
+	if err := preview.Click(10, 700); err != nil {
+		t.Fatal(err)
+	}
+	if w.fileProperties.open {
+		t.Fatal("the backdrop did not close the tab's properties dialog")
+	}
+	if w.view.sftpFolder.selected != selected {
+		t.Fatalf("a press on the backdrop changed the list selection: %d -> %d", selected, w.view.sftpFolder.selected)
+	}
+
+	open()
+	if err := preview.Keys("escape"); err != nil {
+		t.Fatal(err)
+	}
+	if w.fileProperties.open {
+		t.Fatal("Escape did not close the tab's properties dialog")
+	}
+
+	open()
+	rows := len(w.view.rows)
+	if result := state.Key(gfx.KeyEvent{Target: hitFilePropertiesClose, Key: gfx.KeyDelete}); !result.Handled {
+		t.Fatal("a key escaped the tab's properties dialog")
+	}
+	if w.view.dialog != sftpDialogNone || len(w.view.rows) != rows {
+		t.Fatal("a key acted on the file list behind the tab's properties dialog")
+	}
+}
+
+// While a full-page SFTP file tab is active in vertical-tabs mode, interactive
+// controls on the left vertical sidebar (workspace tabs, New Tab, and right-click
+// context menus) must still respond to clicks, while blank rail surface over an
+// expanded auto-hide sidebar still blocks presses from reaching the file list.
+func TestSFTPFileTabVerticalTabsSidebarClicksAndContextMenu(t *testing.T) {
+	state, source, w, _, _ := openSFTPTabFixture(t)
+	state.setTabOrientation(tabsVertical)
+	workspace := state.deck.ActiveWorkspace()
+	if state.activeSection != sectionSFTP || state.activeSFTPWindow() != w {
+		t.Fatalf("expected active SFTP file tab, got section=%v window=%v", state.activeSection, state.activeSFTPWindow())
+	}
+
+	preview, err := headless.Open(state.WindowConfig(app.Config{
+		Title: "Vertical tabs on SFTP file tab", Width: 1100, Height: 720, Tree: Tree(),
+		Paint: state.Paint, OnPointer: state.Pointer, OnKey: state.Key, OnScroll: state.Scroll, OnResize: state.Resize,
+	}), nil, headless.Options{Scale: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer preview.Close()
+	if err := preview.Driver().Pump(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Right-clicking a workspace tab in the vertical sidebar opens its tab menu.
+	tabID := hitTabList.At(int(workspace))
+	tabRect, ok := hitByIDFromSnapshot(preview.Snapshot(), tabID)
+	if !ok {
+		t.Fatalf("vertical sidebar did not paint workspace tab %v", tabID)
+	}
+	if err := preview.RightClick(tabRect.X+tabRect.Width/2, tabRect.Y+tabRect.Height/2); err != nil {
+		t.Fatal(err)
+	}
+	if !state.tabMenu.open || state.tabMenu.workspace != workspace {
+		t.Fatalf("right-clicking vertical tab on SFTP file tab did not open tab menu: %+v", state.tabMenu)
+	}
+	state.tabMenu = tabMenu{}
+	if err := preview.Driver().Paint(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Clicking New Tab in the vertical sidebar opens the connect picker.
+	newTabRect, ok := hitByIDFromSnapshot(preview.Snapshot(), hitVerticalTabsNew)
+	if !ok {
+		t.Fatal("vertical sidebar did not paint New Tab button")
+	}
+	if err := preview.Click(newTabRect.X+newTabRect.Width/2, newTabRect.Y+newTabRect.Height/2); err != nil {
+		t.Fatal(err)
+	}
+	if state.modal != modalCommandPalette || !state.commandPalette.connect {
+		t.Fatalf("clicking New Tab in vertical sidebar while on SFTP file tab did not open connect picker: modal=%v connect=%t", state.modal, state.commandPalette.connect)
+	}
+	state.closeCommandPalette()
+	if err := preview.Driver().Paint(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Clicking a workspace tab in the vertical sidebar switches back to the terminal.
+	tabRect, ok = hitByIDFromSnapshot(preview.Snapshot(), tabID)
+	if !ok {
+		t.Fatalf("vertical sidebar did not paint workspace tab %v", tabID)
+	}
+	if err := preview.Click(tabRect.X+tabRect.Width/2, tabRect.Y+tabRect.Height/2); err != nil {
+		t.Fatal(err)
+	}
+	if state.activeSection != sectionTerminal || state.deck.ActiveWorkspace() != workspace {
+		t.Fatalf("clicking vertical tab did not switch back to terminal: section=%v workspace=%v", state.activeSection, state.deck.ActiveWorkspace())
+	}
+
+	// Switch back to the SFTP file tab with auto-hide enabled and expanded over
+	// the file list: blank rail clicks must not reach the file list underneath,
+	// while clicking a workspace tab on the expanded rail still switches back.
+	state.activateSFTPTab(source.ID)
+	state.setVerticalTabsAutoHide(true)
+	if err := preview.Driver().Paint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := preview.Move(8, windowBarHeight+20); err != nil {
+		t.Fatal(err)
+	}
+	if err := preview.Driver().Advance(300 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if state.verticalTabs.bounds.Width <= verticalTabsRail {
+		t.Fatalf("auto-hide vertical rail did not expand: %+v", state.verticalTabs.bounds)
+	}
+	w.view.selected = -1
+	blankX := state.verticalTabs.bounds.X + state.verticalTabs.bounds.Width - 10
+	blankY := state.verticalTabs.bounds.Y + state.verticalTabs.bounds.Height - verticalTabsFooter - 20
+	if err := preview.Click(blankX, blankY); err != nil {
+		t.Fatal(err)
+	}
+	if state.activeSection != sectionSFTP || w.view.selected != -1 {
+		t.Fatalf("blank expanded rail click leaked to SFTP page: section=%v selected=%d", state.activeSection, w.view.selected)
+	}
+
+	tabRect, ok = hitByIDFromSnapshot(preview.Snapshot(), tabID)
+	if !ok {
+		t.Fatalf("expanded auto-hide sidebar did not paint workspace tab %v", tabID)
+	}
+	if err := preview.Click(tabRect.X+tabRect.Width/2, tabRect.Y+tabRect.Height/2); err != nil {
+		t.Fatal(err)
+	}
+	if state.activeSection != sectionTerminal {
+		t.Fatalf("clicking workspace tab in expanded auto-hide sidebar did not switch back to terminal: section=%v", state.activeSection)
+	}
+}
+
 func textBoundsFromSnapshot(snapshot app.Snapshot, value string) (gfx.Rect, bool) {
 	for _, text := range snapshot.Texts {
 		if text.Value == value {

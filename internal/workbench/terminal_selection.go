@@ -318,6 +318,11 @@ func (state *State) terminalPointer(session *Session, event gfx.PointerEvent) gf
 	linksEnabled := terminal.screen.Modes().Mouse == term.MouseOff && state.terminalLinkOpens(event.Modifiers)
 	switch event.Kind {
 	case gfx.PointerDown:
+		if event.Button == gfx.PointerButtonMiddle {
+			state.terminalMenu.open = false
+			state.pasteIntoTerminal(session)
+			return gfx.EventResult{Handled: true, Repaint: true}
+		}
 		if event.Button == gfx.PointerButtonSecondary {
 			if state.terminalRightClickPaste && event.Modifiers&gfx.ModifierShift == 0 && terminal.selection.selected {
 				// The Windows Terminal convention. Without copy-on-select the
@@ -521,6 +526,18 @@ func (state *State) stepSelectionScroll(terminal *terminal, now time.Duration) {
 	}
 	selection.edge.last, selection.edge.stepped = next, true
 	selection.extendUnit(terminal.screen, terminal.screen.PointAt(term.Position{Row: row, Column: edge.column}))
+}
+
+// pointerCursor is the pointer over the grid. It is text the user selects, so
+// the I-beam, as over any terminal; a program that asked for mouse reports
+// (a multiplexer, a full-screen interface) owns the clicks and the pointer
+// over it is the default arrow. A part painted over the control (the
+// scrollbar, the accept-suggestion badge) declares its own.
+func (terminal *terminal) pointerCursor() gfx.PointerCursor {
+	if terminal.screen.Modes().Mouse != term.MouseOff {
+		return gfx.PointerCursorDefault
+	}
+	return gfx.PointerCursorText
 }
 
 func (state *State) terminalMousePointer(session *Session, event gfx.PointerEvent, position term.Position) (gfx.EventResult, bool) {

@@ -200,6 +200,7 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	row(settingsTerminal, tools.LineHeightRow, "")
 	row(settingsTerminal, tools.GutterRow, tools.GutterDescription)
 	row(settingsTerminal, tools.CursorRow, tools.CursorDescription)
+	row(settingsTerminal, tools.CursorProgramRow, tools.CursorProgramDescription)
 	row(settingsTerminal, tools.IntenseRow, tools.IntenseDescription)
 	row(settingsTerminal, m.SettingsTerminalScrollback, m.SettingsTerminalScrollbackDescription)
 	row(settingsTerminal, m.SettingsTerminalClipboard, m.SettingsTerminalClipboardDescription)
@@ -237,6 +238,8 @@ func (state *State) eachSettingsEntry(add func(settingsEntry)) {
 	row(settingsTerminal, tools.HighlightCustom, tools.HighlightCustomDescription)
 	row(settingsTerminal, m2.Row, m2.RowDescription)
 	row(settingsTerminal, tools.BgRow, tools.BgRowNone)
+	row(settingsTerminal, tools.BgEnabled, "")
+	row(settingsTerminal, tools.BgHideApplication, tools.BgHideApplicationDescription)
 	row(settingsTerminal, tools.BgVisibility, "")
 
 	row(settingsConnection, m.SettingsConnectionTimeout, m.SettingsConnectionTimeoutDescription)

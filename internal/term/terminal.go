@@ -18,17 +18,32 @@ const (
 const DefaultScrollback = 5000
 
 // A scrollback line costs the same whatever its age: its cells, its combining
-// marks and its hyperlink slots. The byte budget keeps a wide terminal from
-// turning the line limit into tens of megabytes; short lines still keep the
-// full line count.
+// marks and its hyperlink slots. The byte budget keeps a hostile or
+// pathologically wide stream from turning the line limit into unbounded memory,
+// while scaling with the configured scrollback limit so wide desktop terminals
+// still retain the full line count the user asked for.
 const (
-	defaultHistoryBytes = 16 << 20
-	historyLineOverhead = 112 // the line struct, its slice headers and allocator slack
-	historyCellBytes    = 16  // Cell
-	historyMarkBytes    = 8   // Mark
-	historyLinkBytes    = 4   // one uint32 element of a line's hyperlink slice
-	historyLinkOverhead = 24  // that slice's header and allocation
+	minHistoryBytes        = 16 << 20
+	historyBytesPerLine    = 10 << 10 // ~600 columns of cells + overhead (or ~500 with links)
+	maxDefaultHistoryBytes = 1 << 30  // holds the largest choice at ~600 columns
+	historyLineOverhead    = 112      // the line struct, its slice headers and allocator slack
+	historyCellBytes       = 16       // Cell
+	historyMarkBytes       = 8        // Mark
+	historyLinkBytes       = 4        // one uint32 element of a line's hyperlink slice
+	historyLinkOverhead    = 24       // that slice's header and allocation
 )
+
+// defaultHistoryBytesFor returns the default memory budget for a terminal
+// configured to retain up to limit scrollback lines.
+func defaultHistoryBytesFor(limit int) int {
+	if limit <= 0 {
+		return minHistoryBytes
+	}
+	if limit >= maxDefaultHistoryBytes/historyBytesPerLine {
+		return maxDefaultHistoryBytes
+	}
+	return max(minHistoryBytes, limit*historyBytesPerLine)
+}
 
 // CursorStyle is the cursor shape an application asked for with DECSCUSR.
 type CursorStyle uint8
@@ -156,13 +171,23 @@ type Terminal struct {
 	histCount  int
 	histBytes  int
 	histMax    int
-	histBudget int
-	histSpare  *line        // an evicted line to reuse, so a budget-bound history does not allocate per line
-	view       int          // how many lines the view is scrolled back
-	scrolled   uint64       // lines ever pushed into history, kept or dropped
-	clock      func() int64 // stamps lines when they are written; nil records nothing
-	clockAt    int64        // clock() for the current Write, see clockNow
-	clockValid bool
+	histBudget int    // an explicit byte budget; 0 follows the line limit, see historyBudget
+	histSpare  *line  // an evicted line to reuse, so a budget-bound history does not allocate per line
+	view       int    // how many lines the view is scrolled back
+	scrolled   uint64 // lines ever pushed into history, kept or dropped
+	// droppedContinuations counts the soft-wrap continuations among the lines
+	// the buffer has dropped, and droppedWrapped remembers whether that last
+	// dropped line continues into the oldest line the buffer now holds. Drops
+	// leave from the oldest end one line at a time, so that last dropped line
+	// is always the predecessor of the oldest retained one; with the two, the
+	// logical line numbers the gutter shows keep counting as if nothing had
+	// been dropped. See LogicalLineNumbers.
+	droppedContinuations uint64
+	droppedWrapped       bool
+	logicalNumbers       logicalNumberCache // logicalNumbers caches the line number of one buffer row between gutter frames; see LogicalLineNumbers.
+	clock                func() int64       // stamps lines when they are written; nil records nothing
+	clockAt              int64              // clock() for the current Write, see clockNow
+	clockValid           bool
 
 	cx, cy   int
 	pend     bool // a character was written in the last column; wrap on the next
@@ -178,8 +203,11 @@ type Terminal struct {
 	defaultCursor CursorStyle
 	// cursorStyled says a program has styled the cursor, so the default no
 	// longer applies to it.
-	cursorStyled      bool
-	cursorSteady      bool
+	cursorStyled bool
+	cursorSteady bool
+	// cursorFromProgram says a program may still choose the cursor shape with
+	// DECSCUSR. It is on unless the user asked for their own shape to stand.
+	cursorFromProgram bool
 	title             string
 	hyperlinks        []hyperlinkRecord // allocated only after the first accepted OSC 8 target
 	hyperlinkByTarget map[string]uint32
@@ -248,7 +276,7 @@ type Terminal struct {
 // New returns a terminal of the given size keeping at most scrollback lines of
 // history. A scrollback of 0 keeps none.
 func New(cols, rows, scrollback int) *Terminal {
-	t := &Terminal{histMax: max(scrollback, 0), histBudget: defaultHistoryBytes}
+	t := &Terminal{histMax: max(scrollback, 0), cursorFromProgram: true}
 	t.cols = clampInt(cols, 1, maxCols)
 	t.rows = clampInt(rows, 1, maxRows)
 	t.main.lines = t.blankLines(t.rows)
@@ -380,6 +408,9 @@ func (t *Terminal) ClearScreen() bool {
 	// What stays on the line above is gone, so it no longer continues it.
 	lines[0].wrapped = false
 	t.clearHistory()
+	// The row the cursor stood on is now the first row and begins a line of its
+	// own, whatever the last dropped history row continued into it.
+	t.droppedWrapped = false
 	t.cy = 0
 	t.generation++
 	t.version++
@@ -399,6 +430,8 @@ func (t *Terminal) SetScrollbackLimit(limit int) {
 		return
 	}
 	t.histMax = limit
+	// The ring is rebuilt below, so a cached row number no longer names a row.
+	t.logicalNumbers.valid = false
 	if limit == 0 {
 		t.clearHistory()
 		t.version++
@@ -414,9 +447,12 @@ func (t *Terminal) SetScrollbackLimit(limit int) {
 		kept[i] = t.histAt(start + i)
 	}
 	for i := 0; i < start; i++ {
+		l := t.histAt(i)
 		if t.images != nil {
-			t.images.dropLine(t.histAt(i).id)
+			t.images.dropLine(l.id)
 		}
+		// The rows dropped here leave from the oldest end like dropOldest's.
+		t.noteDropped(l)
 	}
 	t.hist = kept
 	t.histHead = 0
@@ -514,6 +550,17 @@ func (t *Terminal) historyBytes() int {
 	return bytes
 }
 
+// noteDropped records l as leaving the oldest end of the buffer. It continues
+// the line dropped before it exactly when droppedWrapped is set, so the logical
+// line numbers the gutter shows keep counting past it as if nothing had been
+// dropped. See LogicalLineNumbers.
+func (t *Terminal) noteDropped(l *line) {
+	if t.droppedWrapped {
+		t.droppedContinuations++
+	}
+	t.droppedWrapped = l.wrapped
+}
+
 // dropOldest gives back the oldest line, without touching the view: callers
 // that add a line adjust the view themselves.
 func (t *Terminal) dropOldest() {
@@ -528,16 +575,26 @@ func (t *Terminal) dropOldest() {
 	if t.histCount == 0 {
 		t.histHead = 0
 	}
+	t.noteDropped(l)
+	t.logicalNumbers.dropOldest()
+}
+
+// historyBudget is the byte budget of the history: an explicit one if histBudget
+// was set, else the default for the current line limit, so raising the limit
+// raises the budget with it.
+func (t *Terminal) historyBudget() int {
+	if t.histBudget > 0 {
+		return t.histBudget
+	}
+	return defaultHistoryBytesFor(t.histMax)
 }
 
 // trimHistory keeps the ring within its byte budget. The line limit alone
 // cannot: a width change makes the same number of lines cost several times as
 // much, and old lines keep the width they were written at.
 func (t *Terminal) trimHistory() {
-	if t.histBudget <= 0 {
-		return
-	}
-	for t.histBytes > t.histBudget && t.histCount > 0 {
+	budget := t.historyBudget()
+	for t.histBytes > budget && t.histCount > 0 {
 		if t.histSpare == nil {
 			t.histSpare = t.hist[t.histHead]
 		}
@@ -556,6 +613,21 @@ func (t *Terminal) SetDefaultCursor(style CursorStyle) {
 	t.defaultCursor = style
 	if !t.cursorStyled {
 		t.cursor = style
+	}
+	t.version++
+}
+
+// SetCursorFromProgram says whether a program may choose the cursor shape with
+// DECSCUSR. With it off, the user's shape stands however a program asks; the
+// shape a program already set is dropped at once, while a steady/blink request
+// it made still holds.
+func (t *Terminal) SetCursorFromProgram(fromProgram bool) {
+	if t.cursorFromProgram == fromProgram {
+		return
+	}
+	t.cursorFromProgram = fromProgram
+	if !fromProgram && t.cursorStyled {
+		t.cursor, t.cursorStyled = t.defaultCursor, false
 	}
 	t.version++
 }
@@ -703,6 +775,7 @@ func (t *Terminal) recycle(l *line) *line {
 // fresh identity afterwards, so the history keeps its images and the caches
 // built from the old rows cannot paint over the new blank ones.
 func (t *Terminal) pushScreenToHistory() {
+	t.logicalNumbers.valid = false // the rows are recycled in place below
 	lines := t.scr.lines
 	last := -1
 	for y, l := range lines {
@@ -736,18 +809,58 @@ func (t *Terminal) lineHasContent(l *line) bool {
 	return t.images != nil && t.images.hasLine(l.id)
 }
 
+// historyUsed returns how many leading cells of l carry content worth storing
+// in history, starting from limit. Trailing unwritten cells are always dropped.
+// On a hard-ended line (!l.wrapped), trailing plain spaces with default
+// background, no attributes, no hyperlink and no combining mark render and copy
+// identically to unwritten cells, so dropping them stops space-padded output
+// from spending the history budget on blanks.
+func (l *line) historyUsed(limit int) int {
+	used := min(limit, len(l.cells))
+	minUsed := 0
+	if len(l.marks) > 0 {
+		minUsed = int(l.marks[len(l.marks)-1].Col) + 1
+	}
+	for used > minUsed {
+		c := l.cells[used-1]
+		if l.hyperlinkAt(used-1) != 0 {
+			break
+		}
+		if c == (Cell{}) {
+			used--
+			continue
+		}
+		if !l.wrapped && c.R == ' ' && c.BG == 0 && c.Attr == 0 {
+			used--
+			continue
+		}
+		break
+	}
+	return used
+}
+
+// historyCellCapExcess reports whether a slice of capacity have is too
+// oversized for need cells to be kept in history without inflating the byte
+// budget. The slack accommodates Go's allocator size-class rounding and minor
+// line-length jitter so steady-width recycling still allocates nothing.
+func historyCellCapExcess(have, need int) bool {
+	if need == 0 {
+		return have > 32
+	}
+	return have > need+need/2+32
+}
+
 // pushHistory appends a copy of l, without its trailing blanks, to the
 // history. When the ring is full the oldest line's storage is reused; when the
 // byte budget is reached the oldest lines are dropped.
 func (t *Terminal) pushHistory(l *line) {
 	t.scrolled++
 	if t.histMax == 0 {
+		// Nothing is retained, so the line is dropped as it leaves the screen.
+		t.noteDropped(l)
 		return
 	}
-	used := l.used
-	for used > 0 && l.cells[used-1] == (Cell{}) && l.hyperlinkAt(used-1) == 0 {
-		used--
-	}
+	used := l.historyUsed(l.used)
 	if t.hist == nil {
 		t.hist = make([]*line, t.histMax)
 	}
@@ -760,13 +873,25 @@ func (t *Terminal) pushHistory(l *line) {
 	} else {
 		dst = &line{}
 	}
-	if cap(dst.cells) < used || cap(dst.cells) > 4*used+64 {
-		dst.cells = make([]Cell, used)
+	if used == 0 {
+		if historyCellCapExcess(cap(dst.cells), 0) {
+			dst.cells = nil
+		} else {
+			dst.cells = dst.cells[:0]
+		}
+	} else {
+		if cap(dst.cells) < used || historyCellCapExcess(cap(dst.cells), used) {
+			dst.cells = make([]Cell, used)
+		}
+		dst.cells = dst.cells[:used]
+		copy(dst.cells, l.cells[:used])
 	}
-	dst.cells = dst.cells[:used]
 	dst.used = used
-	copy(dst.cells, l.cells[:used])
-	dst.marks = append(dst.marks[:0], l.marks...)
+	if len(l.marks) == 0 {
+		dst.marks = nil
+	} else {
+		dst.marks = append(dst.marks[:0], l.marks...)
+	}
 	if used > 0 && l.hyperlinks != nil {
 		links := append([]uint32(nil), (*l.hyperlinks)[:used]...)
 		dst.hyperlinks = &links
@@ -815,6 +940,12 @@ func (t *Terminal) clearHistory() {
 			t.images.dropLine(t.histAt(i).id)
 		}
 	}
+	// The cleared lines leave from the oldest end in order, like dropOldest's
+	// do, so the logical line numbers keep counting past them the same way.
+	for i := 0; i < t.histCount; i++ {
+		t.noteDropped(t.histAt(i))
+	}
+	t.logicalNumbers.valid = false
 	clear(t.hist)
 	t.hist, t.histHead, t.histCount, t.histBytes, t.view = nil, 0, 0, 0, 0
 }

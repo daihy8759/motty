@@ -9,11 +9,13 @@ import (
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/components"
 	"github.com/vivaui/viva/gfx"
+	"github.com/vivaui/viva/ui"
 	"motty/internal/i18n"
 )
 
@@ -29,8 +31,11 @@ import (
 var backgroundHits = tree.Feature("background")
 
 var (
-	hitBgChoose = tree.ID(backgroundHits, "bg-choose")
-	hitBgRemove = tree.ID(backgroundHits, "bg-remove")
+	hitBgEnabled         = tree.ID(backgroundHits, "bg-enabled")
+	hitBgHideApplication = tree.ID(backgroundHits, "bg-hide-application")
+	hitBgVisibility      = tree.ID(backgroundHits, "bg-visibility")
+	hitBgChoose          = tree.ID(backgroundHits, "bg-choose")
+	hitBgRemove          = tree.ID(backgroundHits, "bg-remove")
 )
 
 const (
@@ -42,49 +47,12 @@ const (
 	backgroundMaxEdge = 2560
 )
 
-// backgroundStrength is how much of the picture shows: the opacity of the
-// surfaces over it.
-type backgroundStrength uint8
-
-const (
-	bgMedium backgroundStrength = iota
-	bgSubtle
-	bgStrong
-)
-
-func (strength backgroundStrength) opacity() float32 {
-	switch strength {
-	case bgSubtle:
-		return 0.92
-	case bgStrong:
-		return 0.62
-	}
-	return 0.80
-}
-
-func (strength backgroundStrength) saved() string {
-	switch strength {
-	case bgSubtle:
-		return "subtle"
-	case bgStrong:
-		return "strong"
-	}
-	return ""
-}
-
-func backgroundStrengthFromString(value string) backgroundStrength {
-	switch value {
-	case "subtle":
-		return bgSubtle
-	case "strong":
-		return bgStrong
-	}
-	return bgMedium
-}
-
 type savedBackground struct {
-	Name     string `json:"name,omitempty"`
-	Strength string `json:"strength,omitempty"`
+	Disabled                  bool   `json:"disabled,omitempty"`
+	HideApplicationBackground bool   `json:"hideApplicationBackground,omitempty"`
+	Name                      string `json:"name,omitempty"`
+	Strength                  string `json:"strength,omitempty"`
+	Visibility                *int   `json:"visibility,omitempty"`
 }
 
 // backgroundImages numbers decoded pictures so a renderer never mistakes a new
@@ -92,10 +60,12 @@ type savedBackground struct {
 var backgroundImages atomic.Uint64
 
 type backgroundState struct {
+	disabled                  bool
+	hideApplicationBackground bool
 	// set is whether a picture is chosen; name is the original file's name.
-	set      bool
-	name     string
-	strength backgroundStrength
+	set        bool
+	name       string
+	visibility ui.SliderState
 
 	// The decoded picture; ready once pix is non-nil.
 	pix           []byte
@@ -120,24 +90,36 @@ func (state *State) backgroundPath() string {
 }
 
 func (state *State) savedBackgroundValue() *savedBackground {
-	if !state.bg.set {
+	if !state.bg.set && !state.bg.hideApplicationBackground {
 		return nil
 	}
-	return &savedBackground{Name: state.bg.name, Strength: state.bg.strength.saved()}
+	visibility := int(state.bg.visibility.Value)
+	return &savedBackground{Name: state.bg.name, Visibility: &visibility, Disabled: state.bg.disabled, HideApplicationBackground: state.bg.hideApplicationBackground}
 }
 
 // restoreBackground applies the saved choice and starts decoding the stored
 // copy. A copy that is gone leaves no picture.
 func (state *State) restoreBackground(saved *savedBackground) {
 	state.bg.serial++
-	state.bg = backgroundState{serial: state.bg.serial}
+	state.bg = backgroundState{serial: state.bg.serial, visibility: ui.SliderState{Value: 20}}
 	if saved == nil {
 		return
 	}
+	state.bg.disabled = saved.Disabled
+	state.bg.hideApplicationBackground = saved.HideApplicationBackground
 	if _, err := os.Stat(state.backgroundPath()); err != nil {
 		return
 	}
-	state.bg.set, state.bg.name, state.bg.strength = true, saved.Name, backgroundStrengthFromString(saved.Strength)
+	state.bg.set, state.bg.name = true, saved.Name
+	switch saved.Strength {
+	case "subtle":
+		state.bg.visibility.Value = 8
+	case "strong":
+		state.bg.visibility.Value = 38
+	}
+	if saved.Visibility != nil {
+		state.bg.visibility.Value = float32(max(0, min(100, *saved.Visibility)))
+	}
 	state.decodeBackground(state.bg.serial)
 }
 
@@ -280,9 +262,9 @@ func (state *State) chooseBackground() {
 		state.status = fmt.Sprintf(m.BgErrFmt, err)
 		return
 	}
-	strength := state.bg.strength
+	visibility := state.bg.visibility.Value
 	state.bg.serial++
-	state.bg = backgroundState{serial: state.bg.serial, set: true, name: filepath.Base(paths[0]), strength: strength}
+	state.bg = backgroundState{serial: state.bg.serial, hideApplicationBackground: state.bg.hideApplicationBackground, set: true, name: filepath.Base(paths[0]), visibility: ui.SliderState{Value: visibility}}
 	state.decodeBackground(state.bg.serial)
 	state.save()
 }
@@ -292,14 +274,24 @@ func (state *State) removeBackground() {
 		return
 	}
 	_ = os.Remove(state.backgroundPath())
-	strength := state.bg.strength
+	visibility := state.bg.visibility.Value
 	state.bg.serial++
-	state.bg = backgroundState{serial: state.bg.serial, strength: strength}
+	state.bg = backgroundState{serial: state.bg.serial, hideApplicationBackground: state.bg.hideApplicationBackground, visibility: ui.SliderState{Value: visibility}}
 	state.save()
 }
 
 func (state *State) clickBackground(id gfx.ID) bool {
 	switch id {
+	case hitBgEnabled:
+		if !state.bg.set {
+			state.chooseBackground()
+		} else {
+			state.bg.disabled = !state.bg.disabled
+			state.save()
+		}
+	case hitBgHideApplication:
+		state.bg.hideApplicationBackground = !state.bg.hideApplicationBackground
+		state.save()
 	case hitBgChoose:
 		state.chooseBackground()
 	case hitBgRemove:
@@ -311,13 +303,15 @@ func (state *State) clickBackground(id gfx.ID) bool {
 }
 
 // backgroundOn reports whether a decoded picture is being painted.
-func (state *State) backgroundOn() bool { return state.bg.set && state.bg.pix != nil }
+func (state *State) backgroundOn() bool {
+	return state.bg.set && !state.bg.disabled && state.bg.pix != nil
+}
 
 // ground is the color of a terminal's ground: the color itself, or, while the
 // picture is showing, the color at the picture's visibility.
 func (state *State) ground(color gfx.Color) gfx.Color {
 	if state.showsBackground() {
-		color.Alpha *= state.bg.strength.opacity()
+		color.Alpha *= 1 - state.bg.visibility.Value/100
 	}
 	return color
 }
@@ -398,31 +392,24 @@ func (state *State) paintBackgroundSettings(page *settingsPage) {
 		}
 	}
 	description := bg.text
-	strength := bg.strength
 	page.group(m.BgGroup, func() {
+		page.toggleRow(m.BgEnabled, "", bg.set && !bg.disabled, hitBgEnabled)
 		page.actionRow(m.BgRow, description, false,
 			components.ButtonAction{ID: hitBgChoose, Label: m.BgChoose, Variant: components.ButtonOutline},
 			components.ButtonAction{ID: hitBgRemove, Label: m.BgRemove, Variant: components.ButtonOutline})
-		settingsChoiceRow(page, m.BgVisibility, "", &strength, settingsBackgroundStrengthChoices[:], state.settingsBackgroundStrengthLabel,
-			func() {
-				if bg.set {
-					bg.strength = strength
+		page.toggleRow(m.BgHideApplication, m.BgHideApplicationDescription, bg.hideApplicationBackground, hitBgHideApplication)
+		page.lineFor(hitBgVisibility, m.BgVisibility, "", 182, func() {
+			ui.Row(page.c).Grow(1).Gap(8).Items(ui.Center).Children(func() {
+				slider := &bg.visibility
+				wasDragging := slider.Dragging()
+				control := ui.Slider(page.c, slider).Range(0, 100).Step(1).Label(m.BgVisibility).Hit(hitBgVisibility, m.BgVisibility).Disabled(!bg.set || bg.disabled).Grow(1).Shrink(1)
+				slider.ID = hitBgVisibility
+				changed := control.Changed()
+				if !slider.Dragging() && (wasDragging || changed) {
 					state.save()
 				}
-			}, nil)
+				ui.Text(page.c, strconv.Itoa(int(slider.Value))+"%").FontSize(metrics.FontSizeS).Color(state.pal.muted).Width(36).Shrink(0).TextEnd()
+			})
+		})
 	})
-}
-
-// settingsBackgroundStrengthChoices are how much of the picture shows.
-var settingsBackgroundStrengthChoices = [...]backgroundStrength{bgSubtle, bgMedium, bgStrong}
-
-func (state *State) settingsBackgroundStrengthLabel(strength backgroundStrength) string {
-	m := state.messages.Tools
-	switch strength {
-	case bgSubtle:
-		return m.BgSubtle
-	case bgStrong:
-		return m.BgStrong
-	}
-	return m.BgMedium
 }

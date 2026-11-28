@@ -81,6 +81,7 @@ type savedState struct {
 	TerminalFind               terminalFindPreferences `json:"terminal_find,omitzero"`
 	TerminalScrollback         int                     `json:"terminal_scrollback,omitempty"`
 	TerminalCursor             string                  `json:"terminal_cursor,omitempty"`
+	TerminalCursorProgram      bool                    `json:"terminal_cursor_program,omitempty"`
 	ConnectionTimeoutSeconds   int                     `json:"connection_timeout_seconds,omitempty"`
 	ConnectionKeepAliveSeconds int                     `json:"connection_keepalive_seconds,omitempty"`
 	// ConnectionKeepAliveOff records the user's "off" choice. The interval
@@ -257,6 +258,7 @@ type savedState struct {
 	// CommandsSide is the sidebar dock; false is the bottom strip, which is
 	// also what settings written before the sidebar mean.
 	CommandsSide         bool     `json:"commands_side,omitempty"`
+	CommandsSidebarLeft  bool     `json:"commands_sidebar_left,omitempty"`
 	CommandsHiddenGroups []string `json:"commands_hidden_groups,omitempty"`
 	// CommandsCollapsedGroups are the groups folded to their heading in the bar.
 	CommandsCollapsedGroups []string `json:"commands_collapsed_groups,omitempty"`
@@ -614,6 +616,7 @@ func (state *State) snapshot() savedState {
 		TerminalFind:               state.terminalFindPrefs,
 		TerminalScrollback:         state.terminalScrollback,
 		TerminalCursor:             state.terminalCursorStyle.String(),
+		TerminalCursorProgram:      state.terminalCursorProgram,
 		ConnectionTimeoutSeconds:   int(state.connectionTimeout / time.Second),
 		ConnectionKeepAliveSeconds: int(state.connectionKeepAlive / time.Second),
 		ConnectionKeepAliveOff:     state.connectionKeepAlive == 0,
@@ -740,6 +743,7 @@ func (state *State) snapshot() savedState {
 	}
 	saved.CommandsShown = state.commands.shown
 	saved.CommandsSide = state.commands.placement == commandsPlacementSide
+	saved.CommandsSidebarLeft = state.commands.sidebarLeft
 	saved.CommandsSort = state.commands.sort.String()
 	saved.CommandsWidth = state.commands.width
 	for key, hidden := range state.commands.hiddenGroups {
@@ -1106,6 +1110,9 @@ func (state *State) restoreSettings(saved savedState) {
 	state.restoreLocal(saved)
 	state.restoreShared(saved)
 	state.restoreBackground(saved.Background)
+	// The cursor shape and whether a program may change it reach the terminals
+	// this window already has, not only the ones opened later.
+	state.applyTerminalCursorStyle()
 }
 
 // reloadSettings makes this window show the configuration the store now holds,
@@ -1285,6 +1292,7 @@ func (state *State) restoreShared(saved savedState) {
 	state.shortcuts = recorded
 	state.setTerminalScrollback(normalizeTerminalScrollback(saved.TerminalScrollback))
 	state.terminalCursorStyle = terminalCursorStyleFromString(saved.TerminalCursor)
+	state.terminalCursorProgram = saved.TerminalCursorProgram
 	state.connectionTimeout, state.connectionKeepAlive = connectionTimes(saved)
 	state.connectionReconnect = reconnectPolicyFromString(saved.ConnectionReconnect)
 	state.terminalClipboard = terminalClipboardPolicyFromString(saved.TerminalClipboard)

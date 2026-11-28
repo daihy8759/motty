@@ -454,6 +454,7 @@ type Messages struct {
 	CopyAddressAndPort                     string
 	CopyConnectionName                     string
 	MenuPaste                              string
+	MenuPasteSelection                     string
 	MenuSelectAll                          string
 	MenuClearScreen                        string
 	MenuClearScrollback                    string
@@ -608,6 +609,7 @@ type Messages struct {
 	ColorPickerApply                     string
 	ColorPickerInvalid                   string
 	ColorNone                            string
+	ColorRandom                          string
 	ColorGreen                           string
 	ColorYellow                          string
 	ColorOrange                          string
@@ -1067,6 +1069,7 @@ type Messages struct {
 	ForwardFieldRelay             string
 	ForwardRelayPlaceholder       string
 	ForwardRefusedHint            string
+	ForwardRemoteRefusedHint      string
 	ForwardRelayRefused           string
 	ErrForwardRelayFmt            string
 	ForwardDestinationPlaceholder string

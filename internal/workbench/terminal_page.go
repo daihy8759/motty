@@ -107,10 +107,6 @@ func (state *State) installTerminalHandlers(session *Session) {
 	t.pageIdentity(sessionID)
 	h := &t.handlers
 	h.Role = gfx.RoleTerminal
-	// The grid is text the user selects, so the pointer over it is the I-beam,
-	// as over any terminal; a part painted over the control (the scrollbar, the
-	// accept-suggestion badge) declares its own.
-	h.Cursor = gfx.PointerCursorText
 	// The terminal's input is the application's own routing: a key the
 	// application acts on (a shortcut, the completion list, the key that
 	// activates a pane) is handled before the terminal encodes it, and the
@@ -272,7 +268,7 @@ func (state *State) declareTerminalPane(c ui.C, session *Session, bounds gfx.Rec
 		Y:      bounds.Y + chrome.top,
 		Width:  bounds.Width,
 		Height: max(bounds.Height-chrome.top, 0),
-	}, state.cellWidth, state.cellHeight, state.padding())
+	}, state.cellWidth, state.cellHeight, state.paddingFor(t))
 	inactive := state.paneIsInactive(session.ID)
 	inSplit := state.paneInSplit(session.ID)
 	barBackground, barBorder := state.pal.workspace, state.pal.line
@@ -327,6 +323,9 @@ func (state *State) declareTerminalPane(c ui.C, session *Session, bounds gfx.Rec
 			}
 			c.Part(terminalControlPart)
 			label := t.accessibleName(state.messages.LabelTerminalFmt, session.Address)
+			// The pointer follows what the program asked for, so it is read for
+			// each declaration, not once with the handlers.
+			t.handlers.Cursor = t.pointerCursor()
 			terminal := ui.Control(c, label, &t.handlers)
 			if session.ID == state.activeSessionID && !t.find.open {
 				terminal.AutoFocus()
@@ -344,7 +343,8 @@ func (state *State) drawTerminalControl(d *ui.DrawContext, sessionID uint32) {
 	if !ok || session.term == nil {
 		return
 	}
-	geometry := terminalGeometryForArea(d.Rect, state.cellWidth, state.cellHeight, state.padding())
+	session.term.expireSync()
+	geometry := terminalGeometryForArea(d.Rect, state.cellWidth, state.cellHeight, state.paddingFor(session.term))
 	state.paintGridControl(d.Canvas, session, geometry, terminalGridFocused(d.Canvas, session, d.State.Focused))
 }
 

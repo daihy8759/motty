@@ -70,6 +70,9 @@ func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 		// computer's own picker layout, like the hidden shells below.
 		"local_shells_expanded": true,
 		"local_shell":           true, "local_start": true, "last_local_directory": true, "ssh_agent": true, "ssh_agent_path": true, "local_proxy_port": true, "terminal_cursor": true,
+		// Whether programs may change the cursor shape goes with the shape it
+		// would change, which is this computer's own look as well.
+		"terminal_cursor_program": true,
 		// The commands a computer's local shells type when they start name its own
 		// shells and set up its own locale, so another device keeps its own.
 		"local_startup_commands": true,
@@ -77,6 +80,7 @@ func TestEverySavedStateFieldIsSharedOrKeptOnThisDevice(t *testing.T) {
 		// and how it orders them are this computer's own layout, not a
 		// preference to sync.
 		"commands_shown": true, "commands_side": true, "commands_sort": true, "commands_hidden_groups": true, "commands_collapsed_groups": true, "commands_width": true,
+		"commands_sidebar_left": true,
 		// The shells a computer hides from its pickers name this machine's own
 		// programs and distributions; another device hides its own.
 		"hidden_shells": true,

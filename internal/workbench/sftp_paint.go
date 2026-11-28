@@ -12,6 +12,7 @@ import (
 	"github.com/vivaui/viva/gfx"
 	"github.com/vivaui/viva/ui"
 	"motty/internal/sftpclient"
+	"motty/internal/sshconn"
 )
 
 // The file panel is a column a few hundred pixels wide (a side panel or a
@@ -131,6 +132,7 @@ func (state *State) declareSFTPPanel(c ui.C) {
 	folder, local := view.active(), view.local
 	session := s.session
 	view.reconcileSFTPRename(c.Canvas(), !local && state.modal == modalNone)
+	state.measureSFTPColumnText(c.Canvas())
 
 	// What the page shows decides its parts. The selection bar and the file
 	// actions are as tall as what they hold; the list takes what they leave.
@@ -229,6 +231,13 @@ func (state *State) declareSFTPPanel(c ui.C) {
 		s.header.Children(func() {
 			ui.Text(c, title).FontSize(metrics.FontSizeM).Weight(gfx.WeightSemibold).Color(pal.text).Ellipsis().Grow(1).Height(20).LineHeight(20).MarginSides(0, 8, 0, 0)
 			ui.Row(c).Gap(4).Shrink(0).Children(func() {
+				// The panel shows one side at a time; the manager shows both. A
+				// local panel has no server to browse, so it keeps the title row
+				// as it was, and a reconnecting session shows the control the
+				// way the terminal toolbar does: there, but waiting.
+				if session.hasServer() {
+					headerIcon(hitSFTPDetachPanel, iconSFTPTransfer, messages.SFTPWindow.Open, session.phase != sshconn.PhaseConnected || !state.sftpManagersAvailable(), iconButtonQuiet)
+				}
 				headerIcon(hitSFTPPanelSide, moveIcon, moveHint, false, iconButtonQuiet)
 				headerIcon(hitSFTPClose, iconClose, messages.TipSFTPClose, false, iconButtonQuiet)
 			})
@@ -324,7 +333,7 @@ func (state *State) declareSFTPPanel(c ui.C) {
 			s.sizeWidth, s.modifiedWidth = columns.size, columns.modified
 			s.columnWidths = [3]float32{columns.name, columns.size, columns.modified}
 		} else {
-			s.sizeWidth, s.modifiedWidth = sftpColumnWidths(rowWidth)
+			s.sizeWidth, s.modifiedWidth = state.sftpColumnWidths(rowWidth)
 		}
 		if !searching {
 			s.listHeader = ui.Row(c).Width(rowWidth).Height(sftpListHeaderHeight).Shrink(0).PadX(8).Items(ui.Center).Children(func() {
@@ -582,14 +591,19 @@ func (state *State) afterSFTPListChoice(view *sftpView, folder *sftpFolder) {
 	}
 }
 
-func sftpColumnWidths(width float32) (size, modified float32) {
-	modified = 82
+// sftpColumnWidths is the default size and modification-time widths for a
+// list whose columns have width. They keep the room-based defaults as a floor
+// and grow to the measured date when the interface font or text size needs
+// more, so the modification time is never cut off by default.
+func (state *State) sftpColumnWidths(width float32) (size, modified float32) {
+	modified, size = 82, 54
+	content := state.sftpColumnShortText
 	if width >= 360 {
-		modified = 108
+		modified, size = 108, 64
+		content = state.sftpColumnModifiedText
 	}
-	size = 54
-	if width >= 360 {
-		size = 64
+	if content > 0 {
+		modified = max(modified, content+sftpColumnNameGap)
 	}
 	return
 }
@@ -724,7 +738,11 @@ func (state *State) declareSFTPListRow(row ui.ListRow, folder *sftpFolder, view 
 			}
 			if column.Key == sftpColumnModified {
 				date := entry.cells[3]
-				if modifiedWidth < 100 && len(date) > 5 {
+				full := state.sftpColumnModifiedText
+				if full == 0 {
+					full = 100
+				}
+				if modifiedWidth < full && len(date) > 5 {
 					date = date[5:] // drop the year
 				}
 				ui.Text(c, date).FontSize(metrics.FontSizeS).Color(pal.muted).Width(modifiedWidth).TextEnd().Shrink(0)

@@ -1,6 +1,7 @@
 package sftpclient
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -306,6 +308,11 @@ type transferRecord struct {
 	settled  bool
 	// paused holds the transfer back; active says a goroutine is running it.
 	paused, active bool
+	// executing is true while runTransfer is inside execute; overlapped is set
+	// when two or more transfers execute on the subsystem at once; probing is
+	// true while waiting for exclusive subsystem access to probe a failed item
+	// serially so schedule does not start new concurrent transfers mid-probe.
+	executing, overlapped, probing bool
 	// canceledByUser is set by CancelTransfer, the user's own decision to give
 	// the transfer up. Cancel and Close end a transfer too, but they are about
 	// the connection, and what the transfer left behind is kept for a retry.
@@ -413,6 +420,14 @@ type Worker struct {
 	// resume is closed and replaced whenever a paused transfer may go on or be
 	// stopped, which wakes those waiting in a copy loop.
 	resume chan struct{}
+	// serial latches for serialGen (the active subsystem generation) once a
+	// serial probe of a concurrent SSH_FX_FAILURE succeeds, proving the server
+	// refused concurrency rather than the item itself. schedule caps active
+	// transfers at one while latched or probing, and folder uploads move one
+	// item at a time. serialWait wakes waiters when a transfer yields/finishes.
+	serial     bool
+	serialGen  uint64
+	serialWait chan struct{}
 	// transferGroup counts the goroutines running transfers.
 	transferGroup sync.WaitGroup
 	// linksGroup counts the goroutines resolving a listing's symbolic links after
@@ -429,9 +444,11 @@ type Worker struct {
 	finalizeTimeout time.Duration
 	// ids are the user and group names the server's account files gave, read
 	// once, on the first listing.
-	ids       IDNames
-	idsTried  bool
-	dropTimes bool // the zero value keeps times
+	ids          IDNames
+	idsTried     bool
+	dropTimes    bool // the zero value keeps times
+	handles      *handleBudget
+	largeUploads chan struct{}
 }
 
 func NewWorker(open func() (Remote, error), notify func()) *Worker {
@@ -441,7 +458,10 @@ func NewWorker(open func() (Remote, error), notify func()) *Worker {
 		results:  make(chan Result, maxQueuedRequests),
 		done:     make(chan struct{}), finished: make(chan struct{}),
 		parallel: DefaultParallel, resume: make(chan struct{}), clock: time.Now,
-		cancelGrace: uploadCancelGrace, finalizeTimeout: uploadFinalizeTimeout,
+		cancelGrace:     uploadCancelGrace,
+		finalizeTimeout: uploadFinalizeTimeout,
+		handles:         newHandleBudget(defaultInitialOpenHandles, defaultMaxOpenHandles),
+		largeUploads:    make(chan struct{}, uploadLargeFilesLimit),
 	}
 	liveWorkers.Acquire()
 	go worker.run()
@@ -715,6 +735,10 @@ func (worker *Worker) schedule() {
 	if worker.closedLocked() {
 		return
 	}
+	limit := worker.parallel
+	if worker.isSerialLocked(worker.generation) || worker.anyProbingLocked() {
+		limit = 1
+	}
 	running := 0
 	for index := range worker.transfers {
 		if worker.transfers[index].active {
@@ -722,7 +746,7 @@ func (worker *Worker) schedule() {
 		}
 	}
 	for index := range worker.transfers {
-		if running >= worker.parallel {
+		if running >= limit {
 			return
 		}
 		record := &worker.transfers[index]
@@ -740,12 +764,229 @@ func (worker *Worker) schedule() {
 }
 
 // runTransfer is the goroutine of one transfer.
+//
+// An inner stage (ensureRemoteDirectories, uploadPlanned, download, remoteCopy)
+// that already ran a serial probe clears record.overlapped via acquireSerialSlot,
+// so retryOverlapped here only re-runs execute when the failure happened before
+// any sub-item probe ran (for example, a single-file transfer or pre-transfer
+// directory/scan error).
 func (worker *Worker) runTransfer(next request) {
 	defer worker.transferGroup.Done()
+	generation := worker.snapshot()
+	worker.enterExecute(next.id)
 	result := worker.execute(next)
+	if err := worker.retryOverlapped(generation, next.id, result.Err, func() {
+		worker.resetTransferProgress(next.id)
+	}, func() error {
+		result = worker.execute(next)
+		return result.Err
+	}); err != nil {
+		result.Err = err
+	}
+	worker.leaveExecute(next.id)
 	worker.finishTransfer(next.id, result)
 	worker.publish(result)
 	worker.schedule()
+}
+
+func (worker *Worker) isSerialLocked(generation uint64) bool {
+	return worker.serial && worker.serialGen == generation
+}
+
+func (worker *Worker) isSerial(generation uint64) bool {
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	return worker.isSerialLocked(generation)
+}
+
+func (worker *Worker) anyProbingLocked() bool {
+	for index := range worker.transfers {
+		if worker.transfers[index].active && worker.transfers[index].probing {
+			return true
+		}
+	}
+	return false
+}
+
+func (worker *Worker) uploadInFlightLimit(generation uint64) int {
+	if worker.isSerial(generation) {
+		return 1
+	}
+	return uploadFilesInFlight
+}
+
+func (worker *Worker) latchSerial(generation uint64) {
+	worker.mu.Lock()
+	if worker.generation == generation {
+		worker.serial = true
+		worker.serialGen = generation
+	}
+	worker.mu.Unlock()
+}
+
+func (worker *Worker) serialWaitLocked() <-chan struct{} {
+	if worker.serialWait == nil {
+		worker.serialWait = make(chan struct{})
+	}
+	return worker.serialWait
+}
+
+func (worker *Worker) wakeSerialLocked() {
+	if worker.serialWait != nil {
+		close(worker.serialWait)
+		worker.serialWait = nil
+	}
+}
+
+func (worker *Worker) enterExecute(id uint64) {
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if record := worker.transferLocked(id); record != nil {
+		record.executing = true
+	}
+	executing := 0
+	for index := range worker.transfers {
+		if worker.transfers[index].executing {
+			executing++
+		}
+	}
+	if executing > 1 {
+		for index := range worker.transfers {
+			if worker.transfers[index].executing {
+				worker.transfers[index].overlapped = true
+			}
+		}
+	}
+}
+
+func (worker *Worker) leaveExecute(id uint64) {
+	worker.mu.Lock()
+	if record := worker.transferLocked(id); record != nil {
+		record.executing = false
+		record.overlapped = false
+		record.probing = false
+	}
+	worker.wakeSerialLocked()
+	worker.mu.Unlock()
+}
+
+func (worker *Worker) isOverlapped(id uint64) bool {
+	if id == 0 {
+		return false
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	record := worker.transferLocked(id)
+	return record != nil && record.overlapped
+}
+
+func (worker *Worker) otherExecutingLocked(id uint64) bool {
+	for index := range worker.transfers {
+		record := &worker.transfers[index]
+		if record.executing && record.snapshot.ID != id {
+			return true
+		}
+	}
+	return false
+}
+
+// acquireSerialSlot clears id's overlapped flag and waits until no other
+// transfer is executing on the subsystem before resuming id alone to probe
+// whether the failure was caused by concurrency. While probing is set,
+// schedule caps new transfers at one so nothing else overlaps the probe.
+func (worker *Worker) acquireSerialSlot(generation, id uint64) bool {
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if record := worker.transferLocked(id); record != nil {
+		record.executing = false
+		record.overlapped = false
+		record.probing = true
+	}
+	worker.wakeSerialLocked()
+	for {
+		if worker.closedLocked() || worker.generation != generation {
+			if record := worker.transferLocked(id); record != nil {
+				record.probing = false
+			}
+			return false
+		}
+		record := worker.transferLocked(id)
+		if record == nil || record.snapshot.State == TransferCanceled {
+			if record != nil {
+				record.probing = false
+			}
+			return false
+		}
+		if !worker.otherExecutingLocked(id) {
+			record.executing = true
+			return true
+		}
+		wait := worker.serialWaitLocked()
+		worker.mu.Unlock()
+		select {
+		case <-wait:
+		case <-worker.done:
+			worker.mu.Lock()
+			if record := worker.transferLocked(id); record != nil {
+				record.probing = false
+			}
+			return false
+		}
+		worker.mu.Lock()
+	}
+}
+
+func (worker *Worker) finishSerialProbe(id uint64) {
+	worker.mu.Lock()
+	if record := worker.transferLocked(id); record != nil {
+		record.probing = false
+	}
+	worker.mu.Unlock()
+}
+
+func (worker *Worker) retryOverlapped(generation, id uint64, err error, beforeRetry func(), action func() error) error {
+	if err == nil || !worker.isOverlapped(id) || worker.stopped(generation, id) || !isConcurrentSFTPFailure(err) {
+		return err
+	}
+	if !worker.acquireSerialSlot(generation, id) {
+		return ErrCanceled
+	}
+	defer worker.finishSerialProbe(id)
+	if beforeRetry != nil {
+		beforeRetry()
+	}
+	retryErr := action()
+	if retryErr == nil {
+		worker.latchSerial(generation)
+	}
+	return retryErr
+}
+
+// isConcurrentSFTPFailure reports a generic SSH_FX_FAILURE status, which
+// bastion proxies and concurrency-limited SFTP servers return when multiple
+// files or directory requests run concurrently on one session.
+func isConcurrentSFTPFailure(err error) bool {
+	if errors.Is(err, sftp.ErrSSHFxFailure) {
+		return true
+	}
+	var status *sftp.StatusError
+	return errors.As(err, &status) && status.FxCode() == sftp.ErrSSHFxFailure
+}
+
+func (worker *Worker) resetTransferProgress(id uint64) {
+	worker.mu.Lock()
+	if record := worker.transferLocked(id); record != nil {
+		now := worker.clock()
+		record.snapshot.FilesDone = 0
+		record.snapshot.BytesDone = 0
+		record.snapshot.Resumed = 0
+		record.snapshot.BytesPerSecond = 0
+		record.rate = 0
+		record.rateBytes = 0
+		record.rateAt = now
+	}
+	worker.mu.Unlock()
+	worker.changed()
 }
 
 // Pause holds a transfer back: one that has not started stays where it is, one
@@ -1029,6 +1270,7 @@ func (worker *Worker) CancelTransfer(id uint64) bool {
 	// ends a read waiting on the network.
 	source := worker.takeSourceLocked(id)
 	worker.wakeLocked()
+	worker.wakeSerialLocked()
 	worker.mu.Unlock()
 	if source != nil {
 		_ = source.Close()
@@ -1176,6 +1418,7 @@ func (worker *Worker) invalidate() Remote {
 	worker.generation++
 	client := worker.client
 	worker.client = nil
+	worker.wakeSerialLocked()
 	worker.mu.Unlock()
 	return client
 }
@@ -1293,7 +1536,10 @@ func (worker *Worker) setProgress(id uint64, files int, bytes, resumed int64) {
 		record.snapshot.FilesDone = files
 		record.snapshot.BytesDone = bytes
 		record.snapshot.Resumed = resumed
-		if record.snapshot.State == TransferRunning && now.Sub(record.rateAt) >= rateWindow {
+		if bytes < record.rateBytes {
+			record.rateAt, record.rateBytes, record.rate = now, bytes, 0
+			record.snapshot.BytesPerSecond = 0
+		} else if record.snapshot.State == TransferRunning && now.Sub(record.rateAt) >= rateWindow {
 			instant := float64(bytes-record.rateBytes) / now.Sub(record.rateAt).Seconds()
 			if record.rate == 0 {
 				record.rate = instant
@@ -1679,18 +1925,20 @@ func (worker *Worker) upload(client Remote, next request, generation uint64) (fi
 		}
 		return files, bytes, resumed, err
 	}
-	if err := ensureRemoteRoot(advanced, next.remote, next.policy); err != nil {
+	rootFresh, err := ensureRemoteRootState(advanced, next.remote, next.policy)
+	if err != nil {
 		return 0, 0, 0, err
 	}
 	// Directories are made one depth at a time, the ones at a depth together: a
 	// parent always exists before its children, and the file workers that follow
-	// find every directory they need. Creating them one by one would pay a
-	// lookup and a mkdir round trip per folder, serially, before any file moves.
-	// Links come after the directories, as a link may point into them.
+	// find every directory they need. Newly created folders are known to be
+	// empty, and existing folders that hold planned items are listed once so
+	// links and files below do not pay two Lstat round trips apiece.
 	var (
-		levels    [][]string
-		links     []plannedLink
-		filesPlan = make([]plannedUpload, 0, len(plan))
+		levels     [][]string
+		links      []plannedLink
+		filesPlan  = make([]plannedUpload, 0, len(plan))
+		activeDirs = make(map[string]bool)
 	)
 	for _, item := range plan {
 		if worker.stopped(generation, next.id) {
@@ -1700,6 +1948,7 @@ func (worker *Worker) upload(client Remote, next request, generation uint64) (fi
 		if err != nil {
 			return 0, 0, 0, err
 		}
+		activeDirs[path.Clean(path.Dir(remotePath))] = true
 		switch {
 		case item.directory:
 			depth := pathDepth(item.relative)
@@ -1713,24 +1962,26 @@ func (worker *Worker) upload(client Remote, next request, generation uint64) (fi
 			filesPlan = append(filesPlan, plannedUpload{local: item.local, remote: remotePath, info: item.info})
 		}
 	}
-	for _, paths := range levels {
-		if err := worker.ensureRemoteDirectories(advanced, next.id, generation, paths); err != nil {
-			return 0, 0, 0, err
-		}
+	gate := newAdaptiveGate(uploadFilesInFlight, uploadMinFilesInFlight, uploadMaxFilesInFlight)
+	dirStates, err := worker.prepareRemoteDirectories(advanced, next.remote, rootFresh, levels, activeDirs, next.id, generation, gate)
+	if err != nil {
+		return 0, 0, 0, err
 	}
-	for _, link := range links {
-		if worker.stopped(generation, next.id) {
-			return 0, 0, 0, ErrCanceled
-		}
-		if err := putRemoteLink(advanced, link.remote, link.target, next.policy); err != nil {
-			return 0, 0, 0, err
-		}
+	if err := worker.putPlannedLinks(advanced, next, generation, links, dirStates, gate); err != nil {
+		return 0, 0, 0, err
 	}
 	if len(filesPlan) == 0 {
 		return 0, 0, 0, nil
 	}
+	for index := range filesPlan {
+		task := &filesPlan[index]
+		parent := dirStates[path.Clean(path.Dir(task.remote))]
+		task.finalInfo, task.finalExists, task.finalKnown = parent.lookup(path.Base(task.remote))
+		partial := remotePartialPath(task.remote, task.local)
+		task.partialInfo, task.partialExists, task.partialKnown = parent.lookup(path.Base(partial))
+	}
 	progress := &transferProgress{worker: worker, id: next.id}
-	if err := worker.uploadPlanned(advanced, next, generation, filesPlan, progress); err != nil {
+	if err := worker.uploadPlanned(advanced, next, generation, filesPlan, progress, gate); err != nil {
 		files, bytes, resumed = progress.counts()
 		return files, bytes, resumed, err
 	}
@@ -1739,11 +1990,18 @@ func (worker *Worker) upload(client Remote, next request, generation uint64) (fi
 }
 
 // plannedUpload is one file of a directory upload, with the remote path its
-// plan already validated.
+// plan already validated and any existence facts its parent folder's creation
+// or listing already settled.
 type plannedUpload struct {
-	local  string
-	remote string
-	info   os.FileInfo
+	local         string
+	remote        string
+	info          os.FileInfo
+	finalInfo     os.FileInfo
+	finalExists   bool
+	finalKnown    bool
+	partialInfo   os.FileInfo
+	partialExists bool
+	partialKnown  bool
 }
 
 // plannedLink is one symbolic link of a directory upload, with the remote path
@@ -1753,112 +2011,754 @@ type plannedLink struct {
 	target string
 }
 
-// uploadFilesInFlight is how many files of one directory transfer are uploaded
-// at once. A small file is a chain of about nine round trips (lstat, open,
-// write, sync, close, chmod, times, rename) that its own sliding window cannot
-// overlap with the next file's, so the folder's throughput is roughly
-// in-flight files divided by that chain's round-trip time. At 200 ms round trip
-// 8 in flight measured ~70 KB/s on KB-sized files and 32 measured ~3.4x that.
-// Each in-flight file holds at most uploadWindow chunks, so a folder of large
-// files can hold this many times uploadWindow of buffers at its peak.
-const uploadFilesInFlight = 32
+// uploadFilesInFlight keeps 32 as the baseline concurrency for a directory
+// transfer. Before any rejection, an adaptive gate ramps +1 per clean
+// completion (doubling per RTT wave) up to uploadMaxFilesInFlight (256); if
+// the server throttles or rejects, it halves toward uploadMinFilesInFlight (4)
+// and switches to linear AIMD recovery.
+//
+// handleBudget starts at defaultInitialOpenHandles (64, matching pkg/sftp's
+// default per-file request window) and is shared across every upload, download,
+// and remote copy on the Worker. When pressure approaches the ceiling on a
+// healthy server, slow-start scales up to defaultMaxOpenHandles (192, still well
+// below standard OpenSSH RLIMIT_NOFILE ceilings of 1024+); if a stricter server
+// rejects an open with a handle-limit error while multiple handles are active,
+// it halves immediately, retries up to maxHandleOpenRetries times after waiting
+// for in-flight handles to close, and switches to exponential-backoff recovery.
+const (
+	uploadFilesInFlight       = 32
+	uploadMinFilesInFlight    = 4
+	uploadMaxFilesInFlight    = 256
+	defaultInitialOpenHandles = 64
+	defaultMaxOpenHandles     = 192
+	uploadLargeFilesLimit     = 8
+	maxHandleOpenRetries      = 3
+)
 
-// ensureRemoteDirectories makes paths, which are all children of directories
-// that already exist, with up to uploadFilesInFlight round trips in flight. The
-// first failure stops new ones from starting.
-func (worker *Worker) ensureRemoteDirectories(client transferRemote, transferID uint64, generation uint64, paths []string) error {
-	workers := min(uploadFilesInFlight, len(paths))
-	if workers == 0 {
-		return nil
-	}
-	tasks := make(chan string)
-	var (
-		group sync.WaitGroup
-		stop  = make(chan struct{})
-		once  sync.Once
-		fail  error
-	)
-	stopWith := func(err error) {
-		once.Do(func() {
-			fail = err
-			close(stop)
-		})
-	}
-	group.Add(workers)
-	for range workers {
-		go func() {
-			defer group.Done()
-			for remotePath := range tasks {
-				if worker.stopped(generation, transferID) {
-					stopWith(ErrCanceled)
-					return
-				}
-				if err := ensureRemoteDirectory(client, remotePath); err != nil {
-					stopWith(err)
-					return
-				}
-			}
-		}()
-	}
-sending:
-	for _, remotePath := range paths {
-		select {
-		case <-stop:
-			break sending
-		case tasks <- remotePath:
-		}
-	}
-	close(tasks)
-	group.Wait()
-	return fail
+// handleBudget bounds simultaneous open remote TransferFile handles across all
+// operations on one Worker (uploads, downloads, and remote copies), backing off
+// adaptively if the server rejects an open due to handle limits while other
+// handles are in flight.
+type handleBudget struct {
+	mu               sync.Mutex
+	inFlight         int
+	limit            int
+	maxLimit         int
+	successes        int
+	recoveryInterval int
+	throttled        bool
+	changed          chan struct{}
 }
 
-// uploadPlanned uploads a directory's files with a few in flight. The first
-// failure stops new files from starting; files already in flight finish and
-// keep the partials their policy allows, and their bytes stay counted.
-func (worker *Worker) uploadPlanned(client transferRemote, next request, generation uint64, files []plannedUpload, progress *transferProgress) error {
-	workers := min(uploadFilesInFlight, len(files))
-	tasks := make(chan plannedUpload)
+func newHandleBudget(initialLimit, maxLimit int) *handleBudget {
+	return &handleBudget{
+		limit:            initialLimit,
+		maxLimit:         maxLimit,
+		recoveryInterval: 16,
+		changed:          make(chan struct{}),
+	}
+}
+
+func (b *handleBudget) notifyLocked() {
+	close(b.changed)
+	b.changed = make(chan struct{})
+}
+
+func (b *handleBudget) isThrottled() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.throttled
+}
+
+func (b *handleBudget) currentLimit() int {
+	if b == nil {
+		return defaultInitialOpenHandles
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.limit
+}
+
+func (b *handleBudget) acquire(worker *Worker, stop <-chan struct{}, generation, transferID uint64) (release func(success bool), active int, ok bool) {
+	if b == nil {
+		if worker.stopped(generation, transferID) {
+			return nil, 0, false
+		}
+		return func(bool) {}, 1, true
+	}
+	for {
+		wake := worker.wakeChannel()
+		if worker.stopped(generation, transferID) {
+			return nil, 0, false
+		}
+		b.mu.Lock()
+		if b.inFlight < b.limit {
+			b.inFlight++
+			active := b.inFlight
+			b.mu.Unlock()
+			var once sync.Once
+			return func(success bool) {
+				once.Do(func() { b.release(success, active) })
+			}, active, true
+		}
+		wait := b.changed
+		b.mu.Unlock()
+		select {
+		case <-wait:
+		case <-wake:
+		case <-stop:
+			return nil, 0, false
+		case <-worker.done:
+			return nil, 0, false
+		}
+	}
+}
+
+func (b *handleBudget) release(success bool, activeAtAcquire int) {
+	b.mu.Lock()
+	if b.inFlight > 0 {
+		b.inFlight--
+	}
+	if success && b.limit < b.maxLimit {
+		if !b.throttled {
+			// Slow-start: only raise the handle cap when pressure actually
+			// approaches it, keeping small transfers at <=64 open handles.
+			if activeAtAcquire >= b.limit/2 {
+				b.limit = min(b.maxLimit, b.limit+1)
+			}
+		} else {
+			b.successes++
+			if b.successes >= b.recoveryInterval {
+				b.limit = min(b.maxLimit, b.limit+1)
+				b.successes = 0
+			}
+		}
+	}
+	b.notifyLocked()
+	b.mu.Unlock()
+}
+
+func (b *handleBudget) backoff(otherActive int) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	next := max(1, min(b.limit/2, max(1, otherActive)))
+	if next < b.limit {
+		b.limit = next
+	} else if b.limit > 1 {
+		b.limit--
+	}
+	b.throttled = true
+	b.successes = 0
+	// Double the recovery interval on repeated rejections so a server's hard
+	// handle cap is not probed frequently once found.
+	b.recoveryInterval = min(256, max(16, b.recoveryInterval*2))
+	b.notifyLocked()
+	b.mu.Unlock()
+}
+
+// adaptiveGate dynamically scales directory operation concurrency between
+// minLimit and maxLimit: slow-start doubles concurrency per RTT wave from the
+// 32 baseline when clean, while rejections halve it and switch to linear AIMD.
+type adaptiveGate struct {
+	mu        sync.Mutex
+	inFlight  int
+	limit     int
+	minLimit  int
+	maxLimit  int
+	throttled bool
+	successes int
+	changed   chan struct{}
+}
+
+func newAdaptiveGate(initial, minLimit, maxLimit int) *adaptiveGate {
+	return &adaptiveGate{
+		limit:    initial,
+		minLimit: minLimit,
+		maxLimit: maxLimit,
+		changed:  make(chan struct{}),
+	}
+}
+
+func (g *adaptiveGate) notifyLocked() {
+	close(g.changed)
+	g.changed = make(chan struct{})
+}
+
+func (g *adaptiveGate) acquire(worker *Worker, stop <-chan struct{}, generation, transferID uint64) (func(ok bool), bool) {
+	for {
+		wake := worker.wakeChannel()
+		if worker.stopped(generation, transferID) {
+			return nil, false
+		}
+		g.mu.Lock()
+		if g.inFlight < g.limit {
+			g.inFlight++
+			g.mu.Unlock()
+			var once sync.Once
+			return func(success bool) {
+				once.Do(func() { g.release(success) })
+			}, true
+		}
+		wait := g.changed
+		g.mu.Unlock()
+		select {
+		case <-wait:
+		case <-wake:
+		case <-stop:
+			return nil, false
+		case <-worker.done:
+			return nil, false
+		}
+	}
+}
+
+func (g *adaptiveGate) release(success bool) {
+	g.mu.Lock()
+	if g.inFlight > 0 {
+		g.inFlight--
+	}
+	if success && g.limit < g.maxLimit {
+		if !g.throttled {
+			g.limit = min(g.maxLimit, g.limit+1)
+		} else {
+			g.successes++
+			if g.successes >= g.limit {
+				g.limit = min(g.maxLimit, g.limit+1)
+				g.successes = 0
+			}
+		}
+	}
+	g.notifyLocked()
+	g.mu.Unlock()
+}
+
+func (g *adaptiveGate) backoff() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.limit = max(g.minLimit, g.limit/2)
+	g.throttled = true
+	g.successes = 0
+	g.notifyLocked()
+	g.mu.Unlock()
+}
+
+func (g *adaptiveGate) currentLimit() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.limit
+}
+
+// isHandleLimitError reports errors that indicate the remote server rejected an
+// open because too many file handles or descriptors are open. Generic bare
+// SSH_FX_FAILURE (which belongs to the bastion serial probe-then-latch path),
+// disk/quota errors, permission/not-found errors, and connection drops return
+// false so they fail through the normal error path without shrinking the shared
+// handle budget.
+func isHandleLimitError(err error) bool {
+	if err == nil ||
+		errors.Is(err, ErrCanceled) ||
+		errors.Is(err, ErrDestinationExists) ||
+		errors.Is(err, ErrSymbolicLink) ||
+		errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, os.ErrPermission) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, os.ErrClosed) ||
+		errors.Is(err, sftp.ErrSSHFxConnectionLost) ||
+		errors.Is(err, sftp.ErrSSHFxNoConnection) ||
+		IsPathNotFound(err) ||
+		isUnsupportedSFTP(err) {
+		return false
+	}
+	if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) {
+		return true
+	}
+	if !isConcurrentSFTPFailure(err) {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	for _, token := range []string{
+		"too many open",
+		"open handle",
+		"handle limit",
+		"file descriptor",
+		"file table",
+		"max open",
+		"emfile",
+		"enfile",
+		"resource temporarily unavailable",
+	} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func (worker *Worker) openRemoteTransferFile(client transferRemote, remotePath string, flags int, stop <-chan struct{}, generation, transferID uint64, onBackoff func()) (TransferFile, func(bool), error) {
+	for attempt := 0; ; attempt++ {
+		release, active, ok := worker.handles.acquire(worker, stop, generation, transferID)
+		if !ok {
+			return nil, nil, ErrCanceled
+		}
+		file, err := client.OpenTransferFile(remotePath, flags)
+		if err == nil {
+			return file, release, nil
+		}
+		if attempt < maxHandleOpenRetries && active > 1 && isHandleLimitError(err) {
+			worker.handles.backoff(active - 1)
+			release(false)
+			if onBackoff != nil {
+				onBackoff()
+			}
+			continue
+		}
+		release(false)
+		return nil, nil, err
+	}
+}
+
+// runConcurrentBounded runs items either serially (when serial is true, gate is
+// nil, or only one item remains) or across adaptive concurrency governed by
+// gate, stopping new starts on the first failure and returning its item index
+// alongside the error.
+func runConcurrentBounded[T any](
+	worker *Worker,
+	generation, transferID uint64,
+	items []T,
+	serial bool,
+	gate *adaptiveGate,
+	fn func(index int, item T, stop <-chan struct{}) (grow bool, err error),
+) (int, error) {
+	if len(items) == 0 {
+		return -1, nil
+	}
+	if serial || gate == nil || len(items) == 1 {
+		for index, item := range items {
+			if !worker.holdWhilePaused(generation, transferID) {
+				return index, ErrCanceled
+			}
+			if _, err := fn(index, item, nil); err != nil {
+				return index, err
+			}
+		}
+		return -1, nil
+	}
 	var (
-		group sync.WaitGroup
-		stop  = make(chan struct{})
-		once  sync.Once
-		fail  error
+		group     sync.WaitGroup
+		stop      = make(chan struct{})
+		once      sync.Once
+		fail      error
+		failIndex = -1
 	)
-	stopWith := func(err error) {
+	stopWith := func(index int, err error) {
 		once.Do(func() {
 			fail = err
+			failIndex = index
 			close(stop)
 		})
 	}
-	group.Add(workers)
-	for range workers {
-		go func() {
-			defer group.Done()
-			for task := range tasks {
-				if worker.stopped(generation, next.id) {
-					stopWith(ErrCanceled)
-					return
-				}
-				if _, _, err := worker.uploadFile(client, task.local, task.remote, task.info, next.policy, generation, next.id, 0, progress); err != nil {
-					stopWith(err)
-					return
-				}
-				progress.fileFinished()
-			}
-		}()
-	}
-sending:
-	for _, task := range files {
+	for index, item := range items {
 		select {
 		case <-stop:
-			break sending
-		case tasks <- task:
+			group.Wait()
+			return failIndex, fail
+		default:
+		}
+		if !worker.holdWhilePaused(generation, transferID) {
+			stopWith(index, ErrCanceled)
+			break
+		}
+		release, ok := gate.acquire(worker, stop, generation, transferID)
+		if !ok {
+			select {
+			case <-stop:
+			default:
+				stopWith(index, ErrCanceled)
+			}
+			break
+		}
+		group.Add(1)
+		go func(index int, item T) {
+			defer group.Done()
+			grow := false
+			defer func() { release(grow) }()
+			var err error
+			grow, err = fn(index, item, stop)
+			if err != nil {
+				stopWith(index, err)
+			}
+		}(index, item)
+	}
+	group.Wait()
+	return failIndex, fail
+}
+
+// remoteDirState records what is already inside one remote folder before a
+// directory upload writes into it: either the folder was just created empty
+// (fresh), its entries were read once with ReadDir, or listing failed (unknown)
+// and callers fall back to Lstat per child.
+type remoteDirState struct {
+	fresh   bool
+	unknown bool
+	entries map[string]os.FileInfo
+	folded  map[string]struct{}
+}
+
+func newListedDirState(infos []os.FileInfo) remoteDirState {
+	entries := make(map[string]os.FileInfo, len(infos))
+	folded := make(map[string]struct{}, len(infos))
+	for _, info := range infos {
+		if info == nil {
+			continue
+		}
+		name := info.Name()
+		if name == "" || name == "." || name == ".." {
+			continue
+		}
+		entries[name] = info
+		folded[strings.ToLower(name)] = struct{}{}
+	}
+	return remoteDirState{entries: entries, folded: folded}
+}
+
+// lookup reports whether name exists in this directory when that can be answered
+// without a server round trip. If an exact match is absent but a case-folded
+// match exists, known is false so a case-insensitive remote server still
+// decides through Lstat.
+func (state remoteDirState) lookup(name string) (info os.FileInfo, exists, known bool) {
+	if state.unknown {
+		return nil, false, false
+	}
+	if state.fresh {
+		return nil, false, true
+	}
+	if state.entries == nil {
+		return nil, false, false
+	}
+	if info, ok := state.entries[name]; ok {
+		return info, true, true
+	}
+	if _, clash := state.folded[strings.ToLower(name)]; clash {
+		return nil, false, false
+	}
+	return nil, false, true
+}
+
+func ensureRemoteRootState(client transferRemote, remotePath string, policy ExistingPolicy) (fresh bool, err error) {
+	info, exists, err := remoteLstat(client, remotePath)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return false, fmt.Errorf("%w: %s", ErrSymbolicLink, remotePath)
+		}
+		if !info.IsDir() || policy == ExistingFail {
+			return false, &ConflictError{Path: remotePath}
+		}
+		return false, nil
+	}
+	if err := client.Mkdir(remotePath); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// prepareRemoteDirectories creates missing remote folders level by level and
+// reads existing folders that contain planned children once, using gate's
+// adaptive concurrency per depth (or serial mode when latched).
+func (worker *Worker) prepareRemoteDirectories(client transferRemote, root string, rootFresh bool, levels [][]string, activeDirs map[string]bool, transferID, generation uint64, gate *adaptiveGate) (map[string]remoteDirState, error) {
+	cleanRoot := path.Clean(root)
+	states := make(map[string]remoteDirState, len(activeDirs)+1)
+	if rootFresh {
+		states[cleanRoot] = remoteDirState{fresh: true}
+	} else if activeDirs[cleanRoot] {
+		if infos, err := client.ReadDir(root); err == nil {
+			states[cleanRoot] = newListedDirState(infos)
+		} else {
+			states[cleanRoot] = remoteDirState{unknown: true}
 		}
 	}
-	close(tasks)
-	group.Wait()
-	return fail
+	for _, paths := range levels {
+		if len(paths) == 0 {
+			continue
+		}
+		if err := worker.prepareRemoteDirectoryLevel(client, transferID, generation, paths, activeDirs, states, gate); err != nil {
+			return nil, err
+		}
+	}
+	return states, nil
+}
+
+// prepareRemoteDirectoryLevel prepares one depth of directories, falling back
+// to a single-directory serial probe on concurrent SSH_FX_FAILURE and latching
+// serial mode for the active subsystem generation only if that probe succeeds.
+func (worker *Worker) prepareRemoteDirectoryLevel(client transferRemote, transferID, generation uint64, paths []string, activeDirs map[string]bool, states map[string]remoteDirState, gate *adaptiveGate) error {
+	serial := worker.uploadInFlightLimit(generation) <= 1
+	done := make([]bool, len(paths))
+	outcomes := make([]remoteDirState, len(paths))
+	prepareOne := func(index int, remotePath string, retrying bool) (bool, error) {
+		if done[index] {
+			return false, nil
+		}
+		if worker.stopped(generation, transferID) {
+			return false, ErrCanceled
+		}
+		clean := path.Clean(remotePath)
+		var (
+			info          os.FileInfo
+			exists, known bool
+		)
+		if !retrying {
+			parent := states[path.Clean(path.Dir(remotePath))]
+			info, exists, known = parent.lookup(path.Base(remotePath))
+		}
+		var state remoteDirState
+		switch {
+		case known && !exists:
+			if err := client.Mkdir(remotePath); err != nil {
+				return false, err
+			}
+			state = remoteDirState{fresh: true}
+		case known && exists:
+			if info.Mode()&os.ModeSymlink != 0 {
+				return false, fmt.Errorf("%w: %s", ErrSymbolicLink, remotePath)
+			}
+			if !info.IsDir() {
+				return false, &ConflictError{Path: remotePath}
+			}
+			if activeDirs[clean] {
+				if infos, err := client.ReadDir(remotePath); err == nil {
+					state = newListedDirState(infos)
+				} else {
+					state = remoteDirState{unknown: true}
+				}
+			} else {
+				state = remoteDirState{unknown: true}
+			}
+		default:
+			lstatInfo, lstatExists, err := remoteLstat(client, remotePath)
+			if err != nil {
+				return false, err
+			}
+			if lstatExists {
+				if lstatInfo.Mode()&os.ModeSymlink != 0 {
+					return false, fmt.Errorf("%w: %s", ErrSymbolicLink, remotePath)
+				}
+				if !lstatInfo.IsDir() {
+					return false, &ConflictError{Path: remotePath}
+				}
+				if activeDirs[clean] {
+					if infos, readErr := client.ReadDir(remotePath); readErr == nil {
+						state = newListedDirState(infos)
+					} else {
+						state = remoteDirState{unknown: true}
+					}
+				} else {
+					state = remoteDirState{unknown: true}
+				}
+			} else {
+				if err := client.Mkdir(remotePath); err != nil {
+					return false, err
+				}
+				state = remoteDirState{fresh: true}
+			}
+		}
+		outcomes[index] = state
+		done[index] = true
+		return true, nil
+	}
+	failIndex, err := runConcurrentBounded(worker, generation, transferID, paths, serial, gate, func(index int, remotePath string, _ <-chan struct{}) (bool, error) {
+		return prepareOne(index, remotePath, false)
+	})
+	if err != nil && ((!serial && len(paths) > 1) || worker.isOverlapped(transferID)) && !worker.stopped(generation, transferID) && isConcurrentSFTPFailure(err) {
+		if !worker.acquireSerialSlot(generation, transferID) {
+			return ErrCanceled
+		}
+		defer worker.finishSerialProbe(transferID)
+		if _, probeErr := prepareOne(failIndex, paths[failIndex], true); probeErr != nil {
+			return probeErr
+		}
+		worker.latchSerial(generation)
+		_, err = runConcurrentBounded(worker, generation, transferID, paths, true, nil, func(index int, remotePath string, _ <-chan struct{}) (bool, error) {
+			return prepareOne(index, remotePath, true)
+		})
+	}
+	if err != nil {
+		return err
+	}
+	for index, remotePath := range paths {
+		if done[index] {
+			states[path.Clean(remotePath)] = outcomes[index]
+		}
+	}
+	return nil
+}
+
+// putPlannedLinks writes a directory's symbolic links concurrently once every
+// parent directory exists, preserving the single-item serial probe-then-latch
+// fallback on concurrent SSH_FX_FAILURE.
+func (worker *Worker) putPlannedLinks(client transferRemote, next request, generation uint64, links []plannedLink, states map[string]remoteDirState, gate *adaptiveGate) error {
+	if len(links) == 0 {
+		return nil
+	}
+	serial := worker.uploadInFlightLimit(generation) <= 1
+	done := make([]bool, len(links))
+	putOne := func(index int, link plannedLink, retrying bool) (bool, error) {
+		if done[index] {
+			return false, nil
+		}
+		if worker.stopped(generation, next.id) {
+			return false, ErrCanceled
+		}
+		var (
+			info          os.FileInfo
+			exists, known bool
+		)
+		if !retrying {
+			parent := states[path.Clean(path.Dir(link.remote))]
+			info, exists, known = parent.lookup(path.Base(link.remote))
+		}
+		if err := putRemoteLinkKnown(client, link.remote, link.target, next.policy, info, exists, known); err != nil {
+			return false, err
+		}
+		done[index] = true
+		return true, nil
+	}
+	failIndex, err := runConcurrentBounded(worker, generation, next.id, links, serial, gate, func(index int, link plannedLink, _ <-chan struct{}) (bool, error) {
+		return putOne(index, link, false)
+	})
+	if err != nil && ((!serial && len(links) > 1) || worker.isOverlapped(next.id)) && !worker.stopped(generation, next.id) && isConcurrentSFTPFailure(err) {
+		if !worker.acquireSerialSlot(generation, next.id) {
+			return ErrCanceled
+		}
+		defer worker.finishSerialProbe(next.id)
+		if _, probeErr := putOne(failIndex, links[failIndex], true); probeErr != nil {
+			return probeErr
+		}
+		worker.latchSerial(generation)
+		_, err = runConcurrentBounded(worker, generation, next.id, links, true, nil, func(index int, link plannedLink, _ <-chan struct{}) (bool, error) {
+			return putOne(index, link, true)
+		})
+	}
+	return err
+}
+
+func (worker *Worker) acquireSlot(sem chan struct{}, stop <-chan struct{}, generation, transferID uint64) (func(), bool) {
+	if sem == nil {
+		return func() {}, !worker.stopped(generation, transferID)
+	}
+	for {
+		wake := worker.wakeChannel()
+		if worker.stopped(generation, transferID) {
+			return nil, false
+		}
+		select {
+		case sem <- struct{}{}:
+			if worker.stopped(generation, transferID) {
+				<-sem
+				return nil, false
+			}
+			return sync.OnceFunc(func() { <-sem }), true
+		case <-wake:
+		case <-stop:
+			return nil, false
+		case <-worker.done:
+			return nil, false
+		}
+	}
+}
+
+// uploadPlanned uploads a directory's files with adaptive concurrency. If a
+// concurrent upload returns SSH_FX_FAILURE, only the failed file is probed
+// serially; serial mode latches for the active subsystem generation only if
+// that single-file probe succeeds, leaving already-committed files untouched
+// and uploading only the remaining files one at a time.
+func (worker *Worker) uploadPlanned(client transferRemote, next request, generation uint64, files []plannedUpload, progress *transferProgress, gate *adaptiveGate) error {
+	serial := worker.uploadInFlightLimit(generation) <= 1
+	completed := make([]bool, len(files))
+	resumedBytes := make([]int64, len(files))
+	uploadOne := func(index int, task plannedUpload, stop <-chan struct{}, retrying bool) (bool, error) {
+		if completed[index] {
+			return false, nil
+		}
+		if worker.stopped(generation, next.id) {
+			return false, ErrCanceled
+		}
+		var releaseLarge func()
+		if task.info.Size() > uploadChunkSize {
+			var ok bool
+			releaseLarge, ok = worker.acquireSlot(worker.largeUploads, stop, generation, next.id)
+			if !ok {
+				return false, ErrCanceled
+			}
+		}
+		opts := uploadStreamOptions{
+			skipSync: true,
+			stop:     stop,
+		}
+		if !retrying {
+			if gate != nil {
+				opts.onBackoff = gate.backoff
+			}
+			opts.finalInfo = task.finalInfo
+			opts.finalExists = task.finalExists
+			opts.finalKnown = task.finalKnown
+			opts.partialInfo = task.partialInfo
+			opts.partialExists = task.partialExists
+			opts.partialKnown = task.partialKnown
+		}
+		_, resumed, err := worker.uploadFileWithOptions(client, task.local, task.remote, task.info, next.policy, generation, next.id, 0, progress, opts)
+		if releaseLarge != nil {
+			releaseLarge()
+		}
+		if err != nil {
+			return false, err
+		}
+		completed[index] = true
+		resumedBytes[index] = resumed
+		progress.fileFinished()
+		return !worker.handles.isThrottled(), nil
+	}
+	failIndex, err := runConcurrentBounded(worker, generation, next.id, files, serial, gate, func(index int, task plannedUpload, stop <-chan struct{}) (bool, error) {
+		return uploadOne(index, task, stop, false)
+	})
+	if err != nil && ((!serial && len(files) > 1) || worker.isOverlapped(next.id)) && !worker.stopped(generation, next.id) && isConcurrentSFTPFailure(err) {
+		if !worker.acquireSerialSlot(generation, next.id) {
+			return ErrCanceled
+		}
+		defer worker.finishSerialProbe(next.id)
+		resetProgress := func() {
+			var doneFiles int
+			var doneBytes, doneResumed int64
+			for index, ok := range completed {
+				if ok {
+					doneFiles++
+					doneBytes += files[index].info.Size()
+					doneResumed += resumedBytes[index]
+				}
+			}
+			progress.reset(doneFiles, doneBytes, doneResumed)
+		}
+		resetProgress()
+		if _, probeErr := uploadOne(failIndex, files[failIndex], nil, true); probeErr != nil {
+			resetProgress()
+			return probeErr
+		}
+		worker.latchSerial(generation)
+		_, err = runConcurrentBounded(worker, generation, next.id, files, true, nil, func(index int, task plannedUpload, stop <-chan struct{}) (bool, error) {
+			return uploadOne(index, task, stop, true)
+		})
+	}
+	return err
 }
 
 // transferProgress counts one directory transfer from the several file uploads
@@ -1916,6 +2816,15 @@ func (progress *transferProgress) counts() (files int, bytes, resumed int64) {
 	return progress.files, progress.bytes, progress.resumed
 }
 
+func (progress *transferProgress) reset(files int, bytes, resumed int64) {
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	progress.files = files
+	progress.bytes = bytes
+	progress.resumed = resumed
+	progress.reportLocked()
+}
+
 func (worker *Worker) legacyUpload(client Remote, localPath, remotePath string, generation uint64) (written int64, err error) {
 	creator, ok := client.(remoteCreator)
 	if !ok {
@@ -1954,7 +2863,7 @@ func planLocal(localPath string, recursive bool) (os.FileInfo, []localPlanItem, 
 	if err != nil {
 		return nil, nil, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	if _, isLink, _ := ReadLocalLink(localPath, info); isLink {
 		return nil, nil, fmt.Errorf("%w: %s", ErrSymbolicLink, localPath)
 	}
 	if !info.IsDir() {
@@ -1989,14 +2898,25 @@ func planLocal(localPath string, recursive bool) (os.FileInfo, []localPlanItem, 
 		if infoErr != nil {
 			return infoErr
 		}
-		if entryInfo.Mode()&os.ModeSymlink != 0 {
-			// WalkDir does not follow it; the link travels as the text it holds.
-			target, linkErr := os.Readlink(current)
-			if linkErr != nil {
-				return linkErr
+		if relative != "." {
+			if target, isLink, linkErr := ReadLocalLink(current, entryInfo); isLink {
+				// WalkDir does not follow symbolic links or NTFS junctions;
+				// each travels as a link without reading behind it.
+				if linkErr != nil {
+					return linkErr
+				}
+				remoteTarget, targetErr := remoteLinkTargetFromLocal(root, current, target, entryInfo)
+				if targetErr != nil {
+					return targetErr
+				}
+				plan = append(plan, localPlanItem{
+					local:    current,
+					relative: relative,
+					info:     entryInfo,
+					link:     remoteTarget,
+				})
+				return nil
 			}
-			plan = append(plan, localPlanItem{local: current, relative: relative, info: entryInfo, link: target})
-			return nil
 		}
 		if !entryInfo.IsDir() && !entryInfo.Mode().IsRegular() {
 			return fmt.Errorf("sftp: unsupported local file type: %s", current)
@@ -2034,18 +2954,41 @@ func planTotals(plan []localPlanItem) (files int, bytes int64) {
 	return files, bytes
 }
 
-func (worker *Worker) uploadFile(client transferRemote, localPath, remotePath string, sourceInfo os.FileInfo, policy ExistingPolicy, generation, transferID uint64, trusted int64, sink progressSink) (written, resumed int64, err error) {
-	return worker.uploadStream(client, func() (io.ReadCloser, error) { return os.Open(localPath) }, sourceInfo, localPath, remotePath, policy, generation, transferID, trusted, sink)
+type uploadStreamOptions struct {
+	skipSync      bool
+	stop          <-chan struct{}
+	onBackoff     func()
+	finalInfo     os.FileInfo
+	finalExists   bool
+	finalKnown    bool
+	partialInfo   os.FileInfo
+	partialExists bool
+	partialKnown  bool
 }
 
-// uploadStream writes sourceInfo's content into remotePath through a staged
-// partial file, as uploadFile does for a local file. openSource runs once the
-// destination rules are settled, so a conflict costs no read; a remote copy
-// passes the source server's file handle here.
+func (worker *Worker) uploadFile(client transferRemote, localPath, remotePath string, sourceInfo os.FileInfo, policy ExistingPolicy, generation, transferID uint64, trusted int64, sink progressSink) (written, resumed int64, err error) {
+	return worker.uploadFileWithOptions(client, localPath, remotePath, sourceInfo, policy, generation, transferID, trusted, sink, uploadStreamOptions{})
+}
+
+func (worker *Worker) uploadFileWithOptions(client transferRemote, localPath, remotePath string, sourceInfo os.FileInfo, policy ExistingPolicy, generation, transferID uint64, trusted int64, sink progressSink, opts uploadStreamOptions) (written, resumed int64, err error) {
+	return worker.uploadStreamWithOptions(client, func() (io.ReadCloser, error) { return os.Open(localPath) }, sourceInfo, localPath, remotePath, policy, generation, transferID, trusted, sink, opts)
+}
+
 func (worker *Worker) uploadStream(client transferRemote, openSource func() (io.ReadCloser, error), sourceInfo os.FileInfo, sourceIdentity, remotePath string, policy ExistingPolicy, generation, transferID uint64, trusted int64, sink progressSink) (written, resumed int64, err error) {
-	finalInfo, finalExists, err := remoteLstat(client, remotePath)
-	if err != nil {
-		return 0, 0, err
+	return worker.uploadStreamWithOptions(client, openSource, sourceInfo, sourceIdentity, remotePath, policy, generation, transferID, trusted, sink, uploadStreamOptions{})
+}
+
+// uploadStreamWithOptions writes sourceInfo's content into remotePath through a
+// staged partial file, as uploadFile does for a local file. openSource runs
+// once the destination rules are settled, so a conflict costs no read; a remote
+// copy passes the source server's file handle here.
+func (worker *Worker) uploadStreamWithOptions(client transferRemote, openSource func() (io.ReadCloser, error), sourceInfo os.FileInfo, sourceIdentity, remotePath string, policy ExistingPolicy, generation, transferID uint64, trusted int64, sink progressSink, opts uploadStreamOptions) (written, resumed int64, err error) {
+	finalInfo, finalExists := opts.finalInfo, opts.finalExists
+	if !opts.finalKnown {
+		finalInfo, finalExists, err = remoteLstat(client, remotePath)
+		if err != nil {
+			return 0, 0, err
+		}
 	}
 	if finalExists {
 		if finalInfo.Mode()&os.ModeSymlink != 0 {
@@ -2064,9 +3007,12 @@ func (worker *Worker) uploadStream(client transferRemote, openSource func() (io.
 		}
 	}
 	partial := remotePartialPath(remotePath, sourceIdentity)
-	partialInfo, partialExists, err := remoteLstat(client, partial)
-	if err != nil {
-		return 0, 0, err
+	partialInfo, partialExists := opts.partialInfo, opts.partialExists
+	if !opts.partialKnown {
+		partialInfo, partialExists, err = remoteLstat(client, partial)
+		if err != nil {
+			return 0, 0, err
+		}
 	}
 	if partialExists && (partialInfo.IsDir() || partialInfo.Mode()&os.ModeSymlink != 0) {
 		return 0, 0, fmt.Errorf("%w: %s", ErrSymbolicLink, partial)
@@ -2083,10 +3029,11 @@ func (worker *Worker) uploadStream(client transferRemote, openSource func() (io.
 	if policy != ExistingResume || !partialExists {
 		flags |= os.O_TRUNC
 	}
-	destination, err := client.OpenTransferFile(partial, flags)
+	destination, releaseHandle, err := worker.openRemoteTransferFile(client, partial, flags, opts.stop, generation, transferID, opts.onBackoff)
 	if err != nil {
 		return 0, 0, err
 	}
+	defer func() { releaseHandle(false) }()
 	closed := false
 	// A partial file is only worth keeping for a resume. One the user gave up
 	// on, and that they did not ask to continue, is removed; one a failure or a
@@ -2110,6 +3057,7 @@ func (worker *Worker) uploadStream(client transferRemote, openSource func() (io.
 		}
 		cleanup := func() error {
 			closeErr := destination.Close()
+			releaseHandle(closeErr == nil)
 			if discard {
 				worker.removeRemotePartial(client, generation, partial)
 			}
@@ -2184,39 +3132,60 @@ func (worker *Worker) uploadStream(client transferRemote, openSource func() (io.
 		}
 		return written, resumed, err
 	}
+	var finalizeTimer *time.Timer
+	defer func() {
+		if finalizeTimer != nil {
+			finalizeTimer.Stop()
+		}
+	}()
 	// fsync@openssh.com only asks the server to commit to disk early; close
 	// still reports a failed write and OpenSSH's sftp does not fsync a put by
-	// default. Gateways that advertise the extension often answer it with a
-	// generic failure, so a refusal is not fatal; a timeout is, because the
-	// subsystem was discarded to end the request.
-	if err := worker.finalizeUpload(generation, transferID, "flush", destination.Sync); errors.Is(err, ErrUploadFinalizeTimeout) {
-		return written, resumed, err
-	}
-	if err := worker.finalizeUpload(generation, transferID, "close", destination.Close); err != nil {
-		return written, resumed, err
-	}
-	closed = true
-	// The bytes are already on the server. Carrying the source permissions over
-	// is a courtesy that servers fronting an account through a gateway often
-	// refuse with a generic failure; OpenSSH's sftp does not fail a put for it
-	// either. A refusal leaves the server's default mode and the upload goes
-	// on; a timeout is fatal because the subsystem was discarded to end it.
-	if err := worker.finalizeUpload(generation, transferID, "chmod", func() error {
-		return client.Chmod(partial, sourceInfo.Mode().Perm())
-	}); errors.Is(err, ErrUploadFinalizeTimeout) {
-		return written, resumed, err
-	}
-	if timer, ok := client.(remoteChtimes); ok && worker.preserveTimes() {
-		// Best effort: some servers refuse SetStat. Keep the wait bounded so a
-		// server that ignores the request cannot hold up the commit; a timeout
-		// is fatal because the subsystem was discarded to end the request.
-		if err := worker.finalizeUpload(generation, transferID, "times", func() error {
-			return timer.Chtimes(partial, sourceInfo.ModTime(), sourceInfo.ModTime())
-		}); errors.Is(err, ErrUploadFinalizeTimeout) {
+	// default. Directory batch uploads skip per-file fsync so thousands of
+	// small files do not each pay an extra round trip and journal barrier.
+	if !opts.skipSync {
+		if err := worker.finalizeUploadTimer(&finalizeTimer, generation, transferID, "flush", destination.Sync); errors.Is(err, ErrUploadFinalizeTimeout) {
 			return written, resumed, err
 		}
 	}
-	if err := worker.finalizeUpload(generation, transferID, "rename", func() error {
+	if err := worker.finalizeUploadTimer(&finalizeTimer, generation, transferID, "close", destination.Close); err != nil {
+		return written, resumed, err
+	}
+	closed = true
+	releaseHandle(true)
+	// The bytes are already on the server. Carrying the source permissions and
+	// modification time over is best-effort, and sending both SETSTAT packets
+	// together overlaps their network round trip into one flight unless serial
+	// mode is latched for a bastion that rejects concurrent requests.
+	timer, keepTimes := client.(remoteChtimes)
+	keepTimes = keepTimes && worker.preserveTimes()
+	if keepTimes && !worker.isSerial(generation) {
+		if err := worker.finalizeUploadTimer(&finalizeTimer, generation, transferID, "chmod", func() error {
+			timesDone := make(chan struct{})
+			go func() {
+				_ = timer.Chtimes(partial, sourceInfo.ModTime(), sourceInfo.ModTime())
+				close(timesDone)
+			}()
+			chmodErr := client.Chmod(partial, sourceInfo.Mode().Perm())
+			<-timesDone
+			return chmodErr
+		}); errors.Is(err, ErrUploadFinalizeTimeout) {
+			return written, resumed, err
+		}
+	} else {
+		if err := worker.finalizeUploadTimer(&finalizeTimer, generation, transferID, "chmod", func() error {
+			return client.Chmod(partial, sourceInfo.Mode().Perm())
+		}); errors.Is(err, ErrUploadFinalizeTimeout) {
+			return written, resumed, err
+		}
+		if keepTimes {
+			if err := worker.finalizeUploadTimer(&finalizeTimer, generation, transferID, "times", func() error {
+				return timer.Chtimes(partial, sourceInfo.ModTime(), sourceInfo.ModTime())
+			}); errors.Is(err, ErrUploadFinalizeTimeout) {
+				return written, resumed, err
+			}
+		}
+	}
+	if err := worker.finalizeUploadTimer(&finalizeTimer, generation, transferID, "rename", func() error {
 		return commitRemote(client, partial, remotePath, finalExists)
 	}); err != nil {
 		return written, resumed, err
@@ -2339,8 +3308,16 @@ func (worker *Worker) remoteCopy(destination Remote, next request, generation ui
 				return remoteSource.OpenTransferFile(sourcePath, os.O_RDONLY)
 			}
 			info := plannedFileInfo{name: path.Base(sourcePath), size: item.size, mode: item.mode, modTime: item.modTime}
+			bytesBefore, resumedBefore := bytes, resumed
 			sink := newFileSink(worker, next.id, files, bytes)
 			written, continued, copyErr := worker.uploadStream(client, open, info, sourcePath, targetPath, next.policy, generation, next.id, 0, sink)
+			copyErr = worker.retryOverlapped(generation, next.id, copyErr, func() {
+				worker.setProgress(next.id, files, bytesBefore, resumedBefore)
+			}, func() error {
+				retrySink := newFileSink(worker, next.id, files, bytesBefore)
+				written, continued, copyErr = worker.uploadStream(client, open, info, sourcePath, targetPath, next.policy, generation, next.id, 0, retrySink)
+				return copyErr
+			})
 			bytes += written
 			resumed += continued
 			if copyErr != nil {
@@ -2418,14 +3395,35 @@ func (worker *Worker) settleCanceled(generation, transferID uint64, action func(
 // the upload is the only user of the subsystem it is discarded so the blocked
 // request can end; a shared subsystem is left to the other transfers.
 func (worker *Worker) finalizeUpload(generation, transferID uint64, stage string, action func() error) error {
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	return worker.finalizeUploadTimer(&timer, generation, transferID, stage, action)
+}
+
+func (worker *Worker) finalizeUploadTimer(shared **time.Timer, generation, transferID uint64, stage string, action func() error) error {
 	timeout := worker.finalizeTimeout
 	if timeout <= 0 {
 		timeout = uploadFinalizeTimeout
 	}
 	done := make(chan error, 1)
 	go func() { done <- action() }()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	timer := *shared
+	if timer == nil {
+		timer = time.NewTimer(timeout)
+		*shared = timer
+	} else {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(timeout)
+	}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -2495,7 +3493,14 @@ func (worker *Worker) download(client Remote, next request, generation uint64) (
 			}
 			continue
 		}
+		bytesBefore, resumedBefore := bytes, resumed
 		written, continued, err := worker.downloadFile(advanced, item.remote, localPath, item.mode, item.modTime, item.size, next.policy, generation, next.id, files, bytes)
+		err = worker.retryOverlapped(generation, next.id, err, func() {
+			worker.setProgress(next.id, files, bytesBefore, resumedBefore)
+		}, func() error {
+			written, continued, err = worker.downloadFile(advanced, item.remote, localPath, item.mode, item.modTime, item.size, next.policy, generation, next.id, files, bytesBefore)
+			return err
+		})
 		bytes += written
 		resumed += continued
 		if err != nil {
@@ -2668,11 +3673,15 @@ func (worker *Worker) downloadFile(client transferRemote, remotePath, localPath 
 	if partialExists && (partialInfo.IsDir() || partialInfo.Mode()&os.ModeSymlink != 0) {
 		return 0, 0, fmt.Errorf("%w: %s", ErrSymbolicLink, partial)
 	}
-	source, err := client.OpenTransferFile(remotePath, os.O_RDONLY)
+	source, releaseHandle, err := worker.openRemoteTransferFile(client, remotePath, os.O_RDONLY, nil, generation, transferID, nil)
 	if err != nil {
 		return 0, 0, err
 	}
-	defer func() { err = errors.Join(err, source.Close()) }()
+	defer func() {
+		closeErr := source.Close()
+		releaseHandle(closeErr == nil)
+		err = errors.Join(err, closeErr)
+	}()
 	flags := os.O_RDWR | os.O_CREATE
 	destination, err := os.OpenFile(partial, flags, 0o600)
 	if err != nil {
@@ -3094,9 +4103,14 @@ func (r *orderedUploadReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+var smallUploadProbePool = sync.Pool{New: func() any { return new([uploadChunkSize + 1]byte) }}
+
 // uploadOrderedTo uploads through ReadFromWithConcurrency so SSH_FXP_WRITE
 // packets leave the client in strictly ascending offset order (as FileZilla and
-// OpenSSH sftp send them) while keeping uploadWindow requests pipelined.
+// OpenSSH sftp send them) while keeping uploadWindow requests pipelined. Files
+// that fit in a single SFTP packet (<= 32 KiB) write directly without spinning
+// up ReadFromWithConcurrency's 64 worker goroutines, and empty files skip the
+// write round trip altogether.
 func (worker *Worker) uploadOrderedTo(destination concurrentReaderFrom, seeker io.Seeker, source io.Reader, generation, transferID uint64, resumed int64, sink progressSink) (int64, error) {
 	stop := make(chan struct{})
 	var stopOnce sync.Once
@@ -3116,6 +4130,30 @@ func (worker *Worker) uploadOrderedTo(destination concurrentReaderFrom, seeker i
 	}
 	done := make(chan result, 1)
 	go func() {
+		if writer, ok := destination.(io.Writer); ok && resumed == 0 {
+			probe := smallUploadProbePool.Get().(*[uploadChunkSize + 1]byte)
+			defer smallUploadProbePool.Put(probe)
+			n, readErr := io.ReadFull(reader, probe[:])
+			if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+				done <- result{read: 0, err: readErr}
+				return
+			}
+			if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
+				if n == 0 {
+					done <- result{read: 0, err: nil}
+					return
+				}
+				written, writeErr := writer.Write(probe[:n])
+				if writeErr == nil && written < n {
+					writeErr = io.ErrShortWrite
+				}
+				done <- result{read: int64(written), err: writeErr}
+				return
+			}
+			total, err := destination.ReadFromWithConcurrency(io.MultiReader(bytes.NewReader(probe[:n]), reader), uploadWindow)
+			done <- result{read: total, err: err}
+			return
+		}
 		n, err := destination.ReadFromWithConcurrency(reader, uploadWindow)
 		done <- result{read: n, err: err}
 	}()
@@ -3911,8 +4949,7 @@ func (worker *Worker) removeDirectory(client Remote, remotePath string, force bo
 	if !ok {
 		return 0, fmt.Errorf("sftp: remove directory is not supported by the remote")
 	}
-	items := 0
-	removed, failed, firstErr := worker.removeTree(client, remotePath, remover, generation, force, 0, &items)
+	removed, failed, firstErr := worker.removeTree(client, remotePath, remover, generation, force)
 	if firstErr != nil && IsFatalRemoveError(firstErr) {
 		return removed, firstErr
 	}
@@ -3925,95 +4962,216 @@ func (worker *Worker) removeDirectory(client Remote, remotePath string, force bo
 	return removed, nil
 }
 
-// removeTree empties one folder and then removes it. items counts everything
-// attempted across the whole walk, so the work stays bounded even if entries
-// keep failing. removed and failed count entries that left the server and
-// entries that could not; a normal removal returns at the first failure.
-func (worker *Worker) removeTree(client Remote, remotePath string, remover remoteDirectoryRemover, generation uint64, force bool, depth int, items *int) (removed int, failed int, firstErr error) {
-	if depth > maxRemoveDepth {
-		return 0, 0, fmt.Errorf("%w: %s is nested deeper than %d folders", errRemoveLimit, remotePath, maxRemoveDepth)
+// removeInFlight is how many removal round trips run at once. Removing a file
+// is one SFTP request, so a tree of thousands of entries one at a time costs
+// that many round trips: a Nuxt .output of 7,000 entries took minutes over a
+// 50 ms link while the panel showed only "Deleting". SFTP is a request-id
+// protocol and every mature client pipelines these requests; the count is the
+// one a directory upload already uses.
+const removeInFlight = uploadFilesInFlight
+
+// removalRun is the shared state of the pipelined removal of one tree. A forced
+// run counts every failure and keeps going; a normal one stops starting new
+// requests at the first failure, and requests already sent still finish.
+type removalRun struct {
+	worker     *Worker
+	generation uint64
+	force      bool
+	inFlight   int
+
+	mu       sync.Mutex
+	removed  int
+	failed   int
+	firstErr error
+	stopped  bool
+}
+
+func (run *removalRun) noteLocked(err error) bool {
+	if err == nil {
+		return false
 	}
-	infos, err := client.ReadDir(remotePath)
-	if err != nil {
-		if IsPathNotFound(err) {
-			// It vanished under us: there is nothing left to remove, and the
-			// already-gone folder is one entry the removal does not have to
-			// retry.
-			return 1, 0, nil
-		}
-		// The folder cannot be read, so what is in it is unknown. Report why it
-		// could not be listed, not the server's "not empty" to removing it
-		// anyway, and lead with the cause so a status line that cuts the long
-		// path still shows it. An empty folder that merely cannot be listed goes.
-		if removeErr := remover.RemoveDirectory(remotePath); removeErr != nil {
-			return 0, 1, fmt.Errorf("sftp: %w, cannot list %s", err, remotePath)
-		}
-		return 1, 0, nil
+	if run.firstErr == nil {
+		run.firstErr = err
 	}
-	for _, info := range infos {
-		if info == nil {
-			continue
+	if !run.force || IsFatalRemoveError(err) {
+		run.stopped = true
+	}
+	return run.stopped
+}
+
+func (run *removalRun) halted() bool {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return run.stopped
+}
+
+// abort ends the run for a reason that is not one entry's failure.
+func (run *removalRun) abort(err error) {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if run.firstErr == nil {
+		run.firstErr = err
+	}
+	run.stopped = true
+}
+
+// removalOutcome is what one call of removalRun.each did to its entry.
+type removalOutcome int
+
+const (
+	removalPending removalOutcome = iota // nothing was removed or refused: a folder was only read
+	removalDone                          // the entry left the server
+	removalFailed                        // the entry stayed
+)
+
+// each calls do for every index below n with up to inFlight calls at once. do
+// reports what became of the entry and why when it failed.
+func (run *removalRun) each(n int, do func(index int) (removalOutcome, error)) {
+	workers := min(run.inFlight, n)
+	if workers == 0 {
+		return
+	}
+	indexes := make(chan int)
+	var group sync.WaitGroup
+	group.Add(workers)
+	for range workers {
+		go func() {
+			defer group.Done()
+			for index := range indexes {
+				// A tree of any size is started and stopped by the user, so the
+				// run asks between entries rather than finishing what it no
+				// longer wants.
+				if run.worker.canceled(run.generation) {
+					run.abort(ErrCanceled)
+					continue
+				}
+				if run.halted() {
+					continue
+				}
+				outcome, err := do(index)
+				run.mu.Lock()
+				switch outcome {
+				case removalDone:
+					run.removed++
+				case removalFailed:
+					run.failed++
+				}
+				run.noteLocked(err)
+				run.mu.Unlock()
+			}
+		}()
+	}
+	for index := range n {
+		indexes <- index
+	}
+	close(indexes)
+	group.Wait()
+}
+
+// removeTree removes a folder and everything in it. The tree is read first,
+// level by level; then every file goes, and then the folders from the deepest
+// level up, each level only after the one below it is gone, so a folder is
+// removed after everything inside it. Within one step the requests are
+// pipelined. removed and failed count entries that left the server and entries
+// that could not; a normal removal stops at the first failure.
+//
+// Reading the whole tree before deleting also means a tree that is too large,
+// too deep or holds an unsafe name is refused with nothing deleted.
+func (worker *Worker) removeTree(client Remote, root string, remover remoteDirectoryRemover, generation uint64, force bool) (removed int, failed int, firstErr error) {
+	inFlight := removeInFlight
+	if IsSCP(client) {
+		// Each SCP operation is an exec channel of its own, and a server
+		// allows only a few sessions; running them in parallel would fail.
+		inFlight = 1
+	}
+	run := &removalRun{worker: worker, generation: generation, force: force, inFlight: inFlight}
+	var (
+		files  []string
+		levels [][]string // folders by depth, the root first
+		items  int
+	)
+	level := []string{root}
+	for depth := 0; len(level) > 0 && !run.halted(); depth++ {
+		if depth > maxRemoveDepth {
+			run.abort(fmt.Errorf("%w: %s is nested deeper than %d folders", errRemoveLimit, root, maxRemoveDepth))
+			break
 		}
-		// A tree of any size is started and stopped by the user, so the walk
-		// asks between entries rather than finishing a folder it no longer wants.
-		if worker.canceled(generation) {
-			return removed, failed, ErrCanceled
-		}
-		name := info.Name()
-		if !safeRemoteName(name) {
-			return removed, failed, fmt.Errorf("%w: %q", ErrPathTraversal, name)
-		}
-		*items++
-		if *items > maxTransferItems {
-			return removed, failed, fmt.Errorf("%w: %s holds more than %d items", errRemoveLimit, remotePath, maxTransferItems)
-		}
-		child := path.Join(remotePath, name)
-		// A link is removed as a link, never followed: its target is elsewhere.
-		if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-			childRemoved, childFailed, err := worker.removeTree(client, child, remover, generation, force, depth+1, items)
-			removed += childRemoved
-			failed += childFailed
+		var (
+			next   []string
+			listed = make([]string, 0, len(level))
+			nextMu sync.Mutex
+		)
+		run.each(len(level), func(index int) (removalOutcome, error) {
+			folder := level[index]
+			infos, err := client.ReadDir(folder)
 			if err != nil {
-				fatal := IsFatalRemoveError(err)
-				if firstErr == nil {
-					firstErr = err
+				if IsPathNotFound(err) {
+					// It vanished under us: there is nothing left to remove, and
+					// the already-gone folder is one entry the removal does not
+					// have to retry.
+					return removalDone, nil
 				}
-				if !force || fatal {
-					return removed, failed, err
+				// The folder cannot be read, so what is in it is unknown. Report
+				// why it could not be listed, not the server's "not empty" to
+				// removing it anyway, and lead with the cause so a status line
+				// that cuts the long path still shows it. An empty folder that
+				// merely cannot be listed goes.
+				if removeErr := remover.RemoveDirectory(folder); removeErr != nil {
+					return removalFailed, fmt.Errorf("sftp: %w, cannot list %s", err, folder)
+				}
+				return removalDone, nil
+			}
+			var children, folders []string
+			for _, info := range infos {
+				if info == nil {
+					continue
+				}
+				name := info.Name()
+				if !safeRemoteName(name) {
+					return removalFailed, fmt.Errorf("%w: %q", ErrPathTraversal, name)
+				}
+				child := path.Join(folder, name)
+				// A link is removed as a link, never followed: its target is elsewhere.
+				if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+					folders = append(folders, child)
+				} else {
+					children = append(children, child)
 				}
 			}
-			continue
-		}
-		childRemoved, err := removeFile(client, child, force)
-		if childRemoved {
-			removed++
-		} else {
-			failed++
-		}
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
+			nextMu.Lock()
+			defer nextMu.Unlock()
+			items += len(children) + len(folders)
+			if items > maxTransferItems {
+				return removalFailed, fmt.Errorf("%w: %s holds more than %d items", errRemoveLimit, root, maxTransferItems)
 			}
-			if !force {
-				return removed, failed, err
+			files = append(files, children...)
+			next = append(next, folders...)
+			listed = append(listed, folder)
+			return removalPending, nil
+		})
+		levels = append(levels, listed)
+		level = next
+	}
+	if run.halted() {
+		return run.removed, run.failed, run.firstErr
+	}
+	run.each(len(files), func(index int) (removalOutcome, error) {
+		removed, err := removeFile(client, files[index], force)
+		if removed {
+			return removalDone, err
+		}
+		return removalFailed, err
+	})
+	for depth := len(levels) - 1; depth >= 0 && !run.halted(); depth-- {
+		folders := levels[depth]
+		run.each(len(folders), func(index int) (removalOutcome, error) {
+			if err := remover.RemoveDirectory(folders[index]); err != nil {
+				return removalFailed, err
 			}
-		}
+			return removalDone, nil
+		})
 	}
-	if worker.canceled(generation) {
-		return removed, failed, ErrCanceled
-	}
-	if err := remover.RemoveDirectory(remotePath); err != nil {
-		failed++
-		if firstErr == nil {
-			firstErr = err
-		}
-		if !force {
-			return removed, failed, err
-		}
-		return removed, failed, firstErr
-	}
-	removed++
-	return removed, failed, nil
+	return run.removed, run.failed, run.firstErr
 }
 
 func chmod(client Remote, remotePath string, mode os.FileMode) error {

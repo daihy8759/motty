@@ -92,6 +92,7 @@ const (
 	iconCloseOthers
 	iconCloseRight
 	iconSparkles
+	iconDices
 	iconTransfer
 	iconBug
 	iconInfo
@@ -160,6 +161,7 @@ func (state *State) paintsHostsPage() bool {
 
 // Paint renders the application from state using stable hit identities.
 func (state *State) Paint(canvas *gfx.Canvas, size gfx.Size) {
+	state.discardBlurredStartupText(canvas.Focused())
 	defer state.devEndPaint(canvas, size)
 	canvas.SetTree(&tree)
 	if state.appLocked() {
@@ -520,6 +522,7 @@ func (state *State) WindowConfig(base app.Config) app.Config {
 			}
 		}
 	}
+	state.configureTerminalMenuKeys(&config)
 	// The assistant owns the wheel over its own panel: its lists keep their
 	// offsets in the page, but a modal dialog must still keep them still, which
 	// the page's generic scroll-area routing does not know. Everything else the
@@ -532,6 +535,14 @@ func (state *State) WindowConfig(base app.Config) app.Config {
 		if w := state.activeSFTPWindow(); w != nil && state.modal == modalNone {
 			w.activate()
 		}
+	}
+	deactivate := config.OnDeactivate
+	config.OnDeactivate = func() gfx.EventResult {
+		state.discardBlurredStartupText(gfx.ID{})
+		if deactivate != nil {
+			return deactivate()
+		}
+		return gfx.EventResult{}
 	}
 	// A lock may arrive between the previous paint and the next input. Do not
 	// let a stale business control in the page consume that event before the
@@ -576,6 +587,7 @@ func (state *State) WindowConfig(base app.Config) app.Config {
 		return pointer(event)
 	}
 	config.TextInput = func(context app.TextInputContext) *app.TextInput {
+		state.discardBlurredStartupText(context.ID)
 		if (state.appAccessBlocked() || state.modal == modalAppLock) && state.appLockEditor(context.ID) == nil {
 			return nil
 		}
@@ -2644,6 +2656,9 @@ func (state *State) scrollHosts(event gfx.ScrollEvent) gfx.EventResult {
 	step := event.StepY(24)
 	before := state.hostsScroll
 	visible := state.chrome.hostList.Height
+	if event.Pages != 0 {
+		step = event.StepYIn(1, visible)
+	}
 	state.hostsScroll = min(max(before+step, 0), max(state.hostsContent-visible, 0))
 	return gfx.EventResult{Handled: true, Repaint: state.hostsScroll != before}
 }
@@ -2885,6 +2900,7 @@ var lucideIcons = [...]gfx.Icon{
 	iconCloseOthers:         icons.ListX,
 	iconCloseRight:          icons.ArrowRightToLine,
 	iconSparkles:            icons.Sparkles,
+	iconDices:               icons.Dices,
 	iconTransfer:            icons.ArrowUpDown,
 	iconBug:                 icons.Bug,
 	iconInfo:                icons.Info,
@@ -3226,6 +3242,7 @@ func (state *State) declareHostFormBody(c ui.C, title string) {
 		form.colorSwatchBoxes[index] = ui.Box{}
 	}
 	form.colorPickerBox = ui.Box{}
+	form.randomColorBox = ui.Box{}
 	chrome := &state.chrome
 	chrome.hostDialogTitle = title
 	if chrome.hostFormViewportDraw == nil {
@@ -3888,10 +3905,13 @@ func (state *State) declarePasswordDialog(c ui.C) {
 	viewport := dialogViewport(c)
 	bodyHeight := state.passwordBodyHeight()
 	height := dialogContentHeight(c.Canvas(), *c.Theme(), viewport, 460, state.passwordDescription, bodyHeight)
+	// No scrim dismiss: a press beside the dialog must not discard typed
+	// credentials or cancel an active MFA/password prompt. Cancel, the close
+	// button and Escape still cancel it.
 	dialog := ui.Dialog(c, ui.DialogSpec{
 		Title: m.PasswordTitle, Description: state.passwordDescription,
 		Width: 460, Height: height, Layer: dialogLayer,
-		Scope: dialogScope, DismissID: hitPasswordDismiss, CloseID: hitPasswordClose, InitialFocusID: hitPasswordField,
+		Scope: dialogScope, CloseID: hitPasswordClose, InitialFocusID: hitPasswordField,
 	})
 	dialog.Body(func() { state.declarePasswordBody(c) })
 	dialog.Footer(func() {
